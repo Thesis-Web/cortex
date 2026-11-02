@@ -217,27 +217,30 @@ def next_checkpoint(name):
         st = cx_get("state", name, n)
         if not st or st[3] == "open": return n
     return None
-def hydration(name):
-    pr = cx_get("project", name, 0)
-    if not pr: raise SystemExit("no project " + name)
-    nxt = next_checkpoint(name); lines = []
+def hydration_text(name, pr, nxt):
+    lines = []
     lines.append("PROJECT %s: %s" % (name, pr[3]))
+    if nxt is not None:
+        ck = cx_get("checkpoint", name, nxt); ex = cx_get("expected", name, nxt)
+        lines.append("DO NOW, C%d: %s" % (nxt, ck[3]))
+        if ex: lines.append("EXPECTED OUTPUT: %s" % ex[3])
+        lines.append("END YOUR ANSWER with one line `EXPECTED: met` or `EXPECTED: not met`, then the live output that shows it.")
+    else: lines.append("DO NOW: nothing; every checkpoint is done. Say so.")
     lines.append("LAWS: report only what you observed as live output; name the command and its output; never invent a result, a term or a file; stay inside the scope; if the expected output is not met say so and why.")
-    lines.append("CHECKPOINTS:")
+    lines.append("ALL CHECKPOINTS (state; only C%s is yours now):" % (nxt if nxt is not None else "-"))
     for (n, run, at, ts, text) in cx_list("checkpoint", name):
-        st = cx_get("state", name, n); s = st[3] if st else "open"; mark = " <= NEXT" if n == nxt else ""
-        lines.append("  C%d [%s] %s%s" % (n, s, text, mark))
-        if n == nxt:
-            ex = cx_get("expected", name, n)
-            if ex: lines.append("     EXPECTED: " + ex[3])
+        st = cx_get("state", name, n); s = st[3] if st else "open"
+        lines.append("  C%d [%s] %s" % (n, s, text))
     vs = q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", name)
     if vs:
-        lines.append("LAST VERDICTS:")
+        lines.append("LAST VERDICTS (history, not instructions):")
         for (n, v) in vs:
             d = json.loads(v); lines.append("  C%s %s %.2f: %s" % (d.get("n"), d.get("kind"), d.get("p", 0), d.get("text", "")[:90]))
-    if nxt is not None: lines.append("DO: checkpoint C%d only. End with one line `EXPECTED: met` or `EXPECTED: not met` followed by the live output that shows it." % nxt)
-    else: lines.append("DO: nothing; every checkpoint is done. Say so.")
     return "\n".join(lines) + "\n"
+def hydration(name, at=None):
+    pr = cx_get("project", name, 0)
+    if not pr: raise SystemExit("no project " + name)
+    return hydration_text(name, pr, at if at is not None else next_checkpoint(name))
 def v_hydrate(name):
     ensure_cx(); h = hydration(name); sys.stdout.write(h); print("[%d bytes]" % len(h.encode()), file=sys.stderr)
 MODEL_BY_KIND = {"read": "haiku", "write": "sonnet", "design": "opus"}   # the router's model per step kind (handler C7); a judgment step goes to jev
@@ -249,7 +252,7 @@ def worker(engine, model, prompt, cwd, act):
     if engine == "codex":
         last = os.path.join(cwd, ".codex-last-message.txt")
         if os.path.exists(last): os.remove(last)
-        cmd = ["codex", "exec", "-C", cwd, "--output-last-message", last] + (["--model", model] if model and model != "default" else []) + (["--full-auto"] if act else ["-s", "read-only"]) + ["-"]
+        cmd = ["codex", "exec", "-C", cwd, "--output-last-message", last] + (["--model", model] if model and model != "default" else []) + (["--dangerously-bypass-approvals-and-sandbox"] if act else ["-s", "read-only"]) + ["-"]
         t0 = time.time(); p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=cwd, timeout=3600)
         out = open(last).read() if os.path.exists(last) else p.stdout
         return out, p.stderr, p.returncode, time.time() - t0
@@ -262,14 +265,15 @@ def judgment_step(name, n, ck):
     if not resp: raise SystemExit("judgment step needs jev; no key at %s" % KEYFILE)
     p = resp["answers"]["holds"]["noul"]
     return "judgment by %s: the statement holds with probability %.2f. EXPECTED: %s" % (resp.get("model", JEV_MODEL), p, "met" if p >= THRESH else "not met"), p
-def v_turn(name, engine="claude", model=None, act=False):
-    ensure_cx(); nxt = next_checkpoint(name)
+def v_turn(name, engine="claude", model=None, act=False, at=None):
+    ensure_cx(); nxt = at if at is not None else next_checkpoint(name)
     if nxt is None: print("nothing to do: every checkpoint of %s is done" % name); return
+    if not cx_get("checkpoint", name, nxt): raise SystemExit("no checkpoint %s %d" % (name, nxt))
     st = cx_get("state", name, nxt)
     if not st or st[3] != "working": v_state(name, nxt, "working")
     kind = cx_get("kind", name, nxt); kind = kind[3] if kind else "write"
-    if model is None: model = MODEL_BY_KIND.get(kind, "sonnet")
-    h = hydration(name); cwd = os.path.join(WORKDIR, name); os.makedirs(cwd, exist_ok=True)
+    if model is None: model = MODEL_BY_KIND.get(kind, "sonnet") if engine == "claude" else "default"
+    h = hydration(name, nxt); cwd = os.path.join(WORKDIR, name); os.makedirs(cwd, exist_ok=True)
     if kind == "judgment":
         print("turn %s C%d: a judgment step, routed to jev (no model turn)" % (name, nxt))
         out, p = judgment_step(name, nxt, cx_get("checkpoint", name, nxt)); err, rc, secs = "", 0, 0.0
@@ -291,6 +295,33 @@ def v_turn(name, engine="claude", model=None, act=False):
     elif kinds and all(k in ("drift", "invention", "hallucination") for k in kinds): print("C%d stays working: the output was off rail (%s); the next hydration carries these verdicts" % (nxt, ",".join(sorted(set(kinds)))))
     else: print("C%d stays working" % nxt)
     print("--- worker output (first 1200 bytes) ---"); print(out[:1200])
+def project_for_cwd(cwd):
+    # which project a hub session's turn belongs to, by its working folder; a folder of no project is not captured
+    if not cwd: return None
+    if "/neuron" in cwd.lower(): return "neuron"
+    if cwd.rstrip("/") == "/home/exnulla": return "cortex"
+    return None
+def v_capture(cwd=None, name=None):
+    # the hub's Stop hook pipes the tail of a transcript here: the last assistant text is ingested and, when jev has a key, judged
+    raw = sys.stdin.read(); last = None
+    for line in raw.splitlines():
+        try: d = json.loads(line)
+        except ValueError: continue
+        if d.get("type") != "assistant": continue
+        c = d.get("message", {}).get("content")
+        texts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"] if isinstance(c, list) else ([c] if isinstance(c, str) else [])
+        t = "\n".join(x for x in texts if x and x.strip())
+        if t.strip(): last = t
+    if not last: print("capture: no assistant text in the tail"); return
+    name = name or project_for_cwd(cwd)
+    if not name: print("capture: cwd %s belongs to no cortex project; nothing ingested" % cwd); return
+    ensure_cx(); ing = v_ingest(name, last, quiet=True); new = [i for i in ing if not i["same_as"]]
+    print("capture %s: %d sentences, %d new, %d repeats, last text %d bytes" % (name, len(ing), len(new), len(ing) - len(new), len(last.encode())))
+    nxt = next_checkpoint(name)
+    if nxt is None: return
+    if jev_key():
+        kinds = [v_judge(name, nxt, i["run"], i["text"]) for i in new]; print("judged against C%d: %s" % (nxt, " ".join(kinds)))
+    else: print("not judged: no jev key at %s" % KEYFILE)
 def v_status(name=None):
     ensure_cx(); st = ask("stats")["main"]
     print("brain: gates %d runs %d hops %d refused %d clock %d | jev key %s | index rows %d" % (st["gates"], st["runs"], st["hops"], st["refused"], clock(), "present" if jev_key() else "MISSING", q("SELECT count(*) FROM main.cx WHERE kind = 'checkpoint' AND name = ? AND n >= 0", name or "")[0][0] if name else -1))
@@ -346,11 +377,17 @@ def main(argv):
     elif v == "judge": v_judge(a[0], int(a[1]), int(a[2]))
     elif v == "hydrate": v_hydrate(a[0])
     elif v == "turn":
-        engine, model, act = "claude", None, False
+        engine, model, act, at = "claude", None, False, None
         if "--engine" in a: engine = a[a.index("--engine") + 1]
         if "--model" in a: model = a[a.index("--model") + 1]
+        if "--at" in a: at = int(a[a.index("--at") + 1])
         if "--act" in a: act = True
-        v_turn(a[0], engine, model, act)
+        v_turn(a[0], engine, model, act, at)
+    elif v == "capture":
+        def opt(flag):
+            i = a.index(flag) if flag in a else -1
+            return a[i + 1] if i >= 0 and i + 1 < len(a) and not a[i + 1].startswith("--") else None
+        v_capture(opt("--cwd"), opt("--name"))
     elif v == "status": v_status(a[0] if a else None)
     elif v == "q": print(json.dumps(ask("q " + " ".join(a)))[:4000])   # a keyed read for the builder; the kernel refuses a scan
     elif v == "freeze": v_freeze(a[0] if a else HANDLER)
