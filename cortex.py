@@ -70,6 +70,41 @@ def sentences(text):
             out.append(p[:cut]); p = p[cut:].strip()
         if p: out.append(p)
     return out
+# ---- the ingest filter (handler C10): a context whole, checked line by line; dupes, restatements and noise are dropped before anything is typed ----
+STOP = set("the a an of to in on at for and or but if then than so as is are was were be been being am do does did has have had it its this that these those with by from into over under about not no yes i you he she we they me my our your their his her them us will would can could should may might must very just also only there here".split())
+def content_words(s):
+    return set(w for w in re.findall(r"[a-z][a-z0-9']{2,}", s.lower()) if w not in STOP)
+NOISE_START = ("$ ", "> ", "❯", "#!", "{", "}", "[", "]", "|", "<", "```", "diff --git", "index ", "+++", "---", "traceback", "file \"")
+def is_noise(s):
+    # why a line is not a sentence of the state: a command, a path, code, data, or too few words; None when it is a sentence
+    t = s.strip()
+    if any(t.startswith(p) for p in NOISE_START): return "command-or-markup"
+    if "://" in t: return "url"
+    toks = t.split(); filey = [x for x in toks if "/" in x or re.match(r"^[\w.-]+\.(txt|py|sh|md|db|json|log|html|c|h|so|map|jsonl|service)$", x)]
+    if toks and (toks[0] in filey or len(filey) >= 2): return "path"
+    if re.search(r"\b(jq|curl|ssh|grep|sed|awk|python3|bash|git|sudo|systemctl|cortex)\s+-", t) or t.endswith(("{", "}", ";", "\\")): return "code"
+    nonspace = [c for c in t if not c.isspace()]
+    if not nonspace: return "empty"
+    letters = sum(c.isalpha() for c in nonspace)
+    if letters / len(nonspace) < 0.6: return "symbols"
+    if len(content_words(t)) < 2: return "too-few-words"
+    return None
+def wordset_key(s):
+    return int(hashlib.sha256(" ".join(sorted(content_words(s))).encode()).hexdigest()[:15], 16)
+def filter_lines(name, sents):
+    # each sentence gets one fate: keep, dupe (exact repeat), restated (same words, or its words inside an earlier sentence of this batch), noise
+    out, seen_sets, seen_keys, counts = [], [], set(), {"keep": 0, "dupe": 0, "restated": 0, "noise": 0}
+    for s in sents:
+        why = is_noise(s)
+        if why: counts["noise"] += 1; out.append((s, "noise", why)); continue
+        k = text_key(s)
+        if k in seen_keys: counts["dupe"] += 1; out.append((s, "dupe", "batch")); continue
+        if cx_get("ingest", name, k): counts["dupe"] += 1; out.append((s, "dupe", "")); continue
+        seen_keys.add(k)
+        cw = content_words(s); wk = wordset_key(s)
+        if cx_get("restate", name, wk) or (len(cw) >= 3 and any(cw <= e for e in seen_sets)): counts["restated"] += 1; out.append((s, "restated", "")); continue
+        seen_sets.append(cw); counts["keep"] += 1; out.append((s, "keep", ""))
+    return out, counts
 def record(kind, name, n, body):
     # one Cortex line typed at the main prompt; its run and the brain's clock go into the index
     line = "cortex %s %s%s : %s" % (kind, name, (" %d" % n) if n is not None else "", body)
@@ -171,26 +206,67 @@ def ingest_text(value):
         d = json.loads(value); return d.get("t", ""), int(d.get("times", 1))
     except (ValueError, TypeError, AttributeError): return value, 1
 def v_ingest(name, text, quiet=False):
-    ensure_cx(); out = []
-    for s in sentences(text):
-        k = text_key(s); had = cx_get("ingest", name, k)
-        if had:
+    ensure_cx(); out = []; t0 = time.time()
+    fates, counts = filter_lines(name, sentences(text))
+    for s, fate, why in fates:
+        k = text_key(s)
+        if fate == "noise":
+            if not quiet: print("dropped (%s): %s" % (why, s[:80]))
+            continue
+        if fate == "dupe":
+            had = cx_get("ingest", name, k)
+            if not had:
+                if not quiet: print("dropped (repeated in this batch): %s" % s[:80])
+                continue
             t, times = ingest_text(had[3]); times += 1
             cx_put("ingest", name, k, had[0], had[1], json.dumps({"t": t, "times": times}))
             out.append({"run": had[0], "clock": had[1], "born": 0, "seconds": 0.0, "same_as": had[0], "again": times, "text": s})
             if not quiet: print("ingest run %d again %d (a repeat; nothing typed): %s" % (had[0], times, s[:100]))
             continue
+        if fate == "restated":
+            had = cx_get("restate", name, wordset_key(s))
+            if had:
+                first = cx_get("ingest", name, int(had[3]))
+                if first:
+                    t, times = ingest_text(first[3]); cx_put("ingest", name, int(had[3]), first[0], first[1], json.dumps({"t": t, "times": times + 1}))
+            if not quiet: print("dropped (restated%s): %s" % ((" run %d" % had[0]) if had else " in this batch", s[:80]))
+            continue
         line = "cortex ingest %s : %s" % (name, s); r = typed(line); run = r["run"]; at = clock()
-        cx_put("ingest", name, k, run, at, json.dumps({"t": s, "times": 1}))
+        cx_put("ingest", name, k, run, at, json.dumps({"t": s, "times": 1})); cx_put("restate", name, wordset_key(s), run, at, str(k))
         out.append({"run": run, "clock": at, "born": r["born"], "seconds": r["seconds"], "same_as": 0, "again": 1, "text": s})
         if not quiet: print("ingest run %d clock %d born %d %.3fs: %s" % (run, at, r["born"], r["seconds"], s[:100]))
+    print("filter: %d sentences, kept %d, dupe %d, restated %d, noise %d, %.0f ms" % (len(fates), counts["keep"], counts["dupe"], counts["restated"], counts["noise"], (time.time() - t0) * 1000))
     return out
+# ---- part-wise state (handler C12): a checkpoint's accepted state is the set of sentences accepted into it over time ----
+def add_part(name, n, run, text):
+    k = text_key(text); had = cx_get("part", name, k)
+    if had:
+        d = json.loads(had[3]); d["times"] = d.get("times", 1) + 1; cx_put("part", name, k, had[0], had[1], json.dumps(d)); return "tick %d" % d["times"]
+    cx_put("part", name, k, run, clock(), json.dumps({"t": text, "n": n, "run": run, "times": 1})); return "added"
+def parts_of(name, n, limit=5):
+    rows = q("SELECT value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 60", name)
+    return [json.loads(v) for (v,) in rows if json.loads(v).get("n") == n][:limit]
 def accepted_state(name, n):
-    rows = q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 20", name)
-    for (v,) in rows:
-        d = json.loads(v)
-        if d.get("n") == n and d.get("kind") in ("completes", "progresses", "supersedes"): return d.get("text", "")
-    return "(nothing accepted yet)"
+    ps = parts_of(name, n)
+    return " | ".join(p["t"] for p in reversed(ps)) if ps else "(nothing accepted yet)"
+# ---- the judge as a run data sheet (handler C11): deterministic cells first, judgment cells when a judge exists, then the formula ----
+def sheet_cells(name, n, run, text, pr, ck, ex):
+    cw = content_words(text)
+    cells = {"words": len(cw), "shared_scope": len(cw & content_words(pr[3])), "shared_checkpoint": len(cw & content_words(ck[3])), "shared_expected": len(cw & content_words(ex[3])) if ex else 0,
+             "expected_mark": "met" if re.search(r"expected: ?met", text) else ("not met" if re.search(r"expected: ?not met", text) else "none"),
+             "noise": is_noise(text) or "", "geometry": geometry(pr[0], run)}
+    hist = {}
+    for (v,) in q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 20", name):
+        k = json.loads(v).get("kind"); hist[k] = hist.get(k, 0) + 1
+    cells["history"] = hist
+    had = cx_get("ingest", name, text_key(text)); cells["times"] = ingest_text(had[3])[1] if had else 1
+    return cells
+def formula(cells, answers):
+    # the substitution formulas over a full sheet: what the deterministic cells settle, then the judgment cells
+    if cells["noise"]: return "noise", "sheet"
+    if answers: return decide(answers), "jev"
+    if cells["words"] >= 4 and cells["shared_scope"] == 0 and cells["shared_checkpoint"] == 0 and cells["shared_expected"] == 0: return "drift", "sheet"
+    return "unsettled", "sheet"
 def v_judge(name, n, run, text=None):
     ensure_cx()
     pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
@@ -199,24 +275,25 @@ def v_judge(name, n, run, text=None):
         rows = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
         if not rows: raise SystemExit("ingest run %s is not in the index" % run)
         text = ingest_text(rows[0][0])[0]
-    geo = geometry(pr[0], run)
+    t0 = time.time(); cells = sheet_cells(name, n, run, text, pr, ck, ex)
     state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "ingest": text}
-    answers, judge = {}, "geometry"
-    try:
-        resp = jev(state, JUDGE_QUESTIONS)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-        raise SystemExit("jev call failed, no verdict written: %s" % e)
-    if resp:
-        answers = {k: round(v.get("noul", 0.0), 3) for k, v in resp["answers"].items()}; judge = resp.get("model", JEV_MODEL)
-        kind = decide(answers); p = answers.get(kind, 0.0) if kind in answers else max(answers.values()) if answers else 0.0
-    else:
-        kind = "geometry"; p = 0.0
+    answers, model = {}, None
+    if not cells["noise"]:
+        try:
+            resp = jev(state, JUDGE_QUESTIONS)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+            raise SystemExit("jev call failed, no verdict written: %s" % e)
+        if resp: answers = {k: round(v.get("noul", 0.0), 3) for k, v in resp["answers"].items()}; model = resp.get("model", JEV_MODEL)
+    kind, by = formula(cells, answers); judge = model if by == "jev" else "sheet"
+    p = (answers.get(kind, 0.0) if kind in answers else max(answers.values())) if answers else 0.0
     body = "%s %.3f %s" % (kind, p, judge)
     vrun, at, _ = record("verdict", name, run, body)
-    cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "geometry": geo, "text": text[:300]}))
-    print("verdict %s %d run %d: %s %.3f by %s | geometry %s" % (name, n, run, kind, p, judge, json.dumps(geo)))
+    part = add_part(name, n, run, text) if kind in ("completes", "progresses", "supersedes") else ""
+    cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "text": text[:300]}))
+    geo = cells["geometry"]
+    print("verdict %s %d run %d: %s %.3f by %s in %.0f ms | sheet words %d shared scope %d checkpoint %d expected %d mark %s times %d noise %s | geometry mag %s rad %s | history %s%s" % (name, n, run, kind, p, judge, (time.time() - t0) * 1000, cells["words"], cells["shared_scope"], cells["shared_checkpoint"], cells["shared_expected"], cells["expected_mark"], cells["times"], cells["noise"] or "-", geo.get("magnitude"), geo.get("radians"), json.dumps(cells["history"]), (" | part " + part) if part else ""))
     if answers: print("  answers " + " ".join("%s=%.2f" % kv for kv in sorted(answers.items())))
-    if judge == "geometry": print("  jev not asked: no key (typesafe.key or gateway.key in ~/.config/cortex)")
+    elif not cells["noise"]: print("  judgment cells empty: no jev key (typesafe.key or gateway.key in ~/.config/cortex)")
     return kind
 def next_checkpoint(name):
     cps = cx_list("checkpoint", name)
@@ -234,6 +311,8 @@ def hydration_text(name, pr, nxt):
         ck = cx_get("checkpoint", name, nxt); ex = cx_get("expected", name, nxt)
         lines.append("DO NOW, C%d: %s" % (nxt, ck[3]))
         if ex: lines.append("EXPECTED OUTPUT: %s" % ex[3])
+        ps = parts_of(name, nxt)
+        if ps: lines.append("ACCEPTED SO FAR (parts of C%d's state): " % nxt + " | ".join(p["t"][:90] for p in reversed(ps)))
         lines.append("END YOUR ANSWER with one line `EXPECTED: met` or `EXPECTED: not met`, then the live output that shows it.")
     else: lines.append("DO NOW: nothing; every checkpoint is done. Say so.")
     lines.append("LAWS: report only what you observed as live output; name the command and its output; never invent a result, a term or a file; stay inside the scope; if the expected output is not met say so and why.")
@@ -251,8 +330,15 @@ def hydration(name, at=None):
     pr = cx_get("project", name, 0)
     if not pr: raise SystemExit("no project " + name)
     return hydration_text(name, pr, at if at is not None else next_checkpoint(name))
-def v_hydrate(name):
-    ensure_cx(); h = hydration(name); sys.stdout.write(h); print("[%d bytes]" % len(h.encode()), file=sys.stderr)
+def v_hydrate(name, at=None):
+    ensure_cx(); h = hydration(name, at); sys.stdout.write(h); print("[%d bytes]" % len(h.encode()), file=sys.stderr)
+def v_accept(name, n, run=None):
+    # the owner's word: with a run, that ingest's sentence becomes a part of C n's state; without, C n is done
+    ensure_cx()
+    if run is None: v_state(name, n, "done"); return
+    rows = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
+    if not rows: raise SystemExit("ingest run %s is not in the index" % run)
+    text = ingest_text(rows[0][0])[0]; r = add_part(name, n, run, text); print("part %s for %s C%d from run %d: %s" % (r, name, n, run, text[:90]))
 MODEL_BY_KIND = {"read": "haiku", "write": "sonnet", "design": "opus"}   # the router's model per step kind (handler C7); a judgment step goes to jev
 def worker(engine, model, prompt, cwd, act):
     if engine == "claude":
@@ -362,11 +448,11 @@ USAGE = """cortex <verb> ...
   state <name> <n> open|working|done
   ingest <name> <text | ->                 sentences typed as cortex ingest lines (- reads stdin)
   judge <name> <n> <run>                   verdict on an ingested run against checkpoint n
-  hydrate <name>                           the next worker's whole prompt
+  hydrate <name> [--at n]                  the next worker's whole prompt
   turn <name> [--engine claude|codex] [--model m] [--act]   hydrate, one worker turn, ingest, judge, move
   status [<name>]
   freeze <path>                            sha of the handler into the brain; file read-only
-  accept <name> <n>                        the owner's word: done
+  accept <name> <n> [run]                  the owner's word: with a run, that sentence is a part of C n's state; without, C n is done
 """
 def main(argv):
     if not argv: print(USAGE); return 2
@@ -383,10 +469,10 @@ def main(argv):
         if " || " in t: t, exp = t.split(" || ", 1)
         v_checkpoint(k[0], int(k[1]), t, exp, kind)
     elif v == "state": v_state(a[0], int(a[1]), a[2])
-    elif v == "accept": v_state(a[0], int(a[1]), "done")
+    elif v == "accept": v_accept(a[0], int(a[1]), int(a[2]) if len(a) > 2 else None)
     elif v == "ingest": v_ingest(a[0], sys.stdin.read() if a[1:] == ["-"] else " ".join(a[1:]))
     elif v == "judge": v_judge(a[0], int(a[1]), int(a[2]))
-    elif v == "hydrate": v_hydrate(a[0])
+    elif v == "hydrate": v_hydrate(a[0], int(a[a.index("--at") + 1]) if "--at" in a else None)
     elif v == "turn":
         engine, model, act, at = "claude", None, False, None
         if "--engine" in a: engine = a[a.index("--engine") + 1]
