@@ -1,0 +1,1078 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Point Of Connection nk</title>
+<meta name="description" content="The 17.3 page on the v6 brains: every gate of the encoder a point, every row the brain holds a line with its kind's pull, the brain's history replayed hit by hit from its receipt table, read live through serve6.py.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<!-- The style block below is 17.3's, byte for byte (its lines 5 to 122, as the tries/15 page carries them); what this page adds is in the second block. -->
+<style>
+  /* Layout: graph modifiers in a left rail, the stage in the middle, typing and run details in a right rail. Each rail scrolls on its own. On a phone: stage, then the run rail, then the graph rail. */
+  :root {
+    --bg: #f5f3ee; --fg: #1e1c18; --muted: #6b655a; --line: #d9d3c7; --panel: #ebe7de; --panel2: #e2ddd1;
+    --accent: #1f7a4d; --warn: #b23a3a; --stage: #0c0e12; --stage-fg: #f2efe6;
+    --told: #9aa3ad; --taught: #d9a441; --learned: #6ea8fe; --automated: #5fcf92; --absent: #b23a3a; --derived: #f2a65a;
+    --display: "IBM Plex Serif", Georgia, serif; --body: "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; --mono: "IBM Plex Mono", Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #1b1a17; --fg: #ece8df; --muted: #a39d90; --line: #3a372f; --panel: #26241f; --panel2: #2f2c26; --accent: #5fcf92; --warn: #e07a7a; color-scheme: dark; } }
+  :root[data-theme="dark"] { --bg: #1b1a17; --fg: #ece8df; --muted: #a39d90; --line: #3a372f; --panel: #26241f; --panel2: #2f2c26; --accent: #5fcf92; --warn: #e07a7a; color-scheme: dark; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 14.5px; line-height: 1.5; }
+  .app { height: 100%; display: grid; grid-template-columns: 290px minmax(0, 1fr) 410px; grid-template-rows: auto minmax(0, 1fr); }
+  header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; border-bottom: 1px solid var(--line);
+    padding-block: 8px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  h1 { font-family: var(--display); font-weight: 600; font-size: 1.25rem; margin: 0; }
+  header p { margin: 0; color: var(--muted); max-width: 110ch; font-size: .9rem; }
+  header a { color: var(--accent); }
+  .stage { position: relative; background: var(--stage); min-width: 0; min-height: 0; }
+  .stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .hud { position: absolute; left: 12px; bottom: 12px; right: 12px; color: var(--stage-fg); font-family: var(--mono); font-size: 12.5px; opacity: .94; pointer-events: none; display: flex; flex-direction: column; gap: 3px; max-width: 76ch; }
+  .hud b { font-weight: 500; }
+  .hud .ev { font-family: var(--body); font-size: 13.5px; background: rgba(12,14,18,.75); padding: 6px 8px; border-radius: 4px; }
+  .axis { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; justify-content: space-between; color: #8b929c; font-family: var(--mono); font-size: 11.5px; pointer-events: none; }
+  .err { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: var(--stage-fg); padding: 24px; text-align: center; }
+  aside { background: var(--panel); min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; }
+  aside.left { border-right: 1px solid var(--line); }
+  aside.right { border-left: 1px solid var(--line); }
+  .inner { padding-block: 12px 40px; padding-left: max(14px, env(safe-area-inset-left, 0px)); padding-right: 14px; display: flex; flex-direction: column; gap: 16px; }
+  aside.right .inner { padding-left: 14px; padding-right: max(14px, env(safe-area-inset-right, 0px)); }
+  h2 { font-family: var(--mono); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; font-weight: 500; }
+  section { display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  input[type=text] { font: inherit; font-family: var(--mono); font-size: .86rem; flex: 1 1 14em; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); }
+  button, select { font: inherit; font-family: var(--mono); font-size: .76rem; padding: 5px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel2); color: var(--fg); cursor: pointer; text-align: left; }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  label.chk { display: flex; gap: 8px; align-items: center; font-size: .84rem; }
+  input[type=range] { width: 100%; min-width: 0; accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  .rels { display: grid; grid-template-columns: auto 10px minmax(0, 1fr) 62px auto; gap: 3px 6px; align-items: center; font-size: .74rem; font-family: var(--mono); }
+  .rels .sw { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .rels input[type=range] { margin: 0; }
+  .rels .n { color: var(--muted); text-align: right; white-space: nowrap; }
+  .cells { width: 100%; border-collapse: collapse; font-size: .74rem; font-family: var(--mono); }
+  .cells td, .cells th { padding: 3px 5px; border-bottom: 1px solid rgba(127,127,127,.22); vertical-align: top; text-align: left; word-break: break-word; }
+  .cells .e { color: var(--warn); } .cells .f { color: var(--muted); } .cells .ok { color: var(--accent); }
+  .readout { font-family: var(--mono); font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .now { background: var(--panel2); border-left: 3px solid var(--accent); border-radius: 0 5px 5px 0; padding: 8px 10px; font-size: .88rem; display: flex; flex-direction: column; gap: 4px; }
+  .now .k { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+  .log { max-height: 250px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); font-size: .78rem; }
+  .log div { padding: 4px 8px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; grid-template-columns: 3.2em 5.6em 1fr; gap: 8px; }
+  .log div:last-child { border-bottom: 0; }
+  .log div.cur { background: var(--panel2); }
+  .log .t, .log .k { font-family: var(--mono); color: var(--muted); }
+  .log .gap, .log .waiting { color: var(--warn); } .log .taught, .log .learned, .log .automated, .log .derived, .log .check { color: var(--accent); }
+  .busy { font-family: var(--mono); font-size: .8rem; color: var(--warn); }
+  pre.code { font-family: var(--mono); font-size: .7rem; background: var(--panel2); border-radius: 5px; padding: 8px; overflow-x: auto; white-space: pre; max-height: 360px; }
+  .gaps { display: flex; flex-direction: column; gap: 6px; font-size: .84rem; }
+  .gap { border-left: 3px solid var(--warn); padding: 5px 9px; background: var(--panel2); border-radius: 0 5px 5px 0; }
+  .gap .who { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+  .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .stat { background: var(--panel2); border-radius: 5px; padding: 6px 9px; display: flex; flex-direction: column; min-width: 0; }
+  .stat b { font-family: var(--mono); font-size: 1rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: .7rem; color: var(--muted); }
+  .ledger { display: grid; grid-template-columns: 6.5em 1fr 3.5em; gap: 3px 8px; align-items: center; font-family: var(--mono); font-size: .74rem; }
+  .ledger .bar { height: 9px; background: var(--panel2); border-radius: 2px; overflow: hidden; } .ledger .bar i { display: block; height: 100%; background: var(--accent); width: 0; }
+  .ledger .n { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  table { border-collapse: collapse; width: 100%; font-size: .78rem; }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  .tw { overflow-x: auto; }
+  .badge { font-family: var(--mono); font-size: .68rem; padding: 1px 6px; border-radius: 3px; color: #111; white-space: nowrap; }
+  .b-told { background: var(--told); } .b-taught { background: var(--taught); } .b-learned { background: var(--learned); } .b-automated { background: var(--automated); } .b-absent { background: var(--absent); color: #fff; } .b-derived { background: var(--derived); }
+  .meter { height: 10px; background: var(--panel2); border-radius: 3px; overflow: hidden; display: flex; }
+  .meter i { display: block; height: 100%; }
+  .sel { background: var(--panel2); border-radius: 5px; padding: 9px 11px; font-size: .84rem; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .sel .mono { font-family: var(--mono); font-size: .74rem; word-break: break-word; } .sel .m { color: var(--muted); }
+  ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 5px; font-size: .84rem; }
+  p { margin: 0; } .note { font-size: .8rem; color: var(--muted); }
+  .q { font-family: var(--mono); font-size: .76rem; background: var(--panel2); border-radius: 4px; padding: 6px 8px; word-break: break-word; }
+  @media (max-width: 1180px) { .app { grid-template-columns: 250px minmax(0, 1fr) 350px; } }
+  @media (max-width: 900px) {
+    html, body { height: auto; }
+    .app { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 62vh auto auto; }
+    .stage { grid-row: 2; min-height: 62vh; }
+    aside.right { grid-row: 3; border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+    aside.left { grid-row: 4; border-right: 0; border-top: 1px solid var(--line); overflow: visible; }
+  }
+  .tabs { position: sticky; top: 0; z-index: 2; display: flex; gap: 4px; padding: 8px 14px 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .tabs button { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: -1px; }
+  .tabs button[aria-selected="true"] { background: var(--bg); color: var(--accent); border-bottom-color: var(--bg); }
+  .inner[hidden] { display: none; }
+  .mkinds { display: grid; grid-template-columns: auto 10px minmax(0, 1fr) auto; gap: 6px 7px; align-items: center; font-size: .8rem; }
+  .mkinds .sw { width: 10px; height: 10px; border-radius: 2px; } .mkinds .n { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; } .mkinds .m, .maxes .m, #mlast .m, #msum .m { color: var(--muted); font-size: .74rem; }
+  .maxes { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 8px; align-items: center; font-size: .8rem; } .maxes select { min-width: 0; max-width: 100%; }
+  .mlist { font-family: var(--mono); font-size: .72rem; max-height: 220px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); }
+  .mlist div { padding: 3px 7px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 2.2em minmax(0, 1fr) auto; gap: 6px; cursor: pointer; } .mlist div.last { background: var(--panel2); } .mlist .m { color: var(--muted); }
+  #mlast, #msum { font-size: .8rem; line-height: 1.45; overflow-wrap: anywhere; }
+  #panelm select { max-width: 100%; min-width: 0; }
+  .rels { grid-template-columns: auto 10px minmax(0, 1fr) 48px auto 70px; }
+  .rels select.dir { font-size: .64rem; padding: 0 1px; max-width: 70px; }
+  .atlasbtn { position: absolute; top: 10px; right: 10px; z-index: 3; font-family: var(--mono); font-size: .8rem; padding: 6px 12px; border-radius: 5px; border: 1px solid #4a4f58; background: rgba(12,14,18,.85); color: var(--stage-fg); cursor: pointer; }
+  .atlas { position: absolute; inset: 0; z-index: 4; background: var(--bg); color: var(--fg); display: flex; flex-direction: column; min-width: 0; }
+  .atlas[hidden] { display: none; }
+  .atop { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .atop input[type=text] { flex: 1 1 10em; max-width: 18em; }
+  .asum { padding: 6px 10px; font-size: .8rem; line-height: 1.45; border-bottom: 1px solid var(--line); }
+  .atlas .m { color: var(--muted); } .atlas .no { color: var(--warn); }
+  .atw { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  .atlas table { border-collapse: collapse; font-family: var(--mono); font-size: .72rem; width: max-content; min-width: 100%; }
+  .atlas th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 5px 7px; border-bottom: 1px solid var(--line); white-space: nowrap; z-index: 1; }
+  .atlas td { padding: 4px 7px; border-bottom: 1px solid var(--line); vertical-align: top; max-width: 34ch; overflow-wrap: anywhere; }
+  .atlas td.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .atlas tr.arow { cursor: pointer; } .atlas tr.arow:hover td { background: var(--panel); }
+  .atlas tr.det td { background: var(--panel); white-space: pre-wrap; max-width: none; }
+</style>
+<style>
+  /* v6: the rails are tabs; lists of gates, runs and lines; the key-value block under brains (from the tries/15 page) */
+  .tabs { flex-wrap: wrap; }
+  .list { font-family: var(--mono); font-size: .72rem; max-height: 260px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); }
+  .list div { padding: 3px 7px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 3.6em minmax(0, 1fr) auto; gap: 6px; cursor: pointer; overflow-wrap: anywhere; }
+  .list div:last-child { border-bottom: 0; } .list div.last { background: var(--panel2); } .list .m { color: var(--muted); }
+  #tree { max-height: 300px; } #nlist { max-height: 420px; } #tsheet, #fsheet { max-height: 300px; }
+  .kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; font-size: .8rem; } .kv .k { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+  .cells td.b { color: var(--accent); } .cells td.e, .cells .e { color: var(--warn); }
+  .cells td:first-child { white-space: nowrap; width: 1%; } .cells td { overflow-wrap: anywhere; word-break: normal; }
+  .cells table.cells td:first-child { width: auto; white-space: normal; }
+  .log div { grid-template-columns: 3.2em 7em 1fr; }
+  aside select { max-width: 100%; min-width: 0; }
+  #dnarows td { white-space: nowrap; }
+  .atlas tr.det td .dt { max-width: calc(100vw - 440px); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .mlist { max-height: 300px; } .mlist div { grid-template-columns: 2.6em minmax(0, 1fr) auto; }
+  #out .sel { gap: 6px; } #out table.cells { font-size: .72rem; } #out [data-gate] { text-decoration: underline dotted; }
+  #prompt { max-width: 11em; }
+</style>
+<div class="app">
+  <header>
+    <h1>Point Of Connection nk</h1>
+    <p>The live v6 brains behind a local door, <span style="font-family:var(--mono)">serve6.py</span>: main, the sixth, the guessing brain and eight source brains, all SQLite, all triggers; mother pastes what the brain writes. The door types a line into the prompt you choose and runs the SELECTs this page asks for; it decides nothing. The stage is 17.3's: every point a gate of the encoder, every line a row the brain holds, each a spring with the kind's pull; heard, the arrival gate, is the one fixed point; a run is walked hop by hop from its receipt. Positions are this page's drawing, not the brain's. The rails are tabs.</p>
+  </header>
+
+  <aside class="left" aria-label="The graph">
+    <div class="tabs" role="tablist" data-for="left">
+      <button type="button" role="tab" data-panel="panel-lines" aria-selected="true">lines</button>
+      <button type="button" role="tab" data-panel="panel-neurons" aria-selected="false">neurons</button>
+      <button type="button" role="tab" data-panel="panel-brain" aria-selected="false">brains</button>
+      <button type="button" role="tab" data-panel="panel-read" aria-selected="false">read</button>
+    </div>
+    <div class="inner" id="panel-lines">
+      <section>
+        <h2>The graph's lines</h2>
+        <label class="chk"><input type="checkbox" id="mapall" checked> your relation map (the map source brain): every like and opposite line of every word the brain holds; a far end the brain has no gate for is a dim point</label>
+        <label class="chk"><input type="checkbox" id="ghostlabels"> name your map's words (the dim points)</label>
+        <label class="chk"><input type="checkbox" id="spacept"> draw the space neuron (one point, one shard; it sits at origin with no line)</label>
+        <label class="chk"><input type="checkbox" id="runspace"> run lines pass through the space neuron (off: the space is skipped in the drawing of a run)</label>
+        <label class="chk"><input type="checkbox" id="memall"> memory nodes of every run (on: thousands of small green points; off: only the memory nodes of the line chosen)</label>
+        <div class="row"><label for="spacing" class="note">spacing, the drawing only</label><input type="range" id="spacing" min="1" max="100" step="1" value="21" aria-label="spacing"><span class="n" id="spv">&times;21</span></div>
+        <label class="chk"><input type="checkbox" id="axes" checked> x, y and z axes over the graph, a tick every 10</label>
+        <div class="row"><button id="fitall" type="button">fit all in view</button></div>
+        <div class="row"><label for="gap" class="note">space between points, in the drawing's units</label><input type="range" id="gap" min="0" max="500" step="0.5" value="15" aria-label="space between points"><span class="n" id="gapv">15</span></div>
+        <p class="note">No two points come closer than this; a pair that does is moved apart, half each, and the lines pull the rest into place. Spacing multiplies every drawn position outward from origin; names and dots keep their size. Drag to turn, scroll to zoom.</p>
+        <div class="row"><label for="runmode" class="note">runs drawn</label><select id="runmode"><option value="cur" selected>this run only</option><option value="line">every run of this line, faint</option><option value="none">none</option></select></div>
+      </section>
+      <section>
+        <h2>Kinds of line: on, off, pull, direction</h2>
+        <div class="rels" id="reltypes"></div>
+        <p class="note">Every line is a row the brain holds. A DNA row (shard | before | trigger | call | spawn | times) in a neuron's table gives up to four: the symbol before to this one, this one to the symbol the run goes on to, and a call or spawn to the first gate of the run it replays; made-of ties a symbol that calls a run to every gate that run passes. A definition row ties a symbol to the words of the lines its sources returned; answered ties a source brain to the symbols it answered. A memory node (small, green) is a run_memory row: it sits on the shard that ended the run and is tied to the words of its line. The rest are relationship rows (rel) by their kind word, and your map. Each line is a spring: the kind's pull (its slider), times how much of that kind the brain holds; a row laid again pulls harder (17.3's pull law). A direction makes a line of that kind push its second word that way from its first, or across origin. Nothing pushes points apart except the space above; heard alone is fixed.</p>
+      </section>
+      <section>
+        <h2>Composition: R1 then R2 lands on</h2>
+        <div class="tw"><table class="cells" id="comp"></table></div>
+      </section>
+    </div>
+    <div class="inner" id="panel-neurons" hidden>
+      <section>
+        <h2>The encoder: every gate in label</h2>
+        <div class="row"><input type="text" id="nfind" placeholder="find a symbol" autocomplete="off" spellcheck="false"><select id="nrole" aria-label="which gates"><option value="all">every gate</option><option value="core">hand-laid (1 to 80)</option><option value="born">born</option><option value="call">with a call or spawn</option><option value="node">with definition rows</option><option value="rel">with relationships</option><option value="source">the source brains</option></select></div>
+        <div class="note" id="nsum"></div>
+        <div class="list" id="nlist"></div>
+        <p class="note">Gate, symbol, what it is, its DNA rows, the rows in its definition node, its relationships, its memory nodes. Click one: it is marked on the stage and read in full under Selected. The space and each punctuation mark are gates of their own.</p>
+      </section>
+    </div>
+    <div class="inner" id="panel-brain" hidden>
+      <section>
+        <h2>The brains, as they stand</h2>
+        <div class="counts" id="counts"></div>
+        <div class="kv" id="binfo"></div>
+      </section>
+      <section>
+        <h2>Sources, as the brain has heard them</h2>
+        <div class="tw"><table class="cells" id="trust"></table></div>
+        <p class="note">Asked: the symbols put into that source's inbox by the ask. Returned: the lines it sent back, each a run through the encoder. Silent: asked and nothing came back.</p>
+      </section>
+      <section>
+        <h2>Symbols with a job: shards that call or spawn a run</h2>
+        <div class="list" id="jobs"></div>
+        <p class="note">Every DNA row whose call or spawn column points at a run (a formula bound by a BUILD UPDATE), and the first symbols of that run. Click one to walk the run.</p>
+      </section>
+      <section>
+        <h2>The sixth (sixth.db)</h2>
+        <div class="kv" id="sixthcounts"></div>
+        <div class="list" id="sixthruns"></div>
+        <p class="note">What main told it (seen : N in its third input), what it asked main (why : N cell in main's third input), and its own lines.</p>
+      </section>
+      <section>
+        <h2>The guessing brain (guess.db)</h2>
+        <div class="tw"><table class="cells" id="guesses"></table></div>
+        <p class="note">Every answer it gave: the symbol, its guess, confidence, belief (at most 0.5 on first use), used, solved, correct, incorrect, the run it was asked by. The simplest co-occurrence guesser, a stand-in for the hand-built one.</p>
+      </section>
+      <section>
+        <h2>Mother's refusals</h2>
+        <div class="list" id="refused"></div>
+        <p class="note">Rows the brain wrote to its hop table that SQLite refused, with the reason. Empty when nothing was refused.</p>
+      </section>
+    </div>
+    <div class="inner" id="panel-read" hidden>
+      <section>
+        <h2>How to read the stage</h2>
+        <ul>
+          <li><b>The light point at the center is heard,</b> gate 1, the arrival gate every typed line comes from: the one fixed point. Everything else is where its lines pull it.</li>
+          <li><b>Grey points are the 80 hand-laid neurons</b> (the arrivals, the sources' gates, the cell names, the symbols of the born line). <b>Blue-grey points were born</b> by the born run. <b>Orange symbols carry a call or spawn</b> (a formula bound to a shard). <b>A point that holds definition rows is lighter.</b> <b>Teal, large: the source brains.</b> <b>Small green: memory nodes.</b> <b>Dim: words of your map the brain has no gate for.</b></li>
+          <li><b>A run is drawn through the gates of its receipt,</b> in order; the hop being stepped glows, and a flash goes from it to the gate the run goes on to and, in orange, to the first gate of the run its shard calls or spawns.</li>
+          <li><b>The stage is the brains now.</b> Every read is a SELECT through the door; nothing is replayed from a log. Stepping walks one run's receipt as the brain wrote it, and play goes on into the next run of the same line.</li>
+        </ul>
+      </section>
+      <section>
+        <h2>What is read, from where</h2>
+        <ul>
+          <li>Points: main.label. Lines: every DNA table ("k"), the rel table, the call and spawn columns, the definition nodes ("k.node") with the return runs behind them, run_memory, and the map source's corpus.</li>
+          <li>Step: run_receipt. Run: run_sheet (the cells), the child runs (returns, calls, spawns), run_memory, timeline, out_user.</li>
+          <li>Selected: the DNA table of the gate, its definition node, the rel rows, the memory rows on its shards, the run that bore it.</li>
+          <li>Brains: sqlite_master counts of main and the sixth, the sixth's inputs, guess.guesses, the refused tables.</li>
+        </ul>
+      </section>
+      <section>
+        <h2>What is this page's own, not the brain's</h2>
+        <ul>
+          <li>x, y, z. The brain holds no positions. The springs, the rest lengths, the space between points, the step limit and the colours are the drawing's; they say nothing measured.</li>
+          <li>The door's calls: type a line, read the graph, run a SELECT, list the lines files, lay the eggs again. The tabs.</li>
+          <li>The two lists under Type are files beside the brain (LINES-v6.txt, FIRST-RUNS-v6): clicking a line only puts it in the prompt; you press run. Nothing types a file of lines by itself.</li>
+        </ul>
+      </section>
+      <section>
+        <h2>Where it lives</h2>
+        <p class="note">tries/19: this page and serve6.py. Start the door from the page folder with <span style="font-family:var(--mono)">python3 serve6.py</span> and open <span style="font-family:var(--mono)">http://localhost:8056/</span>. On the Windows drive a line is about ten times slower than on a Linux path; copy the folder to work fast.</p>
+      </section>
+    </div>
+  </aside>
+
+  <div class="stage" id="stage">
+    <canvas id="c"></canvas>
+    <button class="atlasbtn" id="atlasbtn" type="button">atlas</button>
+    <div class="atlas" id="atlas" hidden>
+      <div class="atop"><b>Atlas: every gate, its table, its place</b><input type="text" id="afind" placeholder="find a symbol" autocomplete="off" spellcheck="false"><select id="ashow" aria-label="which gates"><option value="all">every gate</option><option value="node">with definition rows</option><option value="call">with a call or spawn</option><option value="rel">with relationships</option><option value="drawn">drawn on the stage</option></select><span class="m" id="ashown"></span><button id="arefresh" type="button">read again</button><button id="aclose" type="button">close</button></div>
+      <div class="asum" id="asum"></div>
+      <div class="atw"><table id="atable"></table></div>
+    </div>
+    <div class="hud" id="hud"><b>opening the brain's door</b></div>
+    <div class="err" id="err">This view needs WebGL. The rails still read the brain.</div>
+  </div>
+
+  <aside class="right" aria-label="The run">
+    <div class="tabs" role="tablist" data-for="right">
+      <button type="button" role="tab" data-panel="panel-type" aria-selected="true">type</button>
+      <button type="button" role="tab" data-panel="panel-step" aria-selected="false">step</button>
+      <button type="button" role="tab" data-panel="panel-run" aria-selected="false">run</button>
+      <button type="button" role="tab" data-panel="panel-sel" aria-selected="false">selected</button>
+    </div>
+    <div class="inner" id="panel-type">
+      <section>
+        <h2>Type a line</h2>
+        <div class="row"><input type="text" id="line" placeholder="define : who" autocomplete="off" spellcheck="false"><select id="prompt" aria-label="which prompt"><option value="main" selected>the user's prompt</option><option value="sixth">the sixth's prompt</option></select><button class="primary" id="run" type="button">run</button></div>
+        <div class="busy" id="busy"></div>
+        <p class="note">The user's prompt writes into main.input; the sixth's into sixth.input. <span style="font-family:var(--mono)">BUILD &hellip; BUILD</span> hands the symbols between to mother. A symbol with no gate is born first. <span style="font-family:var(--mono)">key : value</span> fires the formula bound to the key's shard: define, print dna | memory | node | sheet | table, create neuron, change trigger | call | spawn | define | meaning, correct, incorrect.</p>
+      </section>
+      <section>
+        <h2>What came out</h2>
+        <div id="out"><span class="note">Nothing typed yet in this page. The newest line's data sheet appears here, each cell read back through the encoder.</span></div>
+      </section>
+      <section>
+        <h2>Lines to type, in order: the tools (LINES-v6.txt)</h2>
+        <div class="row"><label class="chk"><input type="checkbox" id="hidetyped"> hide the lines already typed into this brain</label></div>
+        <div class="mlist" id="tsheet"></div>
+        <p class="note">Click a line: it goes into the prompt with its {run:k} and {gate:x} read from the brain; press run. A line already typed shows the run it started. The grounding of each is in the file.</p>
+      </section>
+      <section>
+        <h2>Then, lines that educate the brain (FIRST-RUNS-v6)</h2>
+        <div class="mlist" id="fsheet"></div>
+      </section>
+      <section>
+        <h2>Lines typed into this brain, newest first</h2>
+        <div class="list" id="llist"></div>
+      </section>
+      <section>
+        <h2>Start over</h2>
+        <div class="row"><button id="fresh" type="button">lay the eggs and the source brains again</button></div>
+        <p class="note">Both brains go back to the bare core (egg6.sql, egg6-sixth.sql) and the source brains are laid again from the slice. Nothing is typed. The brain files beside the door are overwritten.</p>
+      </section>
+    </div>
+    <div class="inner" id="panel-step" hidden>
+      <section>
+        <h2>Step through a run's receipt</h2>
+        <div class="row"><button id="back" type="button">&#9664; hop</button><button id="fwd" type="button">hop &#9654;</button><button id="play" type="button" aria-pressed="false">play</button>
+          <select id="speed"><option value="2">slow</option><option value="8" selected>normal</option><option value="30">fast</option><option value="120">very fast</option><option value="600">600 hits a second</option><option value="3000">3,000 hits a second</option></select><button id="spin" type="button" aria-pressed="false">turn</button></div>
+        <input type="range" id="time" min="0" max="0" value="0" aria-label="hop within the run">
+        <div class="readout" id="readout">hop 0 of 0</div>
+        <div class="row"><label for="hist" class="note">the brain's history: every hit, in the order written</label></div>
+        <input type="range" id="hist" min="0" max="0" value="0" aria-label="the brain's history">
+        <div class="readout" id="histout">hit 0 of 0</div>
+        <div class="row"><button id="tostart" type="button">from the start</button><button id="tonow" type="button">as it stands now</button><label class="chk"><input type="checkbox" id="followrun" checked> play follows into the next run</label></div>
+        <p class="note">The stage shows the brain as it stood at this hit: a point once a run has reached it, a DNA row once its shard was written, a memory node once its run ended, a relationship once its run began. From the start, with play, the neurons appear as the lines bear them and are pulled into place.</p>
+        <div class="now" id="now"><span class="k">this hop</span><span>No run chosen. Type a line, or pick one below.</span></div>
+      </section>
+      <section>
+        <h2>The runs of this line</h2>
+        <div class="row"><select id="treekind" aria-label="which runs"><option value="all">every run</option><option value="0">the line</option><option value="1">calls</option><option value="2">spawns</option><option value="3">returns</option></select><span class="note" id="treesum"></span></div>
+        <div class="list" id="tree"></div>
+        <p class="note">Every run with this root, in the brain's order and indented by depth: a call or spawn is a shard replaying a run; a return is a source's or mother's answer run through the encoder. Play goes on into the next run when one ends.</p>
+      </section>
+      <section>
+        <h2>Hop log. Click a row to go there</h2>
+        <div class="log" id="log"></div>
+      </section>
+    </div>
+    <div class="inner" id="panel-run" hidden>
+      <section>
+        <h2>This run</h2>
+        <div class="sel" id="runhead"><span class="m">No run chosen.</span></div>
+      </section>
+      <section>
+        <h2>Its data sheet (run_sheet)</h2>
+        <div class="tw"><table class="cells" id="cells"></table></div>
+      </section>
+      <section>
+        <h2>What it handed mother, and what came back</h2>
+        <div class="gaps" id="builds"><span class="note">Nothing yet.</span></div>
+        <p class="note">The symbols between a pair of BUILD gates, with the holes filled as the sheet filled them; under each, what mother answered, read back from the return run.</p>
+      </section>
+      <section>
+        <h2>Needed, and did not have</h2>
+        <div class="gaps" id="gaps"><span class="note">Nothing yet.</span></div>
+      </section>
+      <section>
+        <h2>Sources, as this run heard them</h2>
+        <div class="list" id="sources"></div>
+      </section>
+      <section>
+        <h2>Its memory and timeline row</h2>
+        <div class="kv" id="memrow"></div>
+      </section>
+    </div>
+    <div class="inner" id="panel-sel" hidden>
+      <section>
+        <h2>Selected</h2>
+        <div class="sel" id="sel"><span class="m">Click a dot on the stage, or a gate under neurons.</span></div>
+      </section>
+      <section>
+        <h2>Its DNA rows (shard | before | trigger | call | spawn | times)</h2>
+        <div class="tw"><table class="cells" id="dnarows"></table></div>
+      </section>
+      <section>
+        <h2>Its definition node: the returns, first memory</h2>
+        <div class="list" id="defrows"></div>
+      </section>
+      <section>
+        <h2>Its relationships (rel)</h2>
+        <div class="list" id="relrows"></div>
+      </section>
+      <section>
+        <h2>Memory nodes on its shards</h2>
+        <div class="list" id="memrows"></div>
+      </section>
+    </div>
+  </aside>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtN(n) { return (n === null || n === undefined) ? '' : Number(n).toLocaleString(); }
+
+  // ---- the door: the page served by serve6.py talks to the same origin; opened as a file it talks to localhost:8056
+  var API = /^https?:$/.test(location.protocol) ? '' : 'http://localhost:8056';
+  function api(path, body) {
+    var opt = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+    return fetch(API + path, opt).then(function (r) { return r.json().then(function (j) { if (!r.ok) { var e = new Error(j.error || ('HTTP ' + r.status)); e.busy = j.busy; throw e; } return j; }); });
+  }
+  function q(sql, params) { return api('/api/q', { sql: sql, params: params || [] }).then(function (j) { return j.rows; }); }
+
+  // ---- tabs: each rail shows one panel at a time; the one chosen is remembered in this browser only
+  function showTab(panel) {
+    var p = $(panel); if (!p) return; var aside = p.parentNode, bar = aside.querySelector('.tabs');
+    bar.querySelectorAll('button[data-panel]').forEach(function (b) { b.setAttribute('aria-selected', String(b.getAttribute('data-panel') === panel)); });
+    aside.querySelectorAll('.inner').forEach(function (x) { x.hidden = x.id !== panel; });
+    try { localStorage.setItem('poc6.' + bar.getAttribute('data-for'), panel); } catch (e) {}
+  }
+  document.querySelectorAll('.tabs').forEach(function (bar) {
+    bar.addEventListener('click', function (e) { var b = e.target.closest('button[data-panel]'); if (b) showTab(b.getAttribute('data-panel')); });
+    var kept = null; try { kept = localStorage.getItem('poc6.' + bar.getAttribute('data-for')); } catch (e) {}
+    if (kept && $(kept)) showTab(kept);
+  });
+
+  // ---- the brain's tables, as the page holds them after each read. The fresh egg's gate numbers that the physics uses are named here once.
+  var G = { heard: 1, said: 2, space: 3, mother: 4, sixth: 5, main: 6, guess: 15, born: 16, me: 19, above: 20, newgate: 21, reply: 22, what: 23, def: 24, say: 25, know: 26, remember: 27, shape: 28, BUILD: 29, colon: 68 };
+  var SOURCES = [[7, 'wn', 'WordNet'], [8, 'gcide', 'Webster 1913'], [9, 'mw', 'MW Collegiate'], [10, 'mwt', 'MW thesaurus'], [11, 'moby', 'Moby'], [12, 'map', 'your map'], [13, 'sqldoc', 'SQLite docs'], [14, 'measured', 'measured'], [15, 'guess', 'the guessing brain']];
+  var SRCNAME = {}; SOURCES.forEach(function (s) { SRCNAME[s[0]] = s[2]; });
+  var CORE = 80, POINTERS = { 22: 1, 24: 1, 25: 1, 27: 1 };
+  var LAB = {}, SYM = {}, LABLIST = [], DNA = [], DNABY = {}, SHARDROW = {}, NODES = {}, REL = [], RELBY = {}, MEMN = {}, FIRST = {}, RUNS = {}, RUNLIST = [], CHILDREN = {}, COUNTS = {}, INPUTS = [], OUTBY = {}, DEFW = {}, DEFSEEN = {}, ANSW = [], MAPL = null, HOPCOUNT = {};
+  var ready = false, busy = false, T = -1, SELG = null, INFO = null;
+  var SHEET = {}, TEXT = {};   // run -> sheet rows; run -> its line read back through the encoder
+  // the history: every receipt row of the brain, in the order the brain wrote them (17.3 replayed its event log; v6 replays the receipt table)
+  var HIST = [], RUNHOPS = {}, FIRSTG = {}, FIRSTS = {}, RUNT0 = {}, RUNT1 = {}, TK = -1, HISTLAST = 0;
+  var CUR = { root: null, run: null };
+  function loadBundle() {
+    return Promise.all([
+      q('SELECT gate, symbol FROM main.label ORDER BY gate'),
+      api('/api/graph?schema=main'),
+      q('SELECT id, arrival, parent, root, kind, cell, about, at FROM main.run ORDER BY id'),
+      q("SELECT 'main', id, run FROM main.input WHERE run IS NOT NULL UNION ALL SELECT 'sixth', id, run FROM sixth.input WHERE run IS NOT NULL ORDER BY 1, 2"),
+      q('SELECT id, run, cell, value FROM main.out_user ORDER BY id'),
+      q("SELECT (SELECT count(*) FROM main.label), (SELECT count(*) FROM main.neuron WHERE born = 1), 0, (SELECT n FROM main.shards), (SELECT count(*) FROM main.run), (SELECT count(*) FROM main.run_receipt), (SELECT count(*) FROM main.run_sheet), (SELECT count(*) FROM main.run_memory), (SELECT count(*) FROM main.timeline), (SELECT count(*) FROM main.refused), (SELECT count(*) FROM main.hop), (SELECT count(*) FROM main.run_sheet WHERE state = 0), (SELECT count(*) FROM main.run WHERE id NOT IN (SELECT run FROM main.run_memory)), (SELECT count(*) FROM main.rel), (SELECT count(*) FROM sixth.label), (SELECT count(*) FROM sixth.run), (SELECT count(*) FROM sixth.run_memory), (SELECT count(*) FROM sixth.refused), (SELECT count(*) FROM main.run WHERE kind = 3 AND arrival BETWEEN 7 AND 14)"),
+      q('SELECT r.about, s.gate, min(r.id) FROM main.run r JOIN main.seq s ON s.run = r.id JOIN main.label l ON l.gate = s.gate WHERE r.kind = 3 AND r.arrival BETWEEN 7 AND 14 AND r.about IS NOT NULL AND l.symbol GLOB \'[A-Za-z]*\' GROUP BY r.about, s.gate'),
+      q('SELECT arrival, about, min(id) FROM main.run WHERE kind = 3 AND about IS NOT NULL AND arrival BETWEEN 7 AND 15 GROUP BY arrival, about'),
+      q('SELECT run, count(*) FROM main.run_receipt GROUP BY run'),
+      MAPL ? Promise.resolve(null) : q("SELECT word, text FROM map.corpus"),
+      q('SELECT id, run, gate, shard FROM main.run_receipt WHERE id > ? ORDER BY id', [HISTLAST]),
+      q('SELECT gate, x, y, z, moved FROM main.xyz').catch(function () { return []; }),   // the places the brain holds (none before the xyz table is laid)
+      q('SELECT p.kind, f.pull, f.rest, f.dx, f.dy, f.dz, f.mode FROM main.pull p JOIN main.formula f ON f.id = p.formula').catch(function () { return []; })   // the formulas: each kind's pull, rest and direction, the brain's rows
+    ]).then(absorb);
+  }
+  function absorb(R) {
+    LAB = {}; SYM = {}; LABLIST = R[0].map(function (r) { LAB[r[0]] = r[1]; SYM[r[1]] = r[0]; return r[0]; });
+    var g = R[1]; DNA = g.dna; NODES = g.nodes || {}; REL = g.rel || []; MEMN = g.mem || {}; FIRST = g.first || {};
+    XYZ = {}; (R[11] || []).forEach(function (r) { XYZ[r[0]] = r; }); applyFormulas(R[12] || []);   // the brain's places and formulas (2026-11-02)
+    DNABY = {}; SHARDROW = {}; DNA.forEach(function (d) { (DNABY[d[0]] = DNABY[d[0]] || []).push(d); SHARDROW[d[1]] = d; }); Object.keys(DNABY).forEach(function (k) { DNABY[k].sort(function (a, b) { return a[1] - b[1]; }); });
+    RELBY = {}; REL.forEach(function (r) { (RELBY[r[0]] = RELBY[r[0]] || []).push(r); (RELBY[r[2]] = RELBY[r[2]] || []).push(r); });
+    RUNS = {}; CHILDREN = {}; RUNLIST = R[2].map(function (r) { var x = { id: r[0], arrival: r[1], parent: r[2], root: r[3], kind: r[4], cell: r[5], about: r[6], at: r[7] }; RUNS[r[0]] = x; if (r[2] !== null) (CHILDREN[r[2]] = CHILDREN[r[2]] || []).push(r[0]); return x; });
+    INPUTS = R[3].map(function (r) { return { schema: r[0], id: r[1], run: r[2] }; });
+    OUTBY = {}; R[4].forEach(function (r) { (OUTBY[r[1]] = OUTBY[r[1]] || []).push({ id: r[0], cell: r[2], value: r[3] }); });
+    var c = R[5][0]; COUNTS = { label: c[0], tables: c[1], triggers: c[2], shards: c[3], run: c[4], receipts: c[5], sheet: c[6], memory: c[7], timeline: c[8], refused: c[9], hop: c[10], empty: c[11], unended: c[12], rel: c[13], s_label: c[14], s_run: c[15], s_memory: c[16], s_refused: c[17], returns: c[18] };
+    DEFW = {}; R[6].forEach(function (r) { (DEFW[r[0]] = DEFW[r[0]] || []).push([r[1], r[2]]); });
+    ANSW = R[7];
+    R[10].forEach(function (r) { var i = HIST.length; HIST.push(r); HISTLAST = r[0]; (RUNHOPS[r[1]] = RUNHOPS[r[1]] || []).push(i); if (FIRSTG[r[2]] === undefined) FIRSTG[r[2]] = i; if (FIRSTS[r[3]] === undefined) FIRSTS[r[3]] = i; if (RUNT0[r[1]] === undefined) RUNT0[r[1]] = i; RUNT1[r[1]] = i; });
+    RELSTATIC = []; RELWIN = []; RELCACHE = { key: null, agg: null }; REL.forEach(function (r) { if (!r[3] || RUNT0[r[3]] === undefined) RELSTATIC.push(r); else RELWIN.push(r); });   // laid before this history's window, or inside it
+    HOPCOUNT = {}; R[8].forEach(function (r) { HOPCOUNT[r[0]] = r[1]; });
+    DEFSEEN = {}; Object.keys(DEFW).forEach(function (g) { var f = FIRSTG[g]; if (f === undefined) return; DEFW[g].forEach(function (x) { if (DEFSEEN[x[0]] === undefined || DEFSEEN[x[0]] > f) DEFSEEN[x[0]] = f; }); });   // a word of a point's definition is present from the hit that reached the point (the kernel pulls returns to the sheet; they are not walked)
+    if (R[9]) { MAPL = []; R[9].forEach(function (r) { var m = /^(like|opposite(?: of)?)\s+(.+)$/.exec(r[1]); if (!m) return; var kind = m[1].indexOf('opposite') === 0 ? 'opposite' : 'alike'; m[2].split(/\s*,\s*/).forEach(function (o) { o = o.trim(); if (o) MAPL.push([r[0], kind, o]); }); }); }
+  }
+  function roleOf(g) { if (g === G.heard) return 'heard'; if (g === G.said || g === G.mother || g === G.sixth || g === G.main) return 'arrival'; if (g >= 7 && g <= 15) return 'source'; if (g === G.space) return 'space'; if (g <= CORE) return 'core'; return 'born'; }
+  var ROLETEXT = { heard: 'heard, the arrival gate of every typed line: the one fixed point', arrival: 'an arrival gate, hand-laid: the first row of a line arrives from it', source: 'a source brain: its own database with a corpus, an inbox, an outbox and its own trigger; its gate is where its returns arrive from', space: 'the space neuron: one shard, counted every time a run passes a space', core: 'hand-laid: one of the 80 neurons laid before any line (its label row, its DNA table, its definition node)', born: 'born by the born run, the moment a line first reached it' };
+  function hasCall(g) { var d = DNABY[g] || []; for (var i = 0; i < d.length; i++) if (d[i][4] !== null || d[i][5] !== null) return true; return false; }
+  function nameOf(g) { var s = LAB[g]; if (s === undefined) return '#' + g; return s === ' ' ? '␣' : s === '\n' ? '⏎' : s; }
+  function lineOf(run) { return TEXT[run] !== undefined ? TEXT[run] : null; }
+  function decodeRun(run) { if (TEXT[run] !== undefined) return Promise.resolve(TEXT[run]); return q("SELECT group_concat(symbol, '') FROM (SELECT l.symbol FROM main.seq s JOIN main.label l ON l.gate = s.gate WHERE s.run = ? ORDER BY s.pos)", [run]).then(function (r) { TEXT[run] = (r[0] && r[0][0]) || ''; return TEXT[run]; }); }
+  function decodeMany(runs) { var need = runs.filter(function (r) { return TEXT[r] === undefined; }); if (!need.length) return Promise.resolve(); return q("SELECT s.run, group_concat(l.symbol, '') FROM (SELECT run, pos, gate FROM main.seq WHERE run IN (" + need.map(function () { return '?'; }).join(',') + ") ORDER BY run, pos) s JOIN main.label l ON l.gate = s.gate GROUP BY s.run", need).then(function (rows) { need.forEach(function (r) { TEXT[r] = ''; }); rows.forEach(function (r) { TEXT[r[0]] = r[1] || ''; }); }); }
+  function setBusy(t) { $('busy').textContent = t; }
+  var KINDNAME = ['a line', 'a call', 'a spawn', 'a return'];
+
+  // ---- the stage (17.3's drawing: springs only, one fixed point, a space between points)
+  var hasGL = true, renderer, scene, camera;
+  try { if (!window.THREE) throw new Error('no three'); renderer = new THREE.WebGLRenderer({ canvas: $('c'), antialias: true }); } catch (e) { hasGL = false; $('err').style.display = 'flex'; }
+  if (hasGL) { renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); scene = new THREE.Scene(); scene.background = new THREE.Color(0x0c0e12); camera = new THREE.PerspectiveCamera(40, 1, 1, 400000); }
+  function hash(s) { var h = 2166136261; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  function unit(seed) { var a = (hash('a' + seed) / 4294967296) * 2 * Math.PI, z = (hash('z' + seed) / 4294967296) * 2 - 1, r = Math.sqrt(1 - z * z); return new THREE.Vector3(r * Math.cos(a), r * Math.sin(a), z); }
+  var dotGeo = hasGL ? new THREE.SphereGeometry(1, 10, 10) : null, dotGroup, labelGroup, relGroup, runGroup, flash, flashGeo, flash2, flashGeo2;
+  if (hasGL) { dotGroup = new THREE.Group(); labelGroup = new THREE.Group(); relGroup = new THREE.Group(); runGroup = new THREE.Group(); [dotGroup, labelGroup, relGroup, runGroup].forEach(function (g) { scene.add(g); }); flashGeo = new THREE.BufferGeometry(); flash = new THREE.LineSegments(flashGeo, new THREE.LineBasicMaterial({ color: 0xfff1a8, transparent: true, opacity: .95 })); scene.add(flash); flashGeo2 = new THREE.BufferGeometry(); flash2 = new THREE.LineSegments(flashGeo2, new THREE.LineBasicMaterial({ color: 0xf28c4b, transparent: true, opacity: .95 })); scene.add(flash2); }
+  var NODE = {};   // key (a gate as a string, 'm:<run>' for a memory node, 'g:<word>' for a word of your map the brain has no gate for) -> {mesh, label, pos, fixed, ghost}
+  function colorOf(k) {
+    if (k.charAt(0) === 'm') return 0x7ed07e; if (k.charAt(0) === 'g') return 0x8b95a2;
+    var g = +k, r = roleOf(g); if (r === 'heard') return 0xfff1a8; if (r === 'source') return 0x8fd3c1; if (r === 'arrival') return 0xffffff; if (hasCall(g)) return 0xf28c4b;
+    if (r === 'core' || r === 'space') return NODES[g] > 0 ? 0xbfc6cf : 0x9aa3ad; return NODES[g] > 0 ? 0xa9c3dc : 0x6f7a86;
+  }
+  function sizeOf(k) { if (k.charAt(0) === 'm') return .55; if (k.charAt(0) === 'g') return .55; var g = +k, r = roleOf(g); return r === 'heard' ? 2.4 : r === 'source' ? 2.4 : r === 'arrival' ? 1.6 : hasCall(g) ? 1.3 : 1.0; }
+  function labelOf(k) { if (k.charAt(0) === 'm') return 'memory ' + k.slice(2); if (k.charAt(0) === 'g') return k.slice(2); return nameOf(+k); }
+  function makeLabel(text, css, px, centered) { var c = document.createElement('canvas'), ctx = c.getContext('2d'); ctx.font = '500 26px "IBM Plex Mono", Consolas, monospace'; var w = Math.ceil(ctx.measureText(text).width) + 14; c.width = w; c.height = 36; ctx.font = '500 26px "IBM Plex Mono", Consolas, monospace'; ctx.fillStyle = css; ctx.textBaseline = 'middle'; ctx.fillText(text, 7, 18); var tex = new THREE.CanvasTexture(c); tex.minFilter = THREE.LinearFilter; var sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, opacity: .92, sizeAttenuation: false })); if (!centered) sp.center.set(.5, -.35); sp.userData.px = px; sp.userData.aspect = w / 36; sizeLabel(sp); return sp; }
+  function stageH() { return (renderer && renderer.domElement.clientHeight) || 800; }
+  function sizeLabel(sp) { var y = sp.userData.px * 0.728 / stageH(); sp.scale.set(y * sp.userData.aspect, y, 1); }
+  function ensureNode(k) {
+    var n = NODE[k];
+    if (!n) {
+      // a new point has no place until its lines give it one: it waits at origin and is placed beside its neighbours once the lines are known
+      var fixed = k === String(G.heard), p = new THREE.Vector3(0, 0, 0);
+      n = NODE[k] = { key: k, pos: p, fixed: fixed, unplaced: !fixed, ghost: k.charAt(0) === 'g', mem: k.charAt(0) === 'm' };
+      var bx = (!fixed && !n.ghost && !n.mem) ? XYZ[+k] : null; if (bx) { n.pos.set(bx[1], bx[2], bx[3]); n.unplaced = false; }   // the brain's own place for the point, when it holds one: the drawing starts there
+      if (hasGL) {
+        var col = colorOf(k), r = sizeOf(k);
+        n.mesh = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: n.ghost ? .4 : .92 })); n.mesh.scale.setScalar(r); n.mesh.position.copy(n.pos); n.mesh.userData = { base: r, key: k }; dotGroup.add(n.mesh);
+        if (!n.mem) { n.label = makeLabel(labelOf(k), '#' + ('000000' + col.toString(16)).slice(-6), (k === String(G.heard) || roleOf(+k) === 'source') ? 15 : n.ghost ? 10 : 12); n.label.position.copy(n.pos); labelGroup.add(n.label); }
+      }
+    } else if (hasGL) { var c2 = colorOf(k); if (n.mesh.material.color.getHex() !== c2) { n.mesh.material.color.setHex(c2); n.mesh.scale.setScalar(sizeOf(k)); n.mesh.userData.base = sizeOf(k); if (n.label) { labelGroup.remove(n.label); n.label.material.map.dispose(); n.label.material.dispose(); n.label = makeLabel(labelOf(k), '#' + ('000000' + c2.toString(16)).slice(-6), 12); labelGroup.add(n.label); } } }
+    return n;
+  }
+  function hideNode(k) { var n = NODE[k]; if (!n || !n.mesh) return; n.mesh.visible = false; if (n.label) n.label.visible = false; }
+
+  // ---- the kinds of line, the pull law, the settle (17.3's; the kinds are v6's rows)
+  var REL_TYPES = [['dna before', 0.6, 'a DNA row: the symbol before, to this one'], ['dna trigger', 0.6, 'a DNA row: this symbol to the one the run goes on to'], ['dna call', 0.8, 'a DNA row\'s call: this symbol to the first gate of the run it replays and takes the answer from'], ['dna spawn', 0.8, 'a DNA row\'s spawn: this symbol to the first gate of the run it sends off'],
+    ['made-of', 0.5, 'a symbol with a call, to each gate the run it calls passes'], ['definition', 0.4, 'a symbol to the words of the lines its sources returned (its definition node)'], ['answered', 0.4, 'a source brain to the symbols it answered'], ['memory', 0.5, 'a memory node (a run_memory row) to the shard\'s gate it ended on and the words of its line'],
+    ['alike', 1.0, 'like; a rel row from the thesaurus, Moby or your map'], ['opposite', 1.0, 'opposite; a rel row'], ['is', 0.9, 'kind, class; in your map'], ['includes', 0.9, ''], ['inverse', 0.9, ''], ['contradicts', 0.8, ''], ['supports', 0.7, ''], ['has', 0.7, 'in your map'], ['part', 0.7, ''], ['similar', 0.6, ''], ['prefix', 0.5, 'in your map'], ['begins', 0.5, ''], ['suffix', 0.5, 'in your map'], ['ends', 0.5, ''], ['stem', 0.5, 'in your map'], ['past', 0.5, 'in your map'], ['present', 0.5, ''], ['singular', 0.5, 'in your map'], ['plural', 0.5, ''], ['derived-from', 0.5, ''], ['use', 0.4, ''], ['before', 0.4, ''], ['after', 0.4, ''], ['topic', 0.3, ''], ['context', 0.3, ''], ['category', 0.3, ''], ['method', 0.3, ''], ['member', 0.7, 'member of; a WordNet member holonym'], ['related', 0.4, 'related terms; Wiktionary'], ['implies', 0.6, 'entailment; WordNet'], ['causes', 0.6, 'cause; WordNet'], ['property', 0.5, 'attribute; WordNet'], ['alias', 0.9, 'an alternative form; Wiktionary']];
+  var REL_OF = { like: 'alike', alike: 'alike', synonym: 'alike', antonym: 'opposite', member: 'member', related: 'related', implies: 'implies', causes: 'causes', property: 'property', alias: 'alias', similar: 'similar', opposite: 'opposite', inverse: 'inverse', kind: 'is', class: 'is', has: 'has', part: 'part', before: 'before', after: 'after', topic: 'topic', context: 'context', category: 'category', method: 'method', use: 'use', supports: 'supports', contradicts: 'contradicts', derived: 'derived-from', includes: 'includes', begins: 'begins', ends: 'ends', present: 'present', plural: 'plural' };
+  var REL_COL = { 'dna before': 0x8fd3c1, 'dna trigger': 0xd8d4c8, 'dna call': 0xf28c4b, 'dna spawn': 0xffc98a, 'made-of': 0xe8e2a0, definition: 0x8ea3b8, answered: 0x6fb8a8, memory: 0x7ed07e, alike: 0x4f9bd9, opposite: 0xe0573f, is: 0x9b7bd4, includes: 0xb59ae0, inverse: 0xd97b4f, contradicts: 0xc24f8a, supports: 0x4fb7a8, has: 0x6fa8dc, part: 0x8cb8e0, similar: 0x7fc2e8, prefix: 0xa8a070, begins: 0x5fc89a, suffix: 0xb0a860, ends: 0x4fb8c0, stem: 0x98a860, past: 0x8fb070, present: 0xe09ab8, singular: 0x90b888, plural: 0xe0a060, 'derived-from': 0xd0a050, use: 0xc8b070, before: 0x70b0c0, after: 0x60a0b8, topic: 0x909cb0, context: 0x98a4b8, category: 0xa0acc0, method: 0xa8b4c8, member: 0x7fb0d8, related: 0xb0b8c4, implies: 0xc9a86a, causes: 0xd9865f, property: 0xa88fd0, alias: 0xe8e8e8 };
+  var REST = { 'dna before': 14, 'dna trigger': 14, 'dna call': 16, 'dna spawn': 16, 'made-of': 16, definition: 18, answered: 22, memory: 12, alike: 10, similar: 14, is: 22, includes: 22, has: 24, part: 24, opposite: 64, inverse: 64, contradicts: 64, member: 16, related: 18, 'derived-from': 10, alias: 6, implies: 20, causes: 20, property: 16, past: 12, before: 16, after: 16 };
+  function hexOf(r) { return '#' + ('000000' + (REL_COL[r] || 0x9aa3ad).toString(16)).slice(-6); }
+  var DIRS = [['', 'any way'], ['x', 'east +x'], ['-x', 'west -x'], ['y', 'north +y'], ['-y', 'south -y'], ['z', 'up +z'], ['-z', 'down -z'], ['across', 'across origin'], ['shared', "the kind's own vector"]];
+  var DEFAULT_DIR = { opposite: 'across', inverse: 'across', contradicts: 'across', is: 'y', includes: '-y', implies: 'x', causes: 'x', past: '-x', before: 'x', after: '-x' };
+  function dirVec(d) { if (!d || d === 'across') return null; var v = new THREE.Vector3(); v.setComponent({ x: 0, y: 1, z: 2 }[d.slice(-1)], d[0] === '-' ? -1 : 1); return v; }
+  var RELSET = {};
+  function kindRow(k, w, title) { return '<input type="checkbox" data-rel="' + esc(k) + '" checked aria-label="' + esc(k) + ' on or off"><span class="sw" style="background:' + hexOf(k) + '"></span><span title="' + esc(title || '') + '">' + esc(k) + '</span><input type="range" min="0" max="1" step="0.05" value="' + w + '" data-relw="' + esc(k) + '" aria-label="' + esc(k) + ' pull"><span class="n" id="rc-' + esc(k).replace(/[^a-z0-9]/gi, '_') + '">0</span><select class="dir" data-reldir="' + esc(k) + '" aria-label="' + esc(k) + ' direction">' + DIRS.map(function (d) { return '<option value="' + d[0] + '"' + ((DEFAULT_DIR[k] || '') === d[0] ? ' selected' : '') + '>' + d[1] + '</option>'; }).join('') + '</select>'; }
+  function addKind(k, w, title) { if (RELSET[k]) return; RELSET[k] = { on: true, w: w, dir: DEFAULT_DIR[k] || '' }; $('reltypes').insertAdjacentHTML('beforeend', kindRow(k, w, title)); }
+  // the brain's formulas (pull, rest, direction per kind: its formula and pull rows) become the kinds' defaults, once per load; a slider or drop-down moved after that rules the drawing
+  var XYZ = {}, FORMULA_APPLIED = false;
+  function applyFormulas(rows) {
+    if (FORMULA_APPLIED || !rows.length) return; FORMULA_APPLIED = true;
+    rows.forEach(function (r) { var s = LAB[r[0]]; if (s === undefined) return; var k = REL_OF[s] || s; if (!RELSET[k]) addKind(k, r[1], 'a rel row: the kind word ' + s);
+      var dir = r[6] === 2 ? 'across' : r[6] === 1 ? (r[3] < 0 ? '-x' : r[3] > 0 ? 'x' : r[4] < 0 ? '-y' : r[4] > 0 ? 'y' : r[5] < 0 ? '-z' : r[5] > 0 ? 'z' : '') : '';
+      RELSET[k].w = r[1]; REST[k] = r[2]; RELSET[k].dir = dir;
+      var sl = document.querySelector('input[data-relw="' + k + '"]'); if (sl) sl.value = r[1]; var se = document.querySelector('select[data-reldir="' + k + '"]'); if (se) se.value = dir; });
+  }
+  (function () {
+    REL_TYPES.forEach(function (r) { addKind(r[0], r[1], r[2]); });
+    $('reltypes').addEventListener('change', function (e) { var k = e.target.getAttribute('data-rel'), d = e.target.getAttribute('data-reldir'); if (k) { RELSET[k].on = e.target.checked; render(TK, true); reshape(); } if (d) { RELSET[d].dir = e.target.value; render(TK, true); reshape(); } });
+    $('reltypes').addEventListener('input', function (e) { var k = e.target.getAttribute('data-relw'); if (k) { RELSET[k].w = parseFloat(e.target.value); render(TK, true); reshape(); } });
+    $('spacing').addEventListener('input', function () { SP = parseFloat($('spacing').value); $('spv').textContent = '×' + SP; drawAxes(true); });
+    $('axes').addEventListener('change', function () { drawAxes(true); });
+    $('gap').addEventListener('input', function () { GAP = parseFloat($('gap').value); $('gapv').textContent = GAP; reshape(); });
+    $('fitall').addEventListener('click', function () { userZoomed = false; fitLeft = 120; });
+    ['mapall', 'ghostlabels', 'spacept', 'runspace', 'memall', 'runmode'].forEach(function (id) { $(id).addEventListener('change', function () { var go = function () { render(TK, true); if (id !== 'runmode' && id !== 'runspace') reshape(); }; if (id === 'memall') refreshMem(go); else go(); }); });
+  })();
+  var SPRINGS = [], ALLLINES = [], MEMROWS = [], RELSTATIC = [], RELWIN = [], RELCACHE = { key: null, agg: null };
+  function relKind(kindGate) { var s = LAB[kindGate]; if (s === undefined) return 'rel #' + kindGate; var k = REL_OF[s] || s; if (!RELSET[k]) addKind(k, 0.5, 'a rel row: the kind word ' + s); return k; }
+  function buildSprings(tk) {
+    var agg = {}, spaceOn = $('spacept').checked, atRun = function (run) { return run !== null && run !== undefined && RUNT0[run] !== undefined && RUNT0[run] <= tk; };
+    function add(a, b, kind, trust) { a = String(a); b = String(b); if (a === b) return; if (!NODE[a] || !NODE[b]) return; if (!spaceOn && (a === String(G.space) || b === String(G.space))) return; var id = kind + '|' + (a < b ? a + '|' + b : b + '|' + a); if (!agg[id]) agg[id] = [a, b, kind, trust, 0]; agg[id][4]++; }
+    DNA.forEach(function (d) { var g = d[0]; if (FIRSTS[d[1]] === undefined || FIRSTS[d[1]] > tk) return; if (d[2] !== null) add(d[2], g, 'dna before', 1); if (d[3] !== null) add(g, d[3], 'dna trigger', 1); if (d[4] !== null && FIRST[d[4]] !== undefined && atRun(d[4])) add(g, FIRST[d[4]], 'dna call', 1); if (d[5] !== null && FIRST[d[5]] !== undefined && atRun(d[5])) add(g, FIRST[d[5]], 'dna spawn', 1); });
+    Object.keys(MADEOF).forEach(function (g) { MADEOF[g].forEach(function (x) { add(g, x, 'made-of', 1); }); });
+    Object.keys(DEFW).forEach(function (g) { if (!present(+g, tk)) return; DEFW[g].forEach(function (x) { add(g, x[0], 'definition', .6); }); });
+    ANSW.forEach(function (p) { if (present(p[1], tk)) add(p[0], p[1], 'answered', 1); });
+    MEMROWS.forEach(function (m) { var k = 'm:' + m[0]; if (!NODE[k] || !NODE[k].mesh.visible) return; add(k, m[1], 'memory', 1); String(m[3] || '').split(' ').forEach(function (x) { if (x && +x !== G.space) add(k, x, 'memory', 1); }); });
+    RELWIN.forEach(function (r) { if (RUNT0[r[3]] <= tk) add(r[0], r[2], relKind(r[1]), .8); });   // a rel row laid inside this history's window appears with its run
+    // the rel rows laid before the window are there from its start: their lines depend only on which points exist and the space switch, so they are built once per change of that and merged in (1.2 million rows a step otherwise)
+    var mapOn = $('mapall').checked && MAPL, ck = Object.keys(NODE).length + '|' + spaceOn;
+    if (RELCACHE.key !== ck) { var sagg = {}; RELSTATIC.forEach(function (r) { var a = String(r[0]), b = String(r[2]); if (a === b || !NODE[a] || !NODE[b]) return; if (!spaceOn && (a === String(G.space) || b === String(G.space))) return; var kind = relKind(r[1]), id = kind + '|' + (a < b ? a + '|' + b : b + '|' + a); if (!sagg[id]) sagg[id] = [a, b, kind, .8, 0]; sagg[id][4]++; }); RELCACHE = { key: ck, agg: sagg }; }
+    var sg = RELCACHE.agg; for (var sid in sg) { if (agg[sid]) agg[sid][4] += sg[sid][4]; else agg[sid] = mapOn ? sg[sid].slice() : sg[sid]; }
+    if ($('mapall').checked && MAPL) MAPL.forEach(function (l) { var a = SYM[l[0]] !== undefined ? String(SYM[l[0]]) : null, b = SYM[l[2]] !== undefined ? String(SYM[l[2]]) : null; if (!a && !b) return; add(a || 'g:' + l[0], b || 'g:' + l[2], l[1], .8); });
+    var lines = Object.keys(agg).map(function (id) { return agg[id]; }), count = {};
+    lines.forEach(function (l) { count[l[2]] = (count[l[2]] || 0) + 1; });
+    Object.keys(RELSET).forEach(function (k) { var c = $('rc-' + k.replace(/[^a-z0-9]/gi, '_')); if (c) c.textContent = fmtN(count[k] || 0); });
+    var vis = function (k) { var n = NODE[k]; return n && (!hasGL || n.mesh.visible); };
+    // the pull law: the kind's pull (its slider), times the line's trust, times how much of that kind the brain holds; a row laid again pulls harder
+    SPRINGS = lines.filter(function (l) { return RELSET[l[2]] && RELSET[l[2]].on && vis(l[0]) && vis(l[1]); }).map(function (l) {
+      return { a: NODE[l[0]], b: NODE[l[1]], k: RELSET[l[2]].w * l[3] * (.5 + .5 * Math.min(1, count[l[2]] / 40)) * (1 + Math.log(l[4])), rest: REST[l[2]] || 30, kind: l[2], names: [l[0], l[1]], dir: RELSET[l[2]].dir === 'across' ? 'across' : RELSET[l[2]].dir === 'shared' ? 'shared' : dirVec(RELSET[l[2]].dir) }; });
+    placeNew();
+    ALLLINES = lines;
+    return lines;
+  }
+  var MADEOF = {};
+  function placeNew() {
+    var nb = {}; SPRINGS.forEach(function (sp) { (nb[sp.names[0]] = nb[sp.names[0]] || []).push(sp.b); (nb[sp.names[1]] = nb[sp.names[1]] || []).push(sp.a); });
+    for (var pass = 0; pass < 4; pass++) Object.keys(NODE).forEach(function (k) {
+      var n = NODE[k]; if (!n.unplaced) return; var placed = (nb[k] || []).filter(function (m) { return !m.unplaced; }); if (!placed.length && pass < 3) return;
+      var c = new THREE.Vector3(); placed.forEach(function (m) { c.add(m.pos); }); if (placed.length) c.multiplyScalar(1 / placed.length);
+      n.pos.copy(c.add(unit('u' + k).multiplyScalar(placed.length ? 4 : 1))); n.unplaced = false;
+    });
+  }
+  var STEP = 0, LASTMOVE = 0;
+  var _F = null, _D = null, _M = null, _FL = null, _apartMs = 0;
+  function settle(steps) {
+    // springs only: no push between points, no pull toward any shell (owner, 2026-10-23). heard alone is fixed.
+    // the same sums in three scratch vectors: a new vector per term over 365,737 springs took 58 s for 30 steps (2026-11-01)
+    if (!_F) { _F = new THREE.Vector3(); _D = new THREE.Vector3(); _M = new THREE.Vector3(); }
+    _apartMs = 0;
+    for (var s = 0; s < steps; s++) {
+      STEP++;
+      var n = SPRINGS.length, i, sp;
+      for (i = 0; i < n; i++) { sp = SPRINGS[i]; sp.a.f = sp.a.f || new THREE.Vector3(); sp.b.f = sp.b.f || new THREE.Vector3(); sp.a.f.set(0, 0, 0); sp.b.f.set(0, 0, 0); }
+      var SHARED = {}; for (i = 0; i < n; i++) { sp = SPRINGS[i]; if (sp.dir !== 'shared') continue; var sv = SHARED[sp.kind] || (SHARED[sp.kind] = { v: new THREE.Vector3(), n: 0 }); sv.v.add(sp.b.pos).sub(sp.a.pos); sv.n++; } for (var sk in SHARED) SHARED[sk].v.multiplyScalar(1 / SHARED[sk].n);   // the kind's own vector: the mean displacement of its pairs; every pair is pulled to it (a:b as c:d)
+      for (i = 0; i < n; i++) { sp = SPRINGS[i];
+        if (sp.dir === 'across') {
+          _M.copy(sp.b.pos).negate().sub(sp.a.pos).multiplyScalar(sp.k * ACROSS); if (!sp.a.fixed) sp.a.f.add(_M);
+          _M.copy(sp.a.pos).negate().sub(sp.b.pos).multiplyScalar(sp.k * ACROSS); if (!sp.b.fixed) sp.b.f.add(_M);
+          _D.copy(sp.b.pos).sub(sp.a.pos); var L0 = _D.length() || .01; _F.copy(_D).multiplyScalar(sp.k * (L0 - sp.rest) / L0 * .04);
+        } else if (sp.dir === 'shared') {
+          _F.copy(sp.a.pos).add(SHARED[sp.kind].v).sub(sp.b.pos).multiplyScalar(-sp.k * .04);
+        } else if (sp.dir) {
+          _F.copy(sp.a.pos).addScaledVector(sp.dir, sp.rest).sub(sp.b.pos).multiplyScalar(-sp.k * .04);
+        } else { _D.copy(sp.b.pos).sub(sp.a.pos); var L = _D.length() || .01; _F.copy(_D).multiplyScalar(sp.k * (L - sp.rest) / L * .04); }
+        if (!sp.a.fixed) sp.a.f.add(_F); if (!sp.b.fixed) sp.b.f.sub(_F);
+      }
+      // one scale for every point's step, never a cap per point (17.3): a cap per point breaks the balance of paired pulls
+      if (!_FL || _FL.length < 2 * n) _FL = new Float64Array(2 * n);
+      var fl = _FL.subarray(0, 2 * n); for (i = 0; i < n; i++) { sp = SPRINGS[i]; fl[2 * i] = sp.a.f.length(); fl[2 * i + 1] = sp.b.f.length(); } fl.sort();
+      var p95 = fl.length ? fl[Math.floor(fl.length * .95)] : 0, sc = p95 > 4 ? 4 / p95 : 1;
+      var mv = 0; for (i = 0; i < n; i++) { sp = SPRINGS[i]; for (var w = 0; w < 2; w++) { var nd = w ? sp.b : sp.a; if (nd.fixed || nd.moved === STEP) continue; nd.moved = STEP; _M.copy(nd.f).multiplyScalar(sc); var ml = _M.length(); if (ml > 6) { _M.setLength(6); ml = 6; } nd.pos.add(_M); if (ml > mv) mv = ml; } } LASTMOVE = mv;
+      var _ta = performance.now(); if (GAP > 0) for (var cp = 0; cp < PASSES; cp++) spaceApart(); _apartMs += performance.now() - _ta;
+    }
+  }
+  var GAP = 15, ACROSS = .25, PASSES = 3;
+  function spaceApart() {
+    var pts = Object.keys(NODE).map(function (k) { return NODE[k]; }).filter(function (n) { return !hasGL || n.mesh.visible; }), cell = {}, g = GAP;
+    pts.forEach(function (n) { var k = Math.floor(n.pos.x / g) + ',' + Math.floor(n.pos.y / g) + ',' + Math.floor(n.pos.z / g); (cell[k] = cell[k] || []).push(n); });
+    pts.forEach(function (n) {
+      var cx = Math.floor(n.pos.x / g), cy = Math.floor(n.pos.y / g), cz = Math.floor(n.pos.z / g);
+      for (var i = -1; i <= 1; i++) for (var j = -1; j <= 1; j++) for (var k = -1; k <= 1; k++) (cell[(cx + i) + ',' + (cy + j) + ',' + (cz + k)] || []).forEach(function (o) {
+        if (o === n || n.fixed || o.fixed) return;
+        _D.copy(n.pos).sub(o.pos); var L = _D.length();
+        if (L >= g) return;
+        if (L < 1e-6) { _D.copy(unit('s' + n.key + '|' + o.key)); L = 1e-6; }
+        _D.normalize().multiplyScalar((g - L) / 2);
+        n.pos.add(_D); o.pos.sub(_D);
+      });
+    });
+  }
+  var reshapeLeft = 0; function reshape() { if (!hasGL) return; settle(40); reshapeLeft = 90; }
+  function drawLines(group, segs) { while (group.children.length) { var c = group.children.pop(); c.geometry.dispose(); c.material.dispose(); } Object.keys(segs).forEach(function (key) { var sg = segs[key]; if (!sg.pts.length) return; group.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(sg.pts), new THREE.LineBasicMaterial({ color: sg.color, transparent: true, opacity: sg.opacity }))); }); }
+  function composition(lines) {
+    var adj = {}; function add(r, a, b) { adj[r] = adj[r] || {}; (adj[r][a] = adj[r][a] || {})[b] = 1; }
+    lines.forEach(function (l) { if (!RELSET[l[2]] || !RELSET[l[2]].on || l[2].indexOf('dna') === 0 || l[2] === 'memory' || l[2] === 'made-of' || l[2] === 'answered' || l[2] === 'definition') return; add(l[2], l[0], l[1]); if (l[2] === 'alike' || l[2] === 'opposite') add(l[2], l[1], l[0]); });
+    var rels = Object.keys(adj), out = [];
+    rels.forEach(function (r1) { rels.forEach(function (r2) { var n = 0, back = 0, hit = {}; Object.keys(adj[r1]).forEach(function (a) { Object.keys(adj[r1][a]).forEach(function (b) { var m2 = adj[r2][b]; if (!m2) return; Object.keys(m2).forEach(function (c) { if (c === a) { back++; return; } n++; rels.forEach(function (r3) { if (adj[r3][a] && adj[r3][a][c]) hit[r3] = (hit[r3] || 0) + 1; }); }); }); }); if (n || back) { var best = Object.keys(hit).sort(function (x, y) { return hit[y] - hit[x]; })[0]; out.push([r1, r2, n, back, best || null, best ? hit[best] : 0]); } }); });
+    var h = '<tr><th>R1 then R2</th><th>paths</th><th>back</th><th>lands on</th></tr>';
+    out.sort(function (a, b) { return b[2] - a[2]; }).slice(0, 10).forEach(function (r) { h += '<tr><td><span style="color:' + hexOf(r[0]) + '">' + esc(r[0]) + '</span> then <span style="color:' + hexOf(r[1]) + '">' + esc(r[1]) + '</span></td><td>' + r[2] + '</td><td>' + r[3] + '</td><td>' + (r[4] ? '<span style="color:' + hexOf(r[4]) + '">' + esc(r[4]) + '</span> ' + (r[2] ? Math.round(100 * r[5] / r[2]) + '%' : '') : '<span class="f">none</span>') + '</td></tr>'; });
+    $('comp').innerHTML = out.length ? h : '<tr><td class="f">No two relationship lines join yet.</td></tr>';
+  }
+
+  // ---- the view at a hit of the history (17.3's viewAt, from the receipt table): what the brain held then, and the hop being stepped
+  function route(idx) { var out = [], skipSpace = !$('runspace').checked; idx.forEach(function (i) { var g = HIST[i][2]; if (skipSpace && g === G.space) return; var k = String(g); if (k !== out[out.length - 1]) out.push(k); }); return out; }
+  var relSegs = {}, runPaths = [], flashPts = [], flashPts2 = [];
+  function hopIndex(tk) { var h = HIST[tk]; if (!h) return -1; var hs = RUNHOPS[h[1]] || []; for (var i = 0; i < hs.length; i++) if (hs[i] === tk) return i; return -1; }
+  function hopText(tk) {
+    var h = HIST[tk]; if (!h) return '';
+    var hs = RUNHOPS[h[1]] || [], i = hopIndex(tk), row = SHARDROW[h[3]];
+    var s = 'hit ' + tk + ' of ' + (HIST.length - 1) + ' · run ' + h[1] + ', hop ' + i + ' of ' + (hs.length - 1) + ' · ' + nameOf(h[2]) + ' (gate ' + h[2] + ') · shard ' + h[3];
+    if (row) s += ' · before ' + (row[2] === null ? '∅' : nameOf(row[2])) + ', trigger ' + (row[3] === null ? (i >= hs.length - 1 ? '∅ (the run ends here)' : '∅ (row 0: excited, not arrived at along the line)') : nameOf(row[3])) + (row[4] !== null ? ' · calls run ' + row[4] : '') + (row[5] !== null ? ' · spawns run ' + row[5] : '') + ' · times ' + row[6];
+    else s += ' · (that shard is not in any DNA table now)';
+    if (h[2] === G.BUILD) s += ' · a BUILD gate';
+    return s;
+  }
+  function memRowsWanted() {
+    var all = $('memall').checked;
+    if (all) return q('SELECT run, gate, shard, input FROM main.run_memory ORDER BY run');
+    if (CUR.root === null) return Promise.resolve([]);
+    return q('SELECT m.run, m.gate, m.shard, m.input FROM main.run_memory m JOIN main.run r ON r.id = m.run WHERE r.root = ? OR r.id = ? ORDER BY m.run', [CUR.root, CUR.root]);
+  }
+  var memKey = null;
+  function refreshMem(then) { var key = ($('memall').checked ? 'all' : 'root:' + CUR.root) + ':' + COUNTS.memory; if (key === memKey) { then(); return; } memRowsWanted().then(function (rows) { MEMROWS = rows; memKey = key; then(); }).catch(function () { then(); }); }
+  function present(g, tk) { return g <= CORE || (FIRSTG[g] !== undefined && FIRSTG[g] <= tk) || (DEFSEEN[g] !== undefined && DEFSEEN[g] <= tk); }
+  var TIMES = {}, compT = null;
+  function scheduleComposition(lines) { if (compT) clearTimeout(compT); compT = setTimeout(function () { compT = null; composition(lines); }, 250); }   // the side panel's table, after the step, not inside it
+  function render(tk, keep) {
+    if (!ready) return;
+    if (tk === undefined || tk === null || tk < 0) tk = -1; if (tk > HIST.length - 1) tk = HIST.length - 1;
+    TK = tk; var h = tk >= 0 ? HIST[tk] : null;
+    var runNow = h ? h[1] : null; if (runNow !== CUR.run) { CUR.run = runNow; var R = RUNS[runNow]; CUR.root = R ? (R.root === null ? runNow : R.root) : null; renderTree(); if (!playing) renderRun(); else runStale = true; }
+    if (hasGL) {
+      var spaceOn = $('spacept').checked, gl = $('ghostlabels').checked, mapOn = $('mapall').checked && MAPL, atTk = tk < 0 ? -1 : tk;
+      var _t0 = performance.now(); LABLIST.forEach(function (g) { var k = String(g); if ((g === G.space && !spaceOn) || !present(g, atTk)) { hideNode(k); return; } var n = ensureNode(k); n.mesh.visible = true; if (n.label) n.label.visible = true; });
+      var memSeen = {}; if (RELSET.memory.on) MEMROWS.forEach(function (m) { if (RUNT1[m[0]] === undefined || RUNT1[m[0]] > atTk) return; var k = 'm:' + m[0]; memSeen[k] = 1; var n = ensureNode(k); n.mesh.visible = true; });
+      var ghostSeen = {}; if (mapOn) MAPL.forEach(function (l) { var a = SYM[l[0]] !== undefined && present(SYM[l[0]], atTk), b = SYM[l[2]] !== undefined && present(SYM[l[2]], atTk); if (!a && !b) return; if (!a) ghostSeen['g:' + l[0]] = 1; if (!b) ghostSeen['g:' + l[2]] = 1; });
+      Object.keys(ghostSeen).forEach(function (k) { var n = ensureNode(k); n.mesh.visible = true; if (n.label) n.label.visible = gl; });
+      Object.keys(NODE).forEach(function (k) { if ((k.charAt(0) === 'm' && !memSeen[k]) || (k.charAt(0) === 'g' && !ghostSeen[k])) hideNode(k); });
+      var _t1 = performance.now(); var lines = buildSprings(atTk); var _t2 = performance.now(); scheduleComposition(lines);
+      if (!keep) settle(30); var _t3 = performance.now();
+      var segs = {}; SPRINGS.forEach(function (sp) { if (!segs[sp.kind]) segs[sp.kind] = { pts: [], color: REL_COL[sp.kind] || 0x9aa3ad, opacity: sp.kind === 'memory' ? .1 : .22 }; segs[sp.kind].pts.push(sp.a.pos, sp.b.pos); });
+      relSegs = segs; TIMES = { present: Math.round(_t1 - _t0), springs: Math.round(_t2 - _t1), settle: Math.round(_t3 - _t2), segs: Math.round(performance.now() - _t3), apart: Math.round(_apartMs), nsprings: SPRINGS.length, nlines: lines.length, npoints: Object.keys(NODE).length };
+      runPaths = []; var mode = $('runmode').value;
+      if (mode !== 'none' && h) {
+        var seen = {};
+        var addPath = function (rid, upto) { var hs = RUNHOPS[rid] || [], idx = []; for (var i = 0; i < hs.length && hs[i] <= upto; i++) idx.push(hs[i]); var ks = route(idx).filter(function (k) { return NODE[k] && NODE[k].mesh.visible; }); if (ks.length < 2) return; runPaths.push({ rid: rid, nodes: ks.map(function (k) { return NODE[k]; }), branch: RUNS[rid] && RUNS[rid].kind !== 0, cur: rid === runNow }); seen[rid] = 1; };
+        addPath(runNow, tk);
+        if (mode === 'line' && CUR.root !== null) runsOfRoot(CUR.root).forEach(function (r) { if (!seen[r.id] && RUNT0[r.id] !== undefined && RUNT0[r.id] <= tk) addPath(r.id, tk); });
+      }
+      Object.keys(NODE).forEach(function (k) { if (NODE[k].mesh) NODE[k].mesh.userData.hot = false; });
+      flashPts = []; flashPts2 = [];
+      if (h && NODE[String(h[2])] && NODE[String(h[2])].mesh.visible) { var hn = NODE[String(h[2])]; hn.mesh.userData.hot = true; var row = SHARDROW[h[3]]; if (row) { if (row[3] !== null && NODE[String(row[3])] && NODE[String(row[3])].mesh.visible) flashPts.push([hn, NODE[String(row[3])]]); [row[4], row[5]].forEach(function (rr) { if (rr !== null && FIRST[rr] !== undefined && NODE[String(FIRST[rr])] && NODE[String(FIRST[rr])].mesh.visible) flashPts2.push([hn, NODE[String(FIRST[rr])]]); }); } }
+      if (SELG !== null && NODE[String(SELG)] && NODE[String(SELG)].mesh.visible) NODE[String(SELG)].mesh.userData.hot = true;
+    }
+    var hs = h ? (RUNHOPS[h[1]] || []) : [], hi = h ? hopIndex(tk) : -1;
+    $('readout').textContent = h ? 'hop ' + hi + ' of ' + (hs.length - 1) + ' in run ' + h[1] : 'hop 0 of 0';
+    $('time').max = Math.max(0, hs.length - 1); $('time').value = Math.max(0, hi);
+    $('hist').max = Math.max(0, HIST.length - 1); $('hist').value = Math.max(0, tk);
+    $('histout').textContent = HIST.length ? 'hit ' + Math.max(0, tk) + ' of ' + (HIST.length - 1) + (tk < 0 ? ': before the first line, the hand-laid core alone' : tk === HIST.length - 1 ? ': the brain as it stands now' : '') : 'hit 0 of 0';
+    if (h) { var ht = hopText(tk); $('now').innerHTML = '<span class="k">receipt row ' + h[0] + '</span><span>' + esc(ht) + '</span>'; $('hud').innerHTML = '<b>run ' + h[1] + ' · ' + esc(RUNS[h[1]] ? KINDNAME[RUNS[h[1]].kind] + ' from ' + nameOf(RUNS[h[1]].arrival) : '') + (lineOf(h[1]) ? ' · ' + esc(lineOf(h[1]).slice(0, 70)) : '') + '</b><span class="ev">' + esc(ht) + '</span>'; }
+    else { $('now').innerHTML = '<span class="k">this hop</span><span>' + (HIST.length ? 'Before the first hit: the hand-laid core alone. Press play.' : 'No run yet. Type a line.') + '</span>'; $('hud').innerHTML = '<b>' + esc(COUNTS.label ? fmtN(COUNTS.label) + ' gates, ' + fmtN(COUNTS.shards) + ' shards, ' + fmtN(COUNTS.run) + ' runs, ' + fmtN(COUNTS.rel) + ' relationship rows' : 'reading the brain') + '</b>'; }
+    renderLog(tk);
+  }
+  var fitLeft = 0, SP = 21, axesGroup = hasGL ? new THREE.Group() : null, axesL = 0, axesSP = 0; if (hasGL) scene.add(axesGroup);
+  function drawAxes(force) {
+    if (!hasGL) return;
+    var on = $('axes').checked; axesGroup.visible = on; if (!on) return;
+    var r = 30; Object.keys(NODE).forEach(function (k) { var n = NODE[k]; if (n.mesh && n.mesh.visible) r = Math.max(r, n.pos.length()); });
+    var L = Math.ceil(r * 1.1 / 10) * 10;
+    if (!force && L === axesL && SP === axesSP) return; axesL = L; axesSP = SP;
+    while (axesGroup.children.length) { var c = axesGroup.children.pop(); if (c.geometry) c.geometry.dispose(); if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } }
+    [[0, 0xd9725f, 'x'], [1, 0x8fcf8f, 'y'], [2, 0x7fa8e0, 'z']].forEach(function (ax) {
+      var pts = [], i = ax[0], e = function (v) { var p = new THREE.Vector3(); p.setComponent(i, v * SP); return p; };
+      pts.push(e(-L), e(L));
+      for (var t = -L; t <= L; t += 10) { if (t === 0) continue; var a = e(t), b = e(t), d = 1.2 * SP, o = (i + 1) % 3; a.setComponent(o, -d); b.setComponent(o, d); pts.push(a, b); }
+      var line = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: ax[1], transparent: true, opacity: .28, depthTest: false })); line.renderOrder = 999; axesGroup.add(line);
+      var col = '#' + ('000000' + ax[1].toString(16)).slice(-6);
+      [['+' + ax[2], L], ['-' + ax[2], -L]].forEach(function (lb) { var s = makeLabel(lb[0], col, 14, true); s.material.opacity = .6; s.position.copy(e(lb[1] * 1.05)); s.renderOrder = 999; axesGroup.add(s); });
+      for (var u = -L + 10; u < L; u += 10) { if (u === 0) continue; var s2 = makeLabel(String(u), col, 10, true); s2.material.opacity = .5; s2.position.copy(e(u)); s2.renderOrder = 999; axesGroup.add(s2); }
+    });
+  }
+  function redrawLines() {
+    if (!hasGL) return;
+    var rs = {}; Object.keys(relSegs).forEach(function (k) { rs[k] = { pts: relSegs[k].pts.map(function (p) { return p.clone().multiplyScalar(SP); }), color: relSegs[k].color, opacity: relSegs[k].opacity }; }); drawLines(relGroup, rs);
+    while (runGroup.children.length) { var c = runGroup.children.pop(); c.geometry.dispose(); c.material.dispose(); }
+    runPaths.forEach(function (rp) { var line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(rp.nodes.map(function (n) { return n.pos.clone().multiplyScalar(SP).add(unit('j' + rp.rid).multiplyScalar(1.2)); })), new THREE.LineBasicMaterial({ color: rp.branch ? 0xf28c4b : 0xf2efe6, transparent: true, opacity: rp.cur ? 1 : .3 })); line.userData.run = rp.rid; runGroup.add(line); });
+    var fp = []; flashPts.forEach(function (p) { fp.push(p[0].pos.clone().multiplyScalar(SP), p[1].pos.clone().multiplyScalar(SP)); }); flashGeo.dispose(); flashGeo = new THREE.BufferGeometry().setFromPoints(fp); flash.geometry = flashGeo; flash.visible = fp.length > 0;
+    var fp2 = []; flashPts2.forEach(function (p) { fp2.push(p[0].pos.clone().multiplyScalar(SP), p[1].pos.clone().multiplyScalar(SP)); }); flashGeo2.dispose(); flashGeo2 = new THREE.BufferGeometry().setFromPoints(fp2); flash2.geometry = flashGeo2; flash2.visible = fp2.length > 0;
+  }
+
+  // ---- the hop log (the receipt of the run being stepped)
+  function renderLog(tk) {
+    var log = $('log'), h = HIST[tk]; if (!h) { log.innerHTML = '<div><span class="note">No run chosen.</span></div>'; return; }
+    var hs = RUNHOPS[h[1]] || [], hi = hopIndex(tk), a = Math.max(0, hi - 30), b = Math.min(hs.length - 1, hi + 30), out = '';
+    for (var i = a; i <= b; i++) { var e = HIST[hs[i]], row = SHARDROW[e[3]]; out += '<div class="' + (i === hi ? 'cur' : '') + '" data-t="' + hs[i] + '"><span class="t">' + i + '</span><span class="k">' + esc(nameOf(e[2])) + '</span><span>shard ' + e[3] + (row ? ': ' + esc(row[2] === null ? '∅' : nameOf(row[2])) + ' → ' + esc(row[3] === null ? '\u2205' : nameOf(row[3])) + (row[4] !== null ? ', calls ' + row[4] : '') + (row[5] !== null ? ', spawns ' + row[5] : '') + ' ×' + row[6] : '') + '</span></div>'; }
+    log.innerHTML = out; var cur = log.querySelector('.cur'); if (cur) log.scrollTop = cur.offsetTop - log.clientHeight / 2 + cur.offsetHeight / 2;
+  }
+  $('log').addEventListener('click', function (e) { var d = e.target.closest('[data-t]'); if (d) { setPlay(false); render(parseInt(d.getAttribute('data-t'), 10), true); } });
+
+  // ---- choosing a run: the history goes to its first hop (or the hop given)
+  function runsOfRoot(root) { return RUNLIST.filter(function (r) { return r.root === root || r.id === root; }); }
+  function depthOf(id) { var d = 0, r = RUNS[id]; while (r && r.parent !== null && RUNS[r.parent] && d < 40) { d++; r = RUNS[r.parent]; } return d; }
+  function chooseRun(id, hop, then) {
+    var R = RUNS[id]; if (!R) return; var hs = RUNHOPS[id] || [];
+    CUR.run = id; CUR.root = R.root === null ? id : R.root;
+    refreshMem(function () { renderTree(); renderRun(); render(hs.length ? hs[Math.min(hs.length - 1, hop || 0)] : TK, true); if (then) then(); });
+  }
+  function renderTree() {
+    var el = $('tree'); if (CUR.root === null) { el.innerHTML = '<div><span class="note">No line chosen.</span></div>'; $('treesum').textContent = ''; return; }
+    var kind = $('treekind').value, runs = runsOfRoot(CUR.root);
+    var draw = function () { var h = '', shown = 0; runs.forEach(function (r) { if (kind !== 'all' && String(r.kind) !== kind) return; if (shown++ > 600) return; h += '<div class="' + (r.id === CUR.run ? 'last' : '') + '" data-run="' + r.id + '" style="padding-left:' + (7 + 10 * Math.min(6, depthOf(r.id))) + 'px"><span>' + r.id + '</span><span>' + esc(KINDNAME[r.kind]) + ' from ' + esc(nameOf(r.arrival)) + (r.cell !== null ? ' → cell ' + esc(nameOf(r.cell)) : '') + (r.about !== null ? ' about ' + esc(nameOf(r.about)) : '') + (lineOf(r.id) ? ': ' + esc(lineOf(r.id).slice(0, 48)) : '') + '</span><span class="m">' + (HOPCOUNT[r.id] ? fmtN(HOPCOUNT[r.id]) + ' hops' : '') + '</span></div>'; }); el.innerHTML = h || '<div><span class="note">No run of that kind.</span></div>'; var cur = el.querySelector('.last'); if (cur) el.scrollTop = cur.offsetTop - el.clientHeight / 2; };
+    draw();
+    var counts = {}; runs.forEach(function (r) { counts[r.kind] = (counts[r.kind] || 0) + 1; });
+    $('treesum').textContent = runs.length + ' runs under root ' + CUR.root + ' (' + Object.keys(counts).map(function (k) { return counts[k] + ' ' + KINDNAME[k].replace(/^a /, '') + (counts[k] > 1 ? 's' : ''); }).join(', ') + ')';
+    var root = CUR.root; decodeMany(runs.slice(0, 200).map(function (r) { return r.id; })).then(function () { if (CUR.root === root) draw(); });
+  }
+  $('tree').addEventListener('click', function (e) { var d = e.target.closest('[data-run]'); if (d) { setPlay(false); chooseRun(parseInt(d.getAttribute('data-run'), 10), 0); } });
+  $('treekind').addEventListener('change', renderTree);
+
+  // ---- a cell, read back through the encoder: what the page shows for a run_sheet value
+  function isPointer(cell, v) { return POINTERS[cell] && v !== null && /^\d+$/.test(String(v)) && +v > 0 && RUNS[+v]; }
+  function cellHTML(cell, v, state) {
+    var name = LAB[cell] || ('#' + cell);
+    if (state === 0 || v === null) return '<span class="e">∅ empty</span>';
+    if (isPointer(cell, v)) { var R = RUNS[+v]; return '<span data-run="' + v + '" style="cursor:pointer;text-decoration:underline">run ' + v + '</span> <span class="f">from ' + esc(nameOf(R.arrival)) + ':</span> ' + replyHTML(lineOf(+v)); }
+    if (cell === G.me || cell === G.above) return '<span data-run="' + esc(v) + '" style="cursor:pointer;text-decoration:underline">run ' + esc(v) + '</span>';
+    if (cell === G.shape && /^\d+$/.test(String(v)) && +v > 0) return '<span data-run="' + esc(v) + '" style="cursor:pointer;text-decoration:underline">run ' + esc(v) + '</span> <span class="f">a formula used before</span>' + (lineOf(+v) ? ': ' + esc(lineOf(+v).slice(0, 60)) : '');
+    if (name === 'known' || name === 'unknown') { var gs = String(v).trim().split(/\s+/).filter(Boolean); if (!gs.length) return '<span class="f">none</span>'; return gs.map(function (g) { return '<span data-gate="' + g + '" style="cursor:pointer">' + esc(nameOf(+g)) + '</span>'; }).join(', ') + ' <span class="f">(' + gs.length + ')</span>'; }
+    if (/^\d+$/.test(String(v)) && LAB[+v] !== undefined && cell !== G.know) return '<span data-gate="' + esc(v) + '" style="cursor:pointer">' + esc(nameOf(+v)) + '</span> <span class="f">gate ' + esc(v) + '</span>';
+    return esc(v);
+  }
+  function replyHTML(text) {
+    if (text === null || text === undefined) return '<span class="f">(not read yet)</span>';
+    if (text.indexOf('\n') < 0 && text.indexOf(' | ') < 0) return esc(text.length > 400 ? text.slice(0, 400) + '…' : text);
+    var rows = text.split('\n').slice(0, 80), h = '<table class="cells" style="margin-top:3px">';
+    rows.forEach(function (r) { h += '<tr>' + r.split(' | ').map(function (c) { return '<td>' + (c === '' ? '<span class="f">∅</span>' : /^\d+$/.test(c) && LAB[+c] !== undefined ? esc(c) + ' <span class="f">' + esc(nameOf(+c)) + '</span>' : esc(c.length > 160 ? c.slice(0, 160) + '…' : c)) + '</td>'; }).join('') + '</tr>'; });
+    return h + '</table>' + (text.split('\n').length > 80 ? '<span class="f">… ' + text.split('\n').length + ' rows</span>' : '');
+  }
+  function cellsTable(rows) { return '<tr><th>cell</th><th>value, read back</th></tr>' + rows.map(function (c) { return '<tr><td' + (c[1] === 0 ? ' class="e"' : '') + '>' + esc(nameOf(c[0])) + ' <span class="f">' + c[0] + '</span></td><td>' + cellHTML(c[0], c[2], c[1]) + '</td></tr>'; }).join(''); }
+  function pointerRuns(rows) { var out = []; rows.forEach(function (c) { if (isPointer(c[0], c[2])) out.push(+c[2]); if ((c[0] === G.shape) && /^\d+$/.test(String(c[2])) && +c[2] > 0) out.push(+c[2]); }); return out; }
+
+  // ---- the run tab: the run row, its sheet, what went between the BUILDs and what came back, the gaps, the sources, the memory row
+  function renderRun() {
+    var id = CUR.run, R = RUNS[id]; if (!R) { $('runhead').innerHTML = '<span class="m">No run chosen.</span>'; return; }
+    decodeRun(id).then(function (text) {
+      var h = '<b>run ' + id + '</b><span class="m">' + esc(KINDNAME[R.kind]) + ' arriving from ' + esc(nameOf(R.arrival)) + (R.parent !== null ? ' · under run ' + R.parent : ' · a root') + ' · root ' + R.root + ' · at ' + R.at + (R.cell !== null ? ' · fills cell ' + esc(nameOf(R.cell)) : '') + (R.about !== null ? ' · about ' + esc(nameOf(R.about)) : '') + (HOPCOUNT[id] ? ' · ' + fmtN(HOPCOUNT[id]) + ' hops' : '') + '</span>';
+      h += '<span class="mono">' + esc(text.slice(0, 600)) + (text.length > 600 ? ' … (' + fmtN(text.length) + ' characters)' : '') + '</span>';
+      var kids = CHILDREN[id] || []; if (kids.length) h += '<span class="m">' + kids.length + (kids.length === 1 ? ' run under it' : ' runs under it') + ': ' + kids.slice(0, 14).map(function (k) { return '<span data-run="' + k + '" style="cursor:pointer;text-decoration:underline">' + k + '</span>'; }).join(', ') + (kids.length > 14 ? ' …' : '') + '</span>';
+      $('runhead').innerHTML = h;
+    });
+    var draw = function (rows) {
+      var ptrs = pointerRuns(rows);
+      decodeMany(ptrs).then(function () { $('cells').innerHTML = rows.length ? cellsTable(rows) : '<tr><td class="f">Run ' + id + ' has no cells.</td></tr>'; });
+      // between the BUILDs: the gates between two BUILD hits in this run's receipt, the holes filled from the sheets of this run, its parent and grandparent
+      var fills = {}; var chain = [id, R.parent, R.parent !== null && RUNS[R.parent] ? RUNS[R.parent].parent : null].filter(function (x) { return x !== null && x !== undefined; });
+      Promise.all(chain.map(function (r) { return SHEET[r] ? Promise.resolve(SHEET[r]) : q('SELECT cell, state, value FROM main.run_sheet WHERE run = ? ORDER BY cell', [r]).then(function (rr) { SHEET[r] = rr; return rr; }); })).then(function (sheets) {
+        sheets.forEach(function (sh) { sh.forEach(function (c) { if (c[1] === 1 && fills[c[0]] === undefined) fills[c[0]] = c[2]; }); });
+        var builds = [], hops = (RUNHOPS[id] || []).map(function (i) { return HIST[i]; }), open = -1;
+        hops.forEach(function (hp, i) { if (hp[2] !== G.BUILD) return; if (open < 0) open = i; else { builds.push(hops.slice(open + 1, i).map(function (x) { return fills[x[2]] !== undefined ? String(fills[x[2]]) : (LAB[x[2]] !== undefined ? LAB[x[2]] : '#' + x[2]); }).join('')); open = -1; } });
+        var replies = (CHILDREN[id] || []).filter(function (k) { return RUNS[k].kind === 3 && RUNS[k].arrival === G.mother; });
+        decodeMany(replies).then(function () {
+          var hb = ''; builds.forEach(function (t2, k) { hb += '<div class="gap" style="border-left-color:var(--accent)"><div class="q">' + esc(t2.trim().slice(0, 1200)) + (t2.length > 1200 ? ' …' : '') + '</div><div class="who">' + (replies[k] !== undefined ? 'mother answered in run <span data-run="' + replies[k] + '" style="cursor:pointer;text-decoration:underline">' + replies[k] + '</span>: ' : 'no answer run for this pair') + '</div>' + (replies[k] !== undefined ? '<div class="mono">' + replyHTML(lineOf(replies[k])) + '</div>' : '') + '</div>'; });
+          $('builds').innerHTML = hb || '<span class="note">' + (hops.length ? 'No pair of BUILD gates in this run\'s receipt.' : 'Nothing yet.') + '</span>';
+        });
+      });
+      var empty = rows.filter(function (c) { return c[1] === 0; });
+      $('gaps').innerHTML = empty.length ? empty.map(function (c) { return '<div class="gap"><div>' + esc(nameOf(c[0])) + ' <span class="who">cell ' + c[0] + '</span></div><div class="who">declared, never filled: the run does not complete; the sixth is told and asks why</div></div>'; }).join('') : '<span class="note">' + (rows.length ? 'Every declared cell is filled.' : 'No cells.') + '</span>';
+    };
+    if (SHEET[id]) draw(SHEET[id]); else q('SELECT cell, state, value FROM main.run_sheet WHERE run = ? ORDER BY cell', [id]).then(function (rows) { SHEET[id] = rows; if (CUR.run === id) draw(rows); }).catch(function (e) { $('cells').innerHTML = '<tr><td class="e">' + esc(e.message) + '</td></tr>'; });
+    // the sources, as this run heard them: the returns under it by arrival
+    (function () {
+      var about = null, byArr = {}; (CHILDREN[id] || []).forEach(function (k) { var K = RUNS[k]; if (K.kind === 3) { (byArr[K.arrival] = byArr[K.arrival] || []).push(k); if (K.about !== null) about = K.about; } });
+      if (about === null && !Object.keys(byArr).length) { $('sources').innerHTML = '<div><span class="m">—</span><span>this run asked no source; its returns, if any, are under the line it is part of</span><span></span></div>'; return; }
+      var h = about !== null ? '<div><span class="m">about</span><span><b>' + esc(nameOf(about)) + '</b> (gate ' + about + ')</span><span></span></div>' : '';
+      SOURCES.forEach(function (s) { var ks = byArr[s[0]] || []; h += '<div' + (ks.length ? ' data-run="' + ks[0] + '"' : '') + '><span class="m">' + esc(s[1]) + '</span><span>' + (ks.length ? ks.length + ' return' + (ks.length > 1 ? 's' : '') + ': runs ' + ks.slice(0, 8).join(', ') + (ks.length > 8 ? ' …' : '') : '<span class="m">nothing came back</span>') + '</span><span class="m">' + esc(s[2]) + '</span></div>'; });
+      if (byArr[G.mother]) h += '<div data-run="' + byArr[G.mother][0] + '"><span class="m">mother</span><span>' + byArr[G.mother].length + ' answer' + (byArr[G.mother].length > 1 ? 's' : '') + ': runs ' + byArr[G.mother].slice(0, 8).join(', ') + '</span><span class="m">the SQL prompt</span></div>';
+      $('sources').innerHTML = h;
+    })();
+    q('SELECT m.input, m.source, m.gate, m.shard, m.at, t.id, t.key1, t.key2 FROM main.run_memory m LEFT JOIN main.timeline t ON t.run = m.run WHERE m.run = ?', [id]).then(function (rows) {
+      var r = rows[0]; $('memrow').innerHTML = r ? '<span class="k">memory</span><span>on gate ' + r[2] + ' ' + esc(nameOf(r[2])) + ', shard ' + r[3] + ', at ' + r[4] + ', spoken by ' + esc(nameOf(r[1])) + '</span><span class="k">input</span><span class="mono">' + esc(String(r[0]).slice(0, 160)) + '</span><span class="k">timeline</span><span>row ' + r[5] + ' · key words ' + esc(nameOf(r[6])) + ', ' + esc(nameOf(r[7])) + '</span>' : '<span class="k">memory</span><span>this run has not ended: no memory row, no timeline row</span>';
+    });
+  }
+  ['runhead', 'cells', 'builds', 'sources', 'out', 'sel', 'defrows', 'memrows', 'jobs', 'llist', 'sixthruns'].forEach(function (id) { $(id).addEventListener('click', function (e) { var d = e.target.closest('[data-run]'); if (d && d.getAttribute('data-run')) { setPlay(false); chooseRun(parseInt(d.getAttribute('data-run'), 10), 0); if (id !== 'out') showTab('panel-step'); return; } var g = e.target.closest('[data-gate]'); if (g) { showNode(parseInt(g.getAttribute('data-gate'), 10)); showTab('panel-sel'); } }); });
+
+  // ---- what came out: the newest typed lines, each with its data sheet read back
+  var SHOWN = [];   // the runs of the lines typed in this page, newest first
+  function renderOut() {
+    var el = $('out'); if (!SHOWN.length) { el.innerHTML = '<span class="note">Nothing typed yet in this page. The newest line\'s data sheet appears here, each cell read back through the encoder.</span>'; return; }
+    var items = SHOWN.slice(0, 6);
+    Promise.all(items.map(function (it) { return it.schema === 'sixth' ? Promise.resolve([]) : (SHEET[it.run] ? Promise.resolve(SHEET[it.run]) : q('SELECT cell, state, value FROM main.run_sheet WHERE run = ? ORDER BY cell', [it.run]).then(function (rows) { SHEET[it.run] = rows; return rows; })); })).then(function (sheets) {
+      var ptrs = []; sheets.forEach(function (rows) { ptrs = ptrs.concat(pointerRuns(rows)); });
+      return decodeMany(ptrs).then(function () { return sheets; });
+    }).then(function (sheets) {
+      el.innerHTML = items.map(function (it, i) {
+        var rows = sheets[i], outs = OUTBY[it.run] || [], h = '<div class="sel" style="margin-bottom:8px"><b>' + esc(it.line.slice(0, 120)) + (it.line.length > 120 ? ' …' : '') + '</b><span class="m">' + (it.schema === 'sixth' ? 'the sixth\'s prompt' : 'the user\'s prompt') + ' · run <span data-run="' + it.run + '" style="cursor:pointer;text-decoration:underline">' + it.run + '</span>' + (it.r ? ' · ' + it.r.runs + ' runs, ' + fmtN(it.r.hits) + ' hits, ' + it.r.born + ' born, ' + it.r.seconds.toFixed(2) + ' s' + (it.r.refused ? ', <span class="e">' + it.r.refused + ' refused by SQLite</span>' : '') : '') + '</span>';
+        if (it.schema === 'sixth') { h += '<span class="m">' + (it.r && it.r.out.length ? it.r.out.map(function (o) { return esc(o[0] + ' run ' + o[1] + ' · ' + o[2] + ': ' + o[3]); }).join('<br>') : 'the sixth\'s out mailbox got nothing') + '</span>'; return h + '</div>'; }
+        if (rows.length) h += '<div class="tw"><table class="cells">' + cellsTable(rows) + '</table></div>';
+        var others = {}; (it.r ? it.r.out : []).forEach(function (o) { if (o[0] === 'main' && o[1] !== it.run) others[o[1]] = 1; });
+        var ok = Object.keys(others); if (ok.length) h += '<span class="m">also completed by this line, and said: run' + (ok.length > 1 ? 's ' : ' ') + ok.map(function (r) { return '<span data-run="' + r + '" style="cursor:pointer;text-decoration:underline">' + r + '</span>'; }).join(', ') + ' (an older run whose empty cell was filled now)</span>';
+        if (!outs.length) h += '<span class="m">' + (rows.some(function (c) { return c[1] === 0; }) ? 'not complete: a declared cell is still empty, so nothing went to the out mailbox; the sixth is told' : 'the out mailbox got nothing from this run') + '</span>';
+        return h + '</div>';
+      }).join('');
+    });
+  }
+
+  // ---- typing: a line goes through the door into the prompt's input table; the page waits, then reads the brain again
+  var LAST = null;
+  function send(line, prompt) {
+    if (!ready || busy || !line) return; busy = true; var t0 = Date.now(); prompt = prompt || $('prompt').value;
+    setBusy('the brain is running "' + line.slice(0, 80) + '"…');
+    api('/api/type', { line: line, prompt: prompt }).then(function (j) { poll(j.id, t0, line, prompt); }).catch(function (e) { busy = false; setBusy('the door refused the line: ' + e.message); });
+  }
+  function poll(id, t0, line, prompt) {
+    api('/api/job?id=' + id).then(function (j) {
+      if (!j.done) { setBusy('the brain is running "' + line.slice(0, 60) + '": ' + Math.round((Date.now() - t0) / 1000) + ' s so far. A new word the sources hold takes a few seconds: every symbol of its definitions is born.'); setTimeout(function () { poll(id, t0, line, prompt); }, 500); return; }
+      afterLine(j, line, prompt);
+    }).catch(function () { setTimeout(function () { poll(id, t0, line, prompt); }, 2000); });
+  }
+  function afterLine(j, line, prompt) {
+    loadBundle().then(function () {
+      busy = false; LAST = j; var r = j.result;
+      if (j.error || !r) { setBusy('the line stopped: ' + (j.error || 'no result')); return; }
+      SHOWN.unshift({ line: line, schema: r.schema, run: r.run, r: r });
+      setBusy('the line ran in ' + r.seconds.toFixed(2) + ' s: ' + r.runs + ' runs, ' + fmtN(r.hits) + ' hits, ' + r.born + ' born' + (r.refused ? ', ' + r.refused + ' refused by SQLite' : '') + '. ' + fmtN(COUNTS.label) + ' gates, ' + fmtN(COUNTS.shards) + ' shards in the brain now.');
+      renderAll(); renderOut(); readLines();
+      if (r.schema === 'main' && RUNS[r.run]) chooseRun(r.run, 0, function () { pickSpeed(r.hits); setPlay(true); }); else render(TK, true);
+    }).catch(function (e) { busy = false; setBusy('the line ran, but the page could not read the brain again: ' + e.message); });
+  }
+  function typeLine() { var v = $('line').value.trim(); if (!v) return; var prompt = $('prompt').value; if (v.indexOf('6> ') === 0) { prompt = 'sixth'; v = v.slice(3); } $('line').value = ''; send(v, prompt); }
+  $('run').addEventListener('click', typeLine); $('line').addEventListener('keydown', function (e) { if (e.key === 'Enter') typeLine(); });
+  // the lines files: each line clicked goes into the prompt; nothing types a file by itself
+  var LINESF = [];
+  function readLines() { return api('/api/lines').then(function (j) { LINESF = j.lines || []; renderSheets(); }).catch(function (e) { $('tsheet').innerHTML = '<div><span></span><span class="m">' + esc(e.message) + '</span><span></span></div>'; }); }
+  function renderSheets() {
+    var hide = $('hidetyped').checked;
+    ['tools', 'first'].forEach(function (which) {
+      var el = $(which === 'tools' ? 'tsheet' : 'fsheet'), h = '';
+      LINESF.filter(function (l) { return l.file === which; }).forEach(function (l, i) { if (hide && l.run) return; h += '<div data-i="' + LINESF.indexOf(l) + '" title="' + esc(l.note) + '"' + (l.run ? ' style="opacity:.6"' : '') + '><span>' + l.k + '</span><span>' + esc(l.line.length > 110 ? l.line.slice(0, 110) + '…' : l.line) + (l.note ? '<br><span class="m">' + esc(l.note.length > 150 ? l.note.slice(0, 150) + '…' : l.note) + '</span>' : '') + '</span><span class="m">' + (l.run ? 'run <span data-run="' + l.run + '">' + l.run + '</span>' : 'to the prompt') + '</span></div>'; });
+      el.innerHTML = h || '<div><span></span><span class="m">' + (which === 'tools' ? 'LINES-v6.txt not found beside the brain' : 'FIRST-RUNS-v6 not found') + '</span><span></span></div>';
+    });
+  }
+  $('hidetyped').addEventListener('change', renderSheets);
+  ['tsheet', 'fsheet'].forEach(function (id) { $(id).addEventListener('click', function (e) { var r = e.target.closest('[data-run]'); if (r) { setPlay(false); chooseRun(parseInt(r.getAttribute('data-run'), 10), 0); showTab('panel-step'); return; } var d = e.target.closest('[data-i]'); if (!d) return; var l = LINESF[+d.getAttribute('data-i')]; if (!l) return; var line = l.line; if (line.indexOf('6> ') === 0) { $('prompt').value = 'sixth'; line = line.slice(3); } else $('prompt').value = 'main'; $('line').value = line; $('line').focus(); Array.prototype.forEach.call($(id).children, function (c) { c.classList.toggle('last', c === d); }); }); });
+  function renderLines() {
+    var h = '', rows = INPUTS.slice().reverse().slice(0, 120);
+    decodeMany(rows.filter(function (x) { return x.schema === 'main'; }).map(function (x) { return x.run; })).then(function () {
+      rows.forEach(function (x) { var outs = x.schema === 'main' ? (OUTBY[x.run] || []) : []; h += '<div class="' + (x.run === CUR.root && x.schema === 'main' ? 'last' : '') + '" data-run="' + (x.schema === 'main' ? x.run : '') + '"><span>' + x.run + '</span><span>' + esc(x.schema === 'main' ? (lineOf(x.run) || '').slice(0, 90) : 'a line at the sixth\'s prompt') + '</span><span class="m">' + (x.schema === 'sixth' ? 'sixth' : outs.length ? outs.length + ' cells out' : RUNS[x.run] && CHILDREN[x.run] ? 'not complete' : '') + '</span></div>'; });
+      $('llist').innerHTML = h || '<div><span class="note">Nothing typed yet.</span></div>';
+    });
+  }
+  $('fresh').addEventListener('click', function () { if (!ready || busy) return; if (!confirm('Lay both eggs and the source brains again? The brains as they stand are overwritten in the brain folder.')) return; busy = true; setBusy('laying the eggs…'); api('/api/fresh', {}).then(function (j) { var p2 = function () { api('/api/job?id=' + j.id).then(function (x) { if (!x.done) { setTimeout(p2, 500); return; } busy = false; if (x.error) { setBusy('error: ' + x.error); return; } HIST = []; RUNHOPS = {}; FIRSTG = {}; FIRSTS = {}; RUNT0 = {}; RUNT1 = {}; HISTLAST = 0; TK = -1; SHEET = {}; TEXT = {}; CUR = { root: null, run: null }; SHOWN = []; Object.keys(NODE).forEach(function (k) { hideNode(k); }); loadBundle().then(function () { renderAll(); renderOut(); readLines(); render(-1); setBusy('fresh brains: the bare core. Type the lines under Type, one at a time.'); }); }); }; p2(); }).catch(function (e) { busy = false; setBusy(e.message); }); });
+
+  // the speed for a line just typed: the one that plays its hits in about twenty seconds, from the choices offered, never faster than 600 a second
+  function pickSpeed(hits) { var want = Math.max(8, (hits || 0) / 20), opts = [2, 8, 30, 120, 600], v = 600; for (var i = 0; i < opts.length; i++) if (opts[i] >= want) { v = opts[i]; break; } $('speed').value = String(v); }
+  // ---- transport: the history is stepped hit by hit; play goes on through the brain's order, into the next run, unless told to stay in this run
+  var playing = false, acc = 0, runStale = false;
+  function setPlay(v) { playing = v; $('play').setAttribute('aria-pressed', String(v)); $('play').textContent = v ? 'pause' : 'play'; if (!v && runStale) { runStale = false; renderRun(); } }
+  $('back').addEventListener('click', function () { setPlay(false); if (TK > -1) render(TK - 1, true); });
+  $('fwd').addEventListener('click', function () { setPlay(false); advance(1); });
+  $('play').addEventListener('click', function () { setPlay(!playing); if (playing && TK >= HIST.length - 1) render(-1, true); });
+  $('time').addEventListener('input', function () { setPlay(false); var hs = CUR.run !== null ? (RUNHOPS[CUR.run] || []) : []; var i = parseInt($('time').value, 10); if (hs.length) render(hs[Math.min(hs.length - 1, Math.max(0, i))], true); });
+  $('hist').addEventListener('input', function () { setPlay(false); render(parseInt($('hist').value, 10), true); });
+  $('tostart').addEventListener('click', function () { setPlay(false); render(-1, true); userZoomed = false; fitLeft = 120; });
+  $('tonow').addEventListener('click', function () { setPlay(false); render(HIST.length - 1, true); userZoomed = false; fitLeft = 120; });
+  var spinning = false; $('spin').addEventListener('click', function () { spinning = !spinning; $('spin').setAttribute('aria-pressed', String(spinning)); });
+  function advance(k) {
+    if (TK >= HIST.length - 1) { setPlay(false); return; }
+    var nt = Math.min(HIST.length - 1, TK + k);
+    if (!$('followrun').checked && CUR.run !== null) { var hs = RUNHOPS[CUR.run] || [], last = hs.length ? hs[hs.length - 1] : TK; if (TK >= last) { setPlay(false); return; } nt = Math.min(nt, last); }
+    render(nt, true);
+  }
+
+  // ---- selected: a gate read in full from the brain's tables
+  function showNode(g) {
+    if (LAB[g] === undefined) return; SELG = g; var role = roleOf(g);
+    var h = '<b>' + esc(nameOf(g)) + '</b><span class="m">gate ' + g + ' · ' + esc(ROLETEXT[role] || role) + (hasCall(g) ? ' · a shard of it calls or spawns a run' : '') + '</span>';
+    var lineBy = {}; ALLLINES.forEach(function (l) { if (l[0] === String(g) || l[1] === String(g)) lineBy[l[2]] = (lineBy[l[2]] || 0) + 1; });
+    h += '<span class="m">lines: ' + (Object.keys(lineBy).length ? Object.keys(lineBy).sort().map(function (k) { return esc(k) + ' ' + lineBy[k]; }).join(', ') : 'none') + '</span>';
+    h += '<span class="m">' + (NODES[g] || 0) + ' definition rows · ' + ((RELBY[g] || []).length) + ' relationship rows · ' + (MEMN[g] || 0) + ' memory nodes · ' + ((DNABY[g] || []).length) + ' DNA rows</span>';
+    var n = NODE[String(g)]; if (n && n.mesh && n.mesh.visible) h += '<span class="m">drawn at ' + n.pos.x.toFixed(1) + ', ' + n.pos.y.toFixed(1) + ', ' + n.pos.z.toFixed(1) + ' (the page\'s drawing)</span><span class="m" id="brainxyz">reading the brain\'s place…</span>';
+    h += '<span class="m" id="bornin">' + (g > CORE ? 'reading the run that bore it…' : 'laid by hand in the egg, before any line') + '</span>';
+    $('sel').innerHTML = h;
+    q('SELECT x, y, z, shard, before, next, at, run, moved FROM main.xyz WHERE gate = ?', [g]).then(function (r) { var el = $('brainxyz'); if (!el || SELG !== g) return; if (!r.length) { el.textContent = 'the brain holds no place for it yet (a point is placed at its first use, or by a settle pass)'; return; } var x = r[0]; el.textContent = 'the brain holds it at ' + (+x[0]).toFixed(1) + ', ' + (+x[1]).toFixed(1) + ', ' + (+x[2]).toFixed(1) + ' · moved ' + x[8] + ' times · last by run ' + x[7] + ' at clock ' + x[6] + ' (shard ' + x[3] + ', before ' + (x[4] === null ? '∅' : nameOf(x[4])) + ', next ' + (x[5] === null ? '∅' : nameOf(x[5])) + ')'; }).catch(function () { var el = $('brainxyz'); if (el) el.textContent = 'the brain holds no xyz table'; });
+    if (g > CORE) q('SELECT run FROM main.run_sheet WHERE cell = ? AND value = ? ORDER BY run LIMIT 1', [G.newgate, String(g)]).then(function (r) { var el = $('bornin'); if (!el || SELG !== g) return; if (!r.length) { el.textContent = 'born: no line\'s newgate cell names it (born by a typed line whose cell was overwritten, or by a return)'; return; } el.innerHTML = 'born inline in run <span data-run="' + r[0][0] + '" style="cursor:pointer;text-decoration:underline">' + r[0][0] + '</span>' + (lineOf(r[0][0]) ? ': ' + esc(lineOf(r[0][0]).slice(0, 80)) : ''); decodeRun(r[0][0]).then(function (t2) { if (SELG === g && el.isConnected) el.innerHTML = 'born inline in run <span data-run="' + r[0][0] + '" style="cursor:pointer;text-decoration:underline">' + r[0][0] + '</span>: ' + esc(t2.slice(0, 80)); }); });
+    var rows = DNABY[g] || [], hd = '<tr><th>shard</th><th>before</th><th>trigger</th><th>call</th><th>spawn</th><th>times</th></tr>';
+    rows.forEach(function (r) { hd += '<tr><td>' + r[1] + '</td><td>' + (r[2] === null ? '<span class="f">∅</span>' : esc(nameOf(r[2])) + ' <span class="f">' + r[2] + '</span>') + '</td><td>' + (r[3] === null ? '<span class="f">∅ end</span>' : esc(nameOf(r[3])) + ' <span class="f">' + r[3] + '</span>') + '</td><td>' + (r[4] === null ? '' : '<span class="ok" data-run="' + r[4] + '" style="cursor:pointer;text-decoration:underline">run ' + r[4] + '</span>') + '</td><td>' + (r[5] === null ? '' : '<span class="ok" data-run="' + r[5] + '" style="cursor:pointer;text-decoration:underline">run ' + r[5] + '</span>') + '</td><td>' + r[6] + '</td></tr>'; });
+    $('dnarows').innerHTML = rows.length ? hd + '<tr><td colspan="6" class="f">table "' + g + '": ' + rows.length + ' DNA rows; a row is keyed by the symbol before and the symbol the run goes on to, the space skipped (v6)</td></tr>' : '<tr><td class="f">table "' + g + '" holds no DNA rows: no run has landed here yet</td></tr>';
+    $('defrows').innerHTML = '<div><span class="m">…</span><span>reading the node rows of gate ' + g + '</span><span></span></div>';
+    q('SELECT id, source, run FROM main.node WHERE gate = ' + g + ' ORDER BY id').then(function (nr) {
+      if (SELG !== g) return;
+      if (!nr.length) { $('defrows').innerHTML = '<div><span class="m">none</span><span>no return has landed here: ' + (g > CORE ? 'define : ' + esc(nameOf(g)) + ' has not been typed, or no source holds it' : 'a hand-laid neuron no line has defined') + '</span><span></span></div>'; return; }
+      decodeMany(nr.map(function (r) { return r[2]; })).then(function () { if (SELG !== g) return; $('defrows').innerHTML = nr.map(function (r) { return '<div data-run="' + r[2] + '"><span class="m">' + r[0] + '</span><span><b>' + esc(SRCNAME[r[1]] || nameOf(r[1])) + '</b>: ' + esc((lineOf(r[2]) || '').slice(0, 220)) + '</span><span class="m">run ' + r[2] + '</span></div>'; }).join(''); });
+    }).catch(function () { $('defrows').innerHTML = '<div><span class="m">?</span><span>no node rows for gate ' + g + '</span><span></span></div>'; });
+    var rels = RELBY[g] || [];
+    $('relrows').innerHTML = rels.length ? rels.map(function (r) { return '<div data-run="' + r[3] + '"><span class="m">' + esc(relKind(r[1])) + '</span><span>' + esc(nameOf(r[0])) + ' <b>' + esc(nameOf(r[1])) + '</b> ' + esc(nameOf(r[2])) + '</span><span class="m">from run ' + r[3] + '</span></div>'; }).join('') : '<div><span class="m">none</span><span>no rel row names this gate</span><span></span></div>';
+    q('SELECT run, shard, at, input FROM main.run_memory WHERE gate = ? ORDER BY run DESC LIMIT 60', [g]).then(function (mr) { if (SELG !== g) return; $('memrows').innerHTML = mr.length ? mr.map(function (r) { return '<div data-run="' + r[0] + '"><span class="m">' + r[1] + '</span><span>run ' + r[0] + ' ended on shard ' + r[1] + ' at ' + r[2] + ' · line as gates: ' + esc(String(r[3]).slice(0, 60)) + '</span><span class="m">memory</span></div>'; }).join('') + (mr.length === 60 ? '<div><span></span><span class="m">the newest 60 of ' + (MEMN[g] || 0) + '</span><span></span></div>' : '') : '<div><span class="m">none</span><span>no run has ended at this neuron</span><span></span></div>'; });
+    render(TK, true);
+  }
+
+  // ---- the neurons tab: every gate in label
+  function renderNeurons() {
+    var find = $('nfind').value.trim().toLowerCase(), role = $('nrole').value, h = '', n = 0, c = { core: 0, born: 0, call: 0, node: 0 };
+    LABLIST.forEach(function (g) {
+      var r = roleOf(g), isCore = g <= CORE, hc = hasCall(g), nd = NODES[g] > 0; if (isCore) c.core++; else c.born++; if (hc) c.call++; if (nd) c.node++;
+      var s = LAB[g]; if (find && s.toLowerCase().indexOf(find) < 0) return;
+      if (role === 'core' && !isCore) return; if (role === 'born' && isCore) return; if (role === 'call' && !hc) return; if (role === 'node' && !nd) return; if (role === 'rel' && !(RELBY[g] || []).length) return; if (role === 'source' && r !== 'source') return;
+      if (n++ > 2500) return;
+      var dr = (DNABY[g] || []).length, df = NODES[g] || 0, rl = (RELBY[g] || []).length, mm = MEMN[g] || 0;
+      h += '<div class="' + (g === SELG ? 'last' : '') + '" data-gate="' + g + '"><span>' + g + '</span><span>' + esc(nameOf(g)) + ' <span class="m">' + (r === 'core' || r === 'born' ? (hc ? 'with a call' : r) : r) + '</span></span><span class="m">' + (dr ? dr + ' dna' : '') + (df ? (dr ? ', ' : '') + df + ' def' : '') + (rl ? ', ' + rl + ' rel' : '') + (mm ? ', ' + mm + ' mem' : '') + '</span></div>';
+    });
+    $('nlist').innerHTML = h || '<div><span class="note">No gate matches.</span></div>';
+    $('nsum').textContent = fmtN(LABLIST.length) + ' gates: ' + c.core + ' hand-laid, ' + fmtN(c.born) + ' born, ' + c.call + ' with a call or spawn, ' + c.node + ' with definition rows; ' + n + ' shown';
+  }
+  $('nfind').addEventListener('input', renderNeurons); $('nrole').addEventListener('change', renderNeurons);
+  $('nlist').addEventListener('click', function (e) { var d = e.target.closest('[data-gate]'); if (d) { showNode(parseInt(d.getAttribute('data-gate'), 10)); renderNeurons(); showTab('panel-sel'); } });
+
+  // ---- the brains tab
+  function renderBrain() {
+    var items = [[COUNTS.label, 'gates in the encoder'], [COUNTS.tables, 'tables'], [COUNTS.triggers, 'triggers (physics)'], [COUNTS.shards, 'shards, one sequence'], [COUNTS.run, 'runs'], [COUNTS.receipts, 'hits (receipt rows)'], [COUNTS.memory, 'memories'], [COUNTS.timeline, 'timeline rows'], [COUNTS.sheet, 'cells'], [COUNTS.rel, 'relationship rows'], [COUNTS.returns, 'source returns'], [COUNTS.empty, 'cells still empty'], [COUNTS.unended, 'runs without an end'], [COUNTS.refused, 'refused by SQLite'], [COUNTS.hop, 'in the hop table now']];
+    $('counts').innerHTML = items.map(function (it) { return '<div class="stat"><b>' + fmtN(it[0]) + '</b><span>' + it[1] + '</span></div>'; }).join('');
+    var kv = INFO ? [['brain', INFO.brain], ['sixth', INFO.sixth], ['sources', INFO.sources], ['SQLite', INFO.sqlite]] : [];
+    $('binfo').innerHTML = kv.map(function (x) { return '<span class="k">' + esc(x[0]) + '</span><span style="overflow-wrap:anywhere">' + esc(x[1]) + '</span>'; }).join('');
+    // sources: asked = the define lines' asks (returns by arrival; silent = asked about a symbol and sent nothing, counted from the runs that asked)
+    var asked = {}, ret = {}, silent = {}; RUNLIST.forEach(function (r) { if (r.kind === 3 && r.arrival >= 7 && r.arrival <= 15) { ret[r.arrival] = (ret[r.arrival] || 0) + 1; (asked[r.arrival] = asked[r.arrival] || {})[r.about] = 1; } });
+    var abouts = {}; RUNLIST.forEach(function (r) { if (r.kind === 3 && r.about !== null && r.arrival >= 7 && r.arrival <= 14) abouts[r.about] = 1; }); var nAbout = Object.keys(abouts).length;
+    var ht = '<tr><th>source</th><th>symbols answered</th><th>lines returned</th><th>silent on</th></tr>';
+    SOURCES.forEach(function (s) { var na = Object.keys(asked[s[0]] || {}).length; ht += '<tr><td>' + esc(s[2]) + ' <span class="f">' + esc(s[1]) + '</span></td><td>' + na + '</td><td class="ok">' + (ret[s[0]] || 0) + '</td><td class="e">' + (s[0] === 15 ? '' : Math.max(0, nAbout - na)) + '</td></tr>'; });
+    $('trust').innerHTML = nAbout ? ht : '<tr><td class="f">No source asked yet: type define : who.</td></tr>';
+    var jobs = DNA.filter(function (d) { return d[4] !== null || d[5] !== null; });
+    decodeMany(jobs.map(function (d) { return d[4] !== null ? d[4] : d[5]; })).then(function () { $('jobs').innerHTML = jobs.map(function (d) { var r = d[4] !== null ? d[4] : d[5]; return '<div data-run="' + r + '"><span>' + d[0] + '</span><span><b>' + esc(nameOf(d[0])) + '</b> shard ' + d[1] + ' (' + esc(d[2] === null ? '∅' : nameOf(d[2])) + ' → ' + esc(d[3] === null ? '∅' : nameOf(d[3])) + ') ' + (d[4] !== null ? 'calls' : 'spawns') + ' run ' + r + ': ' + esc((lineOf(r) || '').slice(0, 90)) + '</span><span class="m">×' + d[6] + '</span></div>'; }).join('') || '<div><span></span><span class="m">no shard carries a call yet</span><span></span></div>'; });
+    $('sixthcounts').innerHTML = [['gates', COUNTS.s_label], ['runs', COUNTS.s_run], ['memories', COUNTS.s_memory], ['refused', COUNTS.s_refused]].map(function (x) { return '<span class="k">' + x[0] + '</span><span>' + fmtN(x[1]) + '</span>'; }).join('');
+    q("SELECT 'told', t.run, (SELECT group_concat(symbol,'') FROM (SELECT l.symbol FROM sixth.seq s JOIN sixth.label l ON l.gate = s.gate WHERE s.run = t.run ORDER BY s.pos)), NULL FROM sixth.third t UNION ALL SELECT 'asked main', t.run, (SELECT group_concat(symbol,'') FROM (SELECT l.symbol FROM main.seq s JOIN main.label l ON l.gate = s.gate WHERE s.run = t.run ORDER BY s.pos)), t.run FROM main.third t UNION ALL SELECT 'its line', i.run, (SELECT group_concat(symbol,'') FROM (SELECT l.symbol FROM sixth.seq s JOIN sixth.label l ON l.gate = s.gate WHERE s.run = i.run ORDER BY s.pos)), NULL FROM sixth.input i ORDER BY 2 DESC LIMIT 60").then(function (rows) { $('sixthruns').innerHTML = rows.map(function (r) { return '<div' + (r[3] ? ' data-run="' + r[3] + '"' : '') + '><span>' + r[1] + '</span><span>' + esc(String(r[2] || '').slice(0, 120)) + '</span><span class="m">' + r[0] + '</span></div>'; }).join('') || '<div><span></span><span class="m">nothing yet</span><span></span></div>'; });
+    q("SELECT id, word, guess, confidence, belief, used, solved, correct, incorrect, asked_by FROM guess.guesses ORDER BY id DESC LIMIT 40").then(function (rows) { $('guesses').innerHTML = (rows.length ? '<tr><th>#</th><th>symbol</th><th>guess</th><th>conf</th><th>belief</th><th>used</th><th>solved</th><th>✓</th><th>✗</th><th>asked by</th></tr>' + rows.map(function (r) { return '<tr>' + r.map(function (v, i) { return '<td' + (i === 1 ? ' class="ok"' : '') + '>' + esc(v === null ? '?' : (typeof v === 'number' && i >= 3 && i <= 4 ? v.toFixed(2) : v)) + '</td>'; }).join('') + '</tr>'; }).join('') : '<tr><td class="f">No guess asked yet.</td></tr>'); });
+    q("SELECT 'main', id, substr(text, 1, 110), error FROM main.refused UNION ALL SELECT 'sixth', id, substr(text, 1, 110), error FROM sixth.refused ORDER BY 2 DESC LIMIT 30").then(function (rows) { $('refused').innerHTML = rows.map(function (r) { return '<div><span>' + r[1] + '</span><span>' + esc(r[2]) + '<br><span class="m">' + esc(r[3]) + '</span></span><span class="m">' + r[0] + '</span></div>'; }).join('') || '<div><span></span><span class="m">nothing refused</span><span></span></div>'; });
+  }
+  function renderAll() { renderLines(); renderNeurons(); renderBrain(); renderTree(); renderRun(); }
+
+  // ---- the atlas: every gate, by symbol A to Z, with its table, its rows and where the drawing has it
+  var AT = null, ATOPEN = -1;
+  function atlasRows() {
+    var lineBy = {}; ALLLINES.forEach(function (l) { [l[0], l[1]].forEach(function (k) { var o = lineBy[k] = lineBy[k] || {}; o[l[2]] = (o[l[2]] || 0) + 1; }); });
+    var out = LABLIST.map(function (g) {
+      var n = NODE[String(g)], drawn = n && n.mesh && n.mesh.visible, role = roleOf(g);
+      return { gate: g, label: nameOf(g), role: role, call: hasCall(g), pos: drawn ? [n.pos.x, n.pos.y, n.pos.z] : null, why: drawn ? '' : 'not drawn', dna: DNABY[g] || [], defs: NODES[g] || 0, rels: (RELBY[g] || []).length, mem: MEMN[g] || 0, lines: lineBy[String(g)] || {} };
+    });
+    out.sort(function (a, b) { var x = a.label.toLowerCase(), y = b.label.toLowerCase(); return x < y ? -1 : x > y ? 1 : a.gate - b.gate; });
+    return out;
+  }
+  function fx(v) { return (Math.abs(v) < .05 ? 0 : v).toFixed(1); }
+  function atlasDraw() {
+    if (!AT) return;
+    var qf = $('afind').value.trim().toLowerCase(), show = $('ashow').value, n = 0;
+    var rows = AT.rows.filter(function (r) { if (qf && r.label.toLowerCase().indexOf(qf) < 0) return false; if (show === 'node') return r.defs > 0; if (show === 'call') return r.call; if (show === 'rel') return r.rels > 0; if (show === 'drawn') return !!r.pos; return true; });
+    var h = '<thead><tr><th>symbol</th><th>x</th><th>y</th><th>z</th><th>gate</th><th>DNA rows (shard: before → trigger, call, spawn, times)</th><th>definition rows</th><th>rel</th><th>memory nodes</th><th>what it is</th><th>lines</th></tr></thead><tbody>';
+    rows.forEach(function (r, i) {
+      var dna = r.dna.slice(0, 3).map(function (d) { return d[1] + ': ' + esc(d[2] === null ? '∅' : nameOf(d[2])) + ' → ' + esc(d[3] === null ? 'end' : nameOf(d[3])) + (d[4] !== null ? ', calls ' + d[4] : '') + (d[5] !== null ? ', spawns ' + d[5] : '') + ', ×' + d[6]; }).join('<br>') + (r.dna.length > 3 ? '<br><span class="m">+' + (r.dna.length - 3) + ' more</span>' : '');
+      var ln = Object.keys(r.lines).sort().map(function (k) { return esc(k) + ' ' + r.lines[k]; }).join('<br>');
+      h += '<tr class="arow" data-i="' + i + '"><td>' + esc(r.label) + '</td>' + (r.pos ? '<td class="n">' + fx(r.pos[0]) + '</td><td class="n">' + fx(r.pos[1]) + '</td><td class="n">' + fx(r.pos[2]) + '</td>' : '<td colspan="3" class="m">' + esc(r.why) + '</td>') + '<td class="n">' + r.gate + '</td><td>' + dna + '</td><td class="n">' + r.defs + '</td><td class="n">' + r.rels + '</td><td class="n">' + r.mem + '</td><td>' + esc(r.role === 'core' || r.role === 'born' ? (r.role + (r.call ? ', with a call or spawn' : '')) : ROLETEXT[r.role] || r.role) + '</td><td style="white-space:nowrap">' + ln + '</td></tr>';
+      if (i === ATOPEN) h += '<tr class="det"><td colspan="11"><div class="dt">' + atlasDetail(r) + '</div></td></tr>';
+      n++;
+    });
+    $('atable').innerHTML = h + '</tbody>'; $('ashown').textContent = n + ' shown';
+  }
+  function atlasDetail(r) {
+    var h = '<b>' + esc(r.label) + '</b> <span class="m">gate ' + r.gate + ' · ' + esc(ROLETEXT[r.role] || r.role) + '</span>';
+    h += '\nposition (the drawing\'s units): ' + (r.pos ? fx(r.pos[0]) + ', ' + fx(r.pos[1]) + ', ' + fx(r.pos[2]) + '; distance from origin ' + Math.hypot(r.pos[0], r.pos[1], r.pos[2]).toFixed(1) : r.why);
+    h += '\n\ntable "' + r.gate + '": ' + r.dna.length + ' DNA rows' + (r.dna.length ? '\nshard | before | trigger | call | spawn | times\n' + r.dna.map(function (d) { return d[1] + ' | ' + esc(d[2] === null ? '∅' : nameOf(d[2]) + ' (' + d[2] + ')') + ' | ' + esc(d[3] === null ? '∅ end' : nameOf(d[3]) + ' (' + d[3] + ')') + ' | ' + (d[4] === null ? '' : d[4]) + ' | ' + (d[5] === null ? '' : d[5]) + ' | ' + d[6]; }).join('\n') : '');
+    h += '\n\ntable "' + r.gate + '.node": ' + r.defs + ' rows · rel rows: ' + r.rels + ' · memory nodes: ' + r.mem;
+    var ln = Object.keys(r.lines); h += '\n\nlines: ' + (ln.length ? ln.sort().map(function (k) { return esc(k) + ' ' + r.lines[k]; }).join(', ') : 'none');
+    return h;
+  }
+  function atlasRead() {
+    $('asum').textContent = 'reading the brain…';
+    AT = { rows: atlasRows(), step: STEP, move: LASTMOVE }; ATOPEN = -1;
+    var c = {}; AT.rows.forEach(function (r) { c[r.role] = (c[r.role] || 0) + 1; });
+    $('asum').innerHTML = '<b>' + fmtN(AT.rows.length) + ' gates.</b> ' + ['heard', 'arrival', 'source', 'space', 'core', 'born'].map(function (k) { return fmtN(c[k] || 0) + ' ' + k; }).join(', ') + '. ' + fmtN(DNA.length) + ' DNA rows over every neuron table, ' + fmtN(COUNTS.shards) + ' shards, ' + fmtN(COUNTS.rel) + ' relationship rows.<br><span class="m">Read from the brain as it stands. x, y, z are where the drawing has put each point at step ' + AT.step + '; in that step the lines moved a point at most ' + AT.move.toFixed(2) + '. The brain holds no positions.</span>';
+    atlasDraw();
+  }
+  $('atlasbtn').addEventListener('click', function () { if (!ready) return; $('atlas').hidden = false; atlasRead(); });
+  $('aclose').addEventListener('click', function () { $('atlas').hidden = true; });
+  $('arefresh').addEventListener('click', function () { atlasRead(); });
+  $('afind').addEventListener('input', function () { ATOPEN = -1; atlasDraw(); });
+  $('ashow').addEventListener('change', function () { ATOPEN = -1; atlasDraw(); });
+  $('atable').addEventListener('click', function (ev) { var tr = ev.target.closest('tr.arow'); if (!tr) return; var i = +tr.getAttribute('data-i'); if (ev.detail === 2 && AT.rows[i]) { $('atlas').hidden = true; showNode(AT.rows[i].gate); showTab('panel-sel'); return; } ATOPEN = ATOPEN === i ? -1 : i; atlasDraw(); });
+
+  // ---- opening: the door, then the brain's tables
+  function newestLineRun() { var root = null; INPUTS.forEach(function (x) { if (x.schema === 'main' && RUNS[x.run]) root = x.run; }); return root; }
+  function open(tries) {
+    api('/api/info').then(function (info) {
+      INFO = info;
+      if (info.error) { $('hud').innerHTML = '<b>the door could not open the brain</b><span class="ev">' + esc(info.error) + '</span>'; return; }
+      if (!info.ready) { $('hud').innerHTML = '<b>the door is opening the brains</b>'; setTimeout(function () { open(tries); }, 1000); return; }
+      if (info.busy) { $('hud').innerHTML = '<b>the brain is running a line typed before this page opened</b><span class="ev">' + esc(info.busy.line || '') + '</span>'; setTimeout(function () { open(tries); }, 2000); return; }
+      $('hud').innerHTML = '<b>reading the brain’s tables</b>';
+      return loadBundle().then(function () {
+        ready = true; fitLeft = 240; renderAll(); readLines(); renderOut();
+        render(HIST.length - 1, false); var root = newestLineRun(); if (root && RUNS[root]) { CUR.run = root; CUR.root = RUNS[root].root === null ? root : RUNS[root].root; refreshMem(function () { renderTree(); renderRun(); render(HIST.length - 1, true); }); }
+        setBusy('the brains are open: ' + fmtN(COUNTS.label) + ' gates, ' + fmtN(COUNTS.shards) + ' shards, ' + fmtN(COUNTS.run) + ' runs. Type a line.');
+      });
+    }).catch(function (e) {
+      if (e.busy) { $('hud').innerHTML = '<b>the brain is running a line typed elsewhere</b><span class="ev">' + esc(e.busy.line || '') + ' · waiting</span>'; setTimeout(function () { open(tries); }, 2000); return; }
+      $('hud').innerHTML = '<b>the brain’s door is not open</b><span class="ev">' + esc(e.message) + '. Start it from the page folder: python3 serve6.py, then open http://localhost:8056/ . Trying again…</span>';
+      setTimeout(function () { open((tries || 0) + 1); }, 3000);
+    });
+  }
+  open(0);
+
+  // ---- camera, pointer, frame (17.3's)
+  var theta = 0, phi = 1.45, dist = 160, tgt = hasGL ? new THREE.Vector3(0, 0, 0) : null;
+  function updateCam() { camera.position.set(tgt.x + dist * Math.sin(phi) * Math.sin(theta), tgt.y + dist * Math.cos(phi), tgt.z + dist * Math.sin(phi) * Math.cos(theta)); camera.lookAt(tgt); }
+  window.__poc = { times: function () { return TIMES; }, ready: function () { return ready; }, busy: function () { return busy; }, counts: function () { return COUNTS; }, gates: function () { return LABLIST.length; }, dna: function () { return DNA.length; }, springs: function () { return SPRINGS.length; }, nodes: function () { return Object.keys(NODE).filter(function (k) { return NODE[k].mesh && NODE[k].mesh.visible; }).length; },
+    kinds: function () { var o = {}; SPRINGS.forEach(function (sp) { o[sp.kind] = (o[sp.kind] || 0) + 1; }); return o; },
+    positions: function () { var o = {}; Object.keys(NODE).forEach(function (k) { if (NODE[k].mesh && NODE[k].mesh.visible) o[k] = [NODE[k].pos.x, NODE[k].pos.y, NODE[k].pos.z]; }); return o; },
+    cur: function () { return { root: CUR.root, run: CUR.run, hops: CUR.run !== null ? (RUNHOPS[CUR.run] || []).length : 0, tk: TK, hits: HIST.length }; }, chooseRun: chooseRun, showNode: showNode, send: send, render: render, last: function () { return LAST; }, shown: function () { return SHOWN.length; }, lines: function () { return LINESF.length; },
+    stretch: function () { var s = 0; SPRINGS.forEach(function (sp) { s += Math.abs(sp.a.pos.distanceTo(sp.b.pos) - sp.rest) / sp.rest; }); return SPRINGS.length ? s / SPRINGS.length : 0; },
+    lonely: function () { var linked = {}; SPRINGS.forEach(function (sp) { linked[sp.names[0]] = 1; linked[sp.names[1]] = 1; }); var n = 0; Object.keys(NODE).forEach(function (k) { if (!linked[k] && NODE[k].mesh && NODE[k].mesh.visible) n++; }); return n; } };
+  if (hasGL) {
+    var canvas = $('c'), ptrs = {}, dragging = false, moved = false, lastX = 0, lastY = 0, pinchD = 0, userZoomed = false;
+    canvas.addEventListener('pointerdown', function (e) { ptrs[e.pointerId] = [e.clientX, e.clientY]; dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener('pointermove', function (e) { if (!dragging) return; ptrs[e.pointerId] = [e.clientX, e.clientY]; var ids = Object.keys(ptrs); if (ids.length >= 2) { var a = ptrs[ids[0]], b = ptrs[ids[1]], d = Math.hypot(a[0] - b[0], a[1] - b[1]); if (pinchD) dist = Math.min(300000, Math.max(5, dist * pinchD / d)); pinchD = d; moved = true; userZoomed = true; return; } var dx = e.clientX - lastX, dy = e.clientY - lastY; lastX = e.clientX; lastY = e.clientY; if (Math.abs(dx) + Math.abs(dy) > 2) moved = true; theta -= dx * .005; phi = Math.min(Math.PI - .05, Math.max(.05, phi - dy * .005)); });
+    function up(e) { delete ptrs[e.pointerId]; if (Object.keys(ptrs).length < 2) pinchD = 0; if (Object.keys(ptrs).length === 0) { dragging = false; if (!moved) pick(e); } }
+    canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+    canvas.addEventListener('wheel', function (e) { e.preventDefault(); userZoomed = true; dist = Math.min(300000, Math.max(5, dist * (1 + e.deltaY * .0012))); }, { passive: false });
+    var ray = new THREE.Raycaster();
+    function pick(e) { var rect = canvas.getBoundingClientRect(), v = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1); ray.setFromCamera(v, camera); var hit = ray.intersectObjects(dotGroup.children.filter(function (m) { return m.visible; }), false); if (hit.length) { var k = hit[0].object.userData.key; if (k.charAt(0) === 'm') { setPlay(false); chooseRun(+k.slice(2), 0); showTab('panel-run'); return; } if (k.charAt(0) === 'g') { $('sel').innerHTML = '<b>' + esc(k.slice(2)) + '</b><span class="m">a word of your relation map the brain has no gate for yet. Type define : ' + esc(k.slice(2)) + ' and it is born.</span>'; showTab('panel-sel'); return; } showNode(+k); showTab('panel-sel'); return; } SELG = null; $('sel').innerHTML = '<span class="m">Click a dot on the stage, or a gate under neurons.</span>'; render(TK, true); }
+    function resize() { var w = $('stage').clientWidth, h = $('stage').clientHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+    // the drawing keeps growing after it opens (the gap pushes the ball out); the view follows until the radius holds still, unless the wheel was used
+    var fitR = 0; function fit() { if (userZoomed) return; var rs = []; Object.keys(NODE).forEach(function (k) { var n = NODE[k]; if (n.mesh && n.mesh.visible) rs.push(n.pos.length() * SP); }); if (!rs.length) return; rs.sort(function (a, b) { return a - b; }); var r = rs[Math.floor(rs.length * .95)] || rs[rs.length - 1]; if (Math.abs(r - fitR) > fitR * .01) { fitR = r; fitLeft = Math.max(fitLeft, 60); } if (fitLeft <= 0) return; fitLeft--; var want = Math.max(40, r * 1.15 / Math.tan(20 * Math.PI / 180) / Math.min(1, camera.aspect)); dist += (want - dist) * .05; }
+    window.addEventListener('resize', resize);
+    var last = performance.now();
+    function frame(now) {
+      var dt = (now - last) / 1000; last = now;
+      if (spinning && !dragging) theta += dt * .08;
+      if (ready) fit();
+      if (ready) { settle(reshapeLeft > 0 ? 6 : 2); if (reshapeLeft > 0) reshapeLeft--; Object.keys(NODE).forEach(function (k) { var n = NODE[k]; if (n.mesh) { n.mesh.position.copy(n.pos).multiplyScalar(SP); if (n.mesh.visible) n.mesh.scale.setScalar(n.mesh.userData.base * 3.5 * (n.mesh.userData.hot ? 2 : 1) * 0.728 * camera.position.distanceTo(n.mesh.position) / stageH()); if (n.label) { sizeLabel(n.label); n.label.position.copy(n.mesh.position); } } }); redrawLines(); drawAxes(false); axesGroup.children.forEach(function (c) { if (c.userData.px) sizeLabel(c); }); }
+      if (playing) { acc += dt; var per = 1 / parseFloat($('speed').value); if (acc > per) { var k = Math.max(1, Math.floor(acc / per)); acc = 0; advance(k); } }
+      updateCam(); renderer.render(scene, camera); requestAnimationFrame(frame);
+    }
+    resize(); requestAnimationFrame(frame);
+  } else {
+    var lastT = performance.now();
+    (function tick(now) { if (playing) { var per = 1000 / parseFloat($('speed').value); if (now - lastT > per) { lastT = now; advance(1); } } window.requestAnimationFrame(tick); })(performance.now());
+  }
+})();
+</script>
+</html>
