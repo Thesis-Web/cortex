@@ -110,15 +110,25 @@ def geometry(scope_run, ingest_run):
     return out
 
 # ---- jev ----
-def jev_key():
+GATEWAY_KEYFILE = os.path.join(HOME, ".config", "cortex", "gateway.key")   # a Vercel AI Gateway key: Jev through the gateway's TypeSafe-compatible endpoint
+GATEWAY_URL = "https://ai-gateway.vercel.sh/typesafe/v1/systemone"; GATEWAY_MODEL = "typesafe-ai/jev"
+def _readkey(path):
     try:
-        k = open(KEYFILE).read().strip(); return k or None
+        k = open(path).read().strip(); return k or None
     except OSError: return None
+def jev_route():
+    # which door to jev: the owner's TypeSafe key (direct) or a Vercel AI Gateway key (same request, other base URL); None when neither exists
+    k = _readkey(KEYFILE)
+    if k: return {"url": JEV_URL, "model": JEV_MODEL, "key": k, "via": "typesafe"}
+    k = _readkey(GATEWAY_KEYFILE)
+    if k: return {"url": GATEWAY_URL, "model": GATEWAY_MODEL, "key": k, "via": "vercel-gateway"}
+    return None
+def jev_key(): return jev_route() is not None
 def jev(state, questions):
-    key = jev_key()
-    if not key: return None
-    body = json.dumps({"model": JEV_MODEL, "state": state, "questions": questions}).encode()
-    req = urllib.request.Request(JEV_URL, data=body, headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+    r = jev_route()
+    if not r: return None
+    body = json.dumps({"model": r["model"], "state": state, "questions": questions}).encode()
+    req = urllib.request.Request(r["url"], data=body, headers={"Authorization": "Bearer " + r["key"], "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as resp: return json.loads(resp.read().decode())
 JUDGE_QUESTIONS = {
     "completes":   {"type": "noul", "instructions": "`ingest` reports that `expected` was observed as live output", "criteria": {"true": "the ingest states the expected output happened and shows or names what was observed", "false": "the ingest describes work, intent or a plan, or the expected output is not reported as observed"}},
@@ -206,7 +216,7 @@ def v_judge(name, n, run, text=None):
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "geometry": geo, "text": text[:300]}))
     print("verdict %s %d run %d: %s %.3f by %s | geometry %s" % (name, n, run, kind, p, judge, json.dumps(geo)))
     if answers: print("  answers " + " ".join("%s=%.2f" % kv for kv in sorted(answers.items())))
-    if judge == "geometry": print("  jev not asked: no key at %s" % KEYFILE)
+    if judge == "geometry": print("  jev not asked: no key (typesafe.key or gateway.key in ~/.config/cortex)")
     return kind
 def next_checkpoint(name):
     cps = cx_list("checkpoint", name)
@@ -262,7 +272,7 @@ def judgment_step(name, n, ck):
     pr = cx_get("project", name, 0); ex = cx_get("expected", name, n)
     state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "last_verdicts": [json.loads(v).get("text", "")[:200] for (_, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", name)]}
     resp = jev(state, {"holds": {"type": "noul", "instructions": "`checkpoint` is true of the state described by `scope`, `accepted_state` and `last_verdicts`", "criteria": {"false": "the state does not show the checkpoint's statement to be true"}}})
-    if not resp: raise SystemExit("judgment step needs jev; no key at %s" % KEYFILE)
+    if not resp: raise SystemExit("judgment step needs jev; no key (typesafe.key or gateway.key in ~/.config/cortex)")
     p = resp["answers"]["holds"]["noul"]
     return "judgment by %s: the statement holds with probability %.2f. EXPECTED: %s" % (resp.get("model", JEV_MODEL), p, "met" if p >= THRESH else "not met"), p
 def v_turn(name, engine="claude", model=None, act=False, at=None):
@@ -321,10 +331,11 @@ def v_capture(cwd=None, name=None):
     if nxt is None: return
     if jev_key():
         kinds = [v_judge(name, nxt, i["run"], i["text"]) for i in new]; print("judged against C%d: %s" % (nxt, " ".join(kinds)))
-    else: print("not judged: no jev key at %s" % KEYFILE)
+    else: print("not judged: no jev key")
 def v_status(name=None):
     ensure_cx(); st = ask("stats")["main"]
-    print("brain: gates %d runs %d hops %d refused %d clock %d | jev key %s | index rows %d" % (st["gates"], st["runs"], st["hops"], st["refused"], clock(), "present" if jev_key() else "MISSING", q("SELECT count(*) FROM main.cx WHERE kind = 'checkpoint' AND name = ? AND n >= 0", name or "")[0][0] if name else -1))
+    r = jev_route()
+    print("brain: gates %d runs %d hops %d refused %d clock %d | jev %s | index rows %d" % (st["gates"], st["runs"], st["hops"], st["refused"], clock(), ("via " + r["via"]) if r else "NO KEY (typesafe.key or gateway.key in ~/.config/cortex)", q("SELECT count(*) FROM main.cx WHERE kind = 'checkpoint' AND name = ? AND n >= 0", name or "")[0][0] if name else -1))
     fr = cx_get("freeze", "handler", 0)
     if fr:
         try: now = hashlib.sha256(open(HANDLER, "rb").read()).hexdigest()
