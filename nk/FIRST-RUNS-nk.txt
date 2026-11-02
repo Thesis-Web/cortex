@@ -1,0 +1,75 @@
+# FIRST-RUNS-v6 (2026-10-29): lines to type at the user's prompt, in order, after the 60 tool lines. Each comment is what to look for.
+# These are the owner's words of 10-28 evening: "define : the, as, a, find, in, are, can, who, what, when, where, how, why, and the finding of
+# meanings of the core words put together to make the meanings of other meanings... core, root, prime, compound, complex, formulaic layers".
+# Nothing here is typed by the page; click a line into the prompt and press run. A value in a change line is yours: edit it before run.
+
+# --- 1. the core words, each the long way: the sources answer, the definition node fills, the relationships lay, known and unknown fill
+# define : the. Look under What came out: what = the; def points at a return; known lists the symbols of the returns that already have a definition (who); unknown the rest. Under Run: the returns per source. On the stage: the's node and the words of its definitions pulled toward it.
+define : the
+# define : as. The thesaurus and Moby answer as: rel rows lay (as like about, of, though, when, if, after ...). Print table : rel afterwards shows them. known grows: the, who.
+define : as
+# define : a. Watch unknown shrink as the circle closes: the words of a's definitions that the, as and who already defined.
+define : a
+define : find
+define : in
+define : are
+define : can
+# define : who again: remember finds the first define : who; shape finds the define formula; the node already holds the returns.
+define : who
+define : what
+define : when
+define : where
+define : how
+define : why
+# --- 2. look at what the brain holds for a word, through the brain itself (the tools): the answer is a run from mother, read back in the sheet's say cell
+# who's DNA rows: shard | before | trigger | call | spawn | times. Each row is a context who was seen in; the space is not a context.
+print dna : who
+# the definition node of the: every return, who sent it, read back through the encoder.
+print node : the
+# the memory rows that ended on the's shards: run, the line as gates, who spoke, the ending gate and shard.
+print memory : the
+# the relationship rows: gate | kind | other | run. The numbers are gates; the page names them.
+print table : rel
+# a run's data sheet: cell | name | filled | value. Use the run number of a define line from What came out.
+print sheet : 1
+# --- 3. the unknown meanings: define the symbols that keep showing up as unknown in the definitions of the core words (the compounds)
+define : of
+define : to
+define : or
+define : an
+define : and
+define : by
+define : on
+define : that
+define : which
+define : all
+define : some
+define : many
+define : see
+# --- 4. the easy ones: the SQL words, whose action to the silicon is written in the docs and was measured (sqldoc, measured answer them)
+define : CREATE
+define : TABLE
+define : INSERT
+define : SELECT
+define : UPDATE
+define : WHERE
+# --- 5. the guesses: when no source holds a symbol, the sixth asks why and the guessing brain answers; say whether it was right. The run number is the guess's asked_by under brains.
+define : :
+correct : 1
+incorrect : 1
+# --- 6. the definition schema: write a cell on a word's definition (the sheet of its newest define run), then read it back. The values are yours.
+change define : who class pronoun
+change define : who meaning question
+change meaning : who from question to person
+print sheet : 1
+# --- 7. the DNA: rewrite a column of a word's rows where it is a value (a gate for trigger, a run for call and spawn); the reply is how many rows changed
+change trigger : who from 68 to 68
+change call : define from 0 to 0
+# --- 8. a new neuron, by hand
+create neuron : meaning
+# --- 9. the formulaic layer: a new key taught the long way. First the formula (its holes are cells of the line it will run under: above, what); then the key once, to lay its shard; then the bind. Here: last : X says the newest run that ended on X. The SQL is an example of the shape; the words are yours.
+BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) SELECT above , 23 , 1 , ( SELECT gate FROM seq WHERE run = above AND pos = ( SELECT min ( pos ) FROM seq WHERE run = above AND gate = 68 ) + 2 ) ; INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) VALUES ( above , 25 , 0 , NULL ) ; BUILD BUILD SELECT max ( run ) FROM run_memory WHERE gate = what ; BUILD BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) VALUES ( above , 25 , 1 , reply ) ; BUILD
+last : who
+# the bind: the run number is the one the formula line above started (What came out shows it); the shard of last is (heard, :) = before 1, trigger 68
+BUILD UPDATE dna SET call = 0 WHERE gate = {gate:last} AND before = 1 AND trigger = 68 ; BUILD
+last : who

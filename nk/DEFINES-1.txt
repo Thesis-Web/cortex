@@ -1,0 +1,14 @@
+# DEFINES-1.txt: the owner's first define list (FIRST-RUNS-v6, the thirteen), typed into the kernel over the full sources; what comes back is read, not written here.
+define : who
+define : the
+define : as
+define : a
+define : find
+define : in
+define : are
+define : can
+define : what
+define : when
+define : where
+define : how
+define : why

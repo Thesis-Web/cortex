@@ -1,0 +1,36 @@
+stats: {'main': {'runs': 702, 'hops': 47208, 'pending': 0, 'gates': 261, 'refused': 1, 'sh
+stats: {'main': {'runs': 831, 'hops': 59142, 'pending': 0, 'gates': 279, 'refused': 1, 'sh
+stats: {'main': {'runs': 847, 'hops': 62739, 'pending': 0, 'gates': 280, 'refused': 1, 'sh
+stats: {'main': {'runs': 865, 'hops': 66357, 'pending': 0, 'gates': 282, 'refused': 1, 'sh
+stats: {'main': {'runs': 884, 'hops': 71397, 'pending': 0, 'gates': 283, 'refused': 1, 'sh
+stats: {'main': {'runs': 922, 'hops': 73008, 'pending': 0, 'gates': 299, 'refused': 1, 'sh
+stats: {'main': {'runs': 944, 'hops': 74777, 'pending': 0, 'gates': 303, 'refused': 1, 'sh
+stats: {'main': {'runs': 944, 'hops': 74777, 'pending': 0, 'gates': 303, 'refused': 1, 'sh
+7021 define shards [[1, 68, 728], [5, 68, 728]]
+refused 1
+stats: {'main': {'runs': 44772, 'hops': 12777027, 'pending': 0, 'gates': 3629, 'refused': 1, 'shards': 24910, 'hop_us': 0.17, 'pas
+exported b'{"exported":true}\n'
+stats: {'main': {'runs': 702, 'hops': 47208, 'pending': 0, 'gates': 261, 'refused': 1, 'sh
+stats: {'main': {'runs': 831, 'hops': 59142, 'pending': 0, 'gates': 279, 'refused': 1, 'sh
+stats: {'main': {'runs': 847, 'hops': 62739, 'pending': 0, 'gates': 280, 'refused': 1, 'sh
+stats: {'main': {'runs': 865, 'hops': 66357, 'pending': 0, 'gates': 282, 'refused': 1, 'sh
+stats: {'main': {'runs': 884, 'hops': 71397, 'pending': 0, 'gates': 283, 'refused': 1, 'sh
+stats: {'main': {'runs': 922, 'hops': 73008, 'pending': 0, 'gates': 299, 'refused': 1, 'sh
+stats: {'main': {'runs': 944, 'hops': 74777, 'pending': 0, 'gates': 303, 'refused': 1, 'sh
+stats: {'main': {'runs': 944, 'hops': 74777, 'pending': 0, 'gates': 303, 'refused': 1, 'sh
+7022 define shards [[1, 68, 728], [5, 68, 728]]
+refused 1
+stats: {'main': {'runs': 44772, 'hops': 12777027, 'pending': 0, 'gates': 3629, 'refused': 1, 'shards': 24910, 'hop_us': 0.178, 'pa
+exported b'{"exported":true}\n'
+S1 brain.db: 22 tables, every one identical
+S1 sixth.db: 23 tables, every one identical
+S3 each point's table the same: True
+control {'Rss': 72396, 'Anonymous': 69580, 'Pss_File': 328, 'Swap': 0} share in the file 0.005
+stored  {'Rss': 5368, 'Anonymous': 2492, 'Pss_File': 373, 'Swap': 0} share in the file 0.13
+S2 stored kernel: FAIL
+S2 negative control: good, the heap kernel fails it
+RESULT FAIL
+test exit 1
+james 225280M Nov  1 01:09 out/g32B.map
+74M
+299495 ./nk 7007 egg-symbols.txt sources wn gcide mwt moby m

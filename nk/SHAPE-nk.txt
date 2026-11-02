@@ -1,0 +1,9 @@
+# SHAPE-nk.txt (2026-11-01, 16:25). The per-line run heard calls (run 7: cells know 26, remember 27, shape 28) spends 139 ms of every line in
+# cell 28: it reads the hit table of the line's first symbol, every landing that symbol ever had (define: 1.4 million), newest first, for the
+# call of the row it landed on. The kernel's profile: 4.996 s over 36 pastes, 138,781 us each; a recall was 0.155 s, of which 0.146 s was paste.
+# The same fact is the DNA row itself: the first symbol's row keyed by heard before and the next non-space symbol after, read by its key.
+# Spans 1 and 2 are run 7's own text, unchanged. Owner: "runtime times would be micro seconds or low ms for the entire run".
+# 1. The per-line run: know, remember as before; shape = the call of the DNA row the line's first symbol lands on.
+BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) SELECT above , 26 , 1 , ( SELECT count ( * ) FROM seq s WHERE s.run = above AND EXISTS ( SELECT 1 FROM node n WHERE n.gate = s.gate ) ) || '/' || ( SELECT count ( * ) FROM seq WHERE run = above ) ; BUILD BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) SELECT above , 27 , 1 , coalesce ( ( SELECT max ( m.run ) FROM run_memory m WHERE m.run < above AND m.input = ( SELECT group_concat ( gate , ' ' ) FROM ( SELECT gate FROM seq WHERE run = above ORDER BY pos ) ) ) , 0 ) ; BUILD BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) SELECT above , 28 , 1 , coalesce ( ( SELECT d.call FROM dna d WHERE d.gate = ( SELECT gate FROM seq WHERE run = above AND pos = 1 ) AND d.before = 1 AND d.trigger = ( SELECT gate FROM seq WHERE run = above AND pos > 1 AND gate <> 3 ORDER BY pos LIMIT 1 ) ) , 0 ) ; BUILD
+# 2. heard's one row (shard 1) calls the run above instead of run 7.
+BUILD UPDATE dna SET call = {run:1} WHERE gate = 1 AND shard = 1 ; BUILD

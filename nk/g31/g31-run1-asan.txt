@@ -1,0 +1,78 @@
+== control kernel
+stats: {'main': {'runs': 702, 'hops': 47208, 'pending': 0, 'gates': 261, 'refused': 1, 'shards': 1272, 'hop_us
+stats: {'main': {'runs': 831, 'hops': 59142, 'pending': 0, 'gates': 279, 'refused': 1, 'shards': 1499, 'hop_us
+stats: {'main': {'runs': 847, 'hops': 62739, 'pending': 0, 'gates': 280, 'refused': 1, 'shards': 1523, 'hop_us
+stats: {'main': {'runs': 865, 'hops': 66357, 'pending': 0, 'gates': 282, 'refused': 1, 'shards': 1532, 'hop_us
+stats: {'main': {'runs': 884, 'hops': 71397, 'pending': 0, 'gates': 283, 'refused': 1, 'shards': 1540, 'hop_us
+stats: {'main': {'runs': 922, 'hops': 73008, 'pending': 0, 'gates': 299, 'refused': 1, 'shards': 1753, 'hop_us
+stats: {'main': {'runs': 944, 'hops': 74777, 'pending': 0, 'gates': 303, 'refused': 1, 'shards': 1770, 'hop_us
+stats: {'main': {'runs': 944, 'hops': 74777, 'pending': 0, 'gates': 303, 'refused': 1, 'shards': 1770, 'hop_us
+== changed kernel
+stats: {'main': {'runs': 702, 'hops': 47208, 'pending': 0, 'gates': 261, 'refused': 1, 'shards': 1272, 'hop_us
+stats: {'main': {'runs': 831, 'hops': 59142, 'pending': 0, 'gates': 279, 'refused': 1, 'shards': 1499, 'hop_us
+stats: {'main': {'runs': 847, 'hops': 62739, 'pending': 0, 'gates': 280, 'refused': 1, 'shards': 1523, 'hop_us
+stats: {'main': {'runs': 865, 'hops': 66357, 'pending': 0, 'gates': 282, 'refused': 1, 'shards': 1532, 'hop_us
+stats: {'main': {'runs': 884, 'hops': 71397, 'pending': 0, 'gates': 283, 'refused': 1, 'shards': 1540, 'hop_us
+stats: {'main': {'runs': 922, 'hops': 73008, 'pending': 0, 'gates': 299, 'refused': 1, 'shards': 1753, 'hop_us
+stats: {'main': {'runs': 944, 'hops': 74777, 'pending': 0, 'gates': 303, 'refused': 1, 'shards': 1770, 'hop_us
+stats: {'main': {'runs': 944, 'hops': 74777, 'pending': 0, 'gates': 303, 'refused': 1, 'shards': 1770, 'hop_us
+== the sixth's define shard bound on both, as it is on the big kernel
+7011 define shards [[1, 68, 728], [5, 68, 728]]
+7012 define shards [[1, 68, 728], [5, 68, 728]]
+== the guesser out of define and why, on the changed kernel only
+define: run 728, 2576 symbols of text, cut to 2267
+define: new run 951, shards now {1: [[951]], 5: [[951]]}
+why: run 848, 5193 symbols of text, cut to 4612
+why: new run 971, shards now {5: [[971]]}
+refused 1
+{"7011": {"corpus": 204, "inbox": 0, "guesses": 3, "returns_from_guess": 1}, "7012": {"corpus": 204, "inbox": 0, "guesses": 3, "returns_from_guess": 1}}
+typed on 7011 b'{"schema":"main","run":951,"runs":57,"hits":3218,"hops":3282,"born":22,"refused":0,"seconds":0.031,"out":[["main",951,"m'
+typed on 7012 b'{"schema":"main","run":984,"runs":56,"hits":3045,"hops":3109,"born":22,"refused":0,"seconds":0.055,"out":[["main",984,"m'
+stats: {'main': {'runs': 53467, 'hops': 14163375, 'pending': 0, 'gates': 3610, 'refused': 1, 'shards': 26955, 
+stats: {'main': {'runs': 44393, 'hops': 12659438, 'pending': 0, 'gates': 3610, 'refused': 1, 'shards': 24758, 
+port 7011 settled after 3.0 s: runs 53588, hops 14201723, pastes 29116, refused 1, paste_s 357.99
+port 7012 settled after 3.0 s: runs 44489, hops 12693653, pastes 22921, refused 1, paste_s 141.56
+== the test
+added since the change: control {'corpus': 19170, 'guesses': 2901, 'returns_from_guess': 2900, 'inbox': 0} 
+                        changed {'corpus': 0, 'guesses': 0, 'returns_from_guess': 0, 'inbox': 0}
+G1 control fails | changed PASS
+G2 control fails | changed PASS
+G3 the source work:
+     returns: DIFFERENT, control 2084, changed 2082; only in control 7, only in changed 5
+       control only: ('?', 'mother', 'error: neuron 1283 already exists')
+       control only: ('?', 'mother', 'error: neuron 2205 already exists')
+       control only: ('?', 'mother', 'error: neuron 2679 already exists')
+       changed only: ('?', 'mother', 'error: neuron 1166 already exists')
+       changed only: ('?', 'mother', 'error: neuron 2152 already exists')
+       changed only: ('?', 'mother', 'error: neuron 2265 already exists')
+     rel: 1618 the same in both
+     lists: DIFFERENT, control 6594, changed 6592; only in control 142, only in changed 140
+       control only: ('DESC', 'known', ('DESC', 'LIMIT', 'SELECT', 'a', 'and', 'are', 'be', 'by', 'here', 'in', 'is', 'it', 'may', 'not', 'of', 'one', 'or', 'order', 'read', 'run', 
+       control only: ('DESC', 'unknown', ('ASC', 'BY', 'Each', 'FROM', 'If', 'ORDER', 'WHERE', 'adds', 'ascending', 'b', 'default', 'differs', 'expression', 'first', 'followed', 'ga
+       control only: ('Nations', 'known', ())
+       changed only: ('DESC', 'known', ('DESC', 'SELECT', 'a', 'and', 'are', 'be', 'by', 'here', 'in', 'is', 'it', 'may', 'not', 'of', 'one', 'or', 'order', 'read', 'run', 'same', '
+       changed only: ('DESC', 'unknown', ('ASC', 'BY', 'Each', 'FROM', 'If', 'LIMIT', 'ORDER', 'WHERE', 'adds', 'ascending', 'b', 'default', 'differs', 'expression', 'first', 'follo
+       changed only: ('Situated', 'known', ())
+G3 FAIL
+negative control: good, the old lines fail G1 and G2
+test exit 1
+== port 7011 main runs 53588 hops 14201723 pending 0 | sixth runs 25277 pending 0 refused 1 1
+spawned [[1, 3282], [3, 155]] asked [[2909]]
+define shards [[1, 68, 728, 19], [69, 69, None, 2], [256, 68, None, 1], [5, 68, 728, 3283], [69, 68, None, 1], [1, 155, 762, 1]]
+why shards [[5, 68, 848, 2909], [319, 789, None, 1], [172, 176, None, 1], [68, None, None, 1], [138, None, None, 1]]
+seen shards [[6, 68, 457, 6284]]
+lines from the sixth [[6192]] typed [[92]]
+newest from the sixth ['why : 53575 24', 'define : baffling', 'why : 53561 24', 'define : argument', 'why : 53547 24', 'define : xxxiii']
+first from the sixth ['why : 362 24', 'why : 382 24', 'define : who', 'why : 866 24', 'define : before', 'define : a']
+open cells on the newest top runs [[1956, 24, 0], [866, 24, 0], [362, 24, 0]]
+== port 7012 main runs 44489 hops 12693653 pending 0 | sixth runs 25281 pending 0 refused 1 1
+spawned [[1, 3280], [3, 157]] asked [[2907]]
+define shards [[1, 68, 951, 19], [69, 69, None, 2], [256, 68, None, 1], [5, 68, 951, 3281], [69, 68, None, 1], [1, 155, 762, 1]]
+why shards [[5, 68, 971, 2907], [319, 681, None, 1], [172, 176, None, 1], [68, None, None, 1], [138, None, None, 1]]
+seen shards [[6, 68, 457, 6285]]
+lines from the sixth [[6188]] typed [[97]]
+newest from the sixth ['why : 44479 24', 'define : baffling', 'why : 44468 24', 'define : argument', 'why : 44457 24', 'define : xxxiii']
+first from the sixth ['why : 362 24', 'why : 382 24', 'define : who', 'why : 866 24', 'define : before', 'define : a']
+open cells on the newest top runs [[44479, 24, 0], [44468, 24, 0], [44457, 24, 0], [44446, 24, 0], [44427, 24, 0], [44416, 24, 0]]
+stopped: 297637 297721
+294660 ./nk 7007 egg-symbols.txt sources wn gcide mwt moby m

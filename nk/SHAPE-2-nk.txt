@@ -1,0 +1,9 @@
+# SHAPE-2-nk.txt (2026-11-02). SHAPE-nk's shape cell read the first symbol's DNA row by its full key (gate, before, trigger), and the kernel's
+# dna table lays a row for a full-key read that finds none (so a binding line's UPDATE has a row to write): every new line's first symbol got
+# a row (before heard, trigger the next symbol) with no call, which the landing then used instead of the hop shard: water [20048973, 1, 369],
+# the [20048963, 1, 506885] ... 12 rows since 11-01, against the owner's "the trigger to go the hop meaning points to the same shard of dna
+# for all points". The read keyed by the gate alone (before + 0, trigger + 0 are not keys) lays nothing. Spans 1 and 2 as SHAPE-nk.
+# 1. The per-line run: know, remember as before; shape = the call of the DNA row the line's first symbol lands on, read without laying it.
+BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) SELECT above , 26 , 1 , ( SELECT count ( * ) FROM seq s WHERE s.run = above AND EXISTS ( SELECT 1 FROM node n WHERE n.gate = s.gate ) ) || '/' || ( SELECT count ( * ) FROM seq WHERE run = above ) ; BUILD BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) SELECT above , 27 , 1 , coalesce ( ( SELECT max ( m.run ) FROM run_memory m WHERE m.run < above AND m.input = ( SELECT group_concat ( gate , ' ' ) FROM ( SELECT gate FROM seq WHERE run = above ORDER BY pos ) ) ) , 0 ) ; BUILD BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) SELECT above , 28 , 1 , coalesce ( ( SELECT d.call FROM dna d WHERE d.gate = ( SELECT gate FROM seq WHERE run = above AND pos = 1 ) AND d.before + 0 = 1 AND d.trigger + 0 = ( SELECT gate FROM seq WHERE run = above AND pos > 1 AND gate <> 3 ORDER BY pos LIMIT 1 ) ) , 0 ) ; BUILD
+# 2. heard's one row (shard 1) calls the run above.
+BUILD UPDATE dna SET call = {run:1} WHERE gate = 1 AND shard = 1 ; BUILD

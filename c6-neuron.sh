@@ -1,0 +1,11 @@
+#!/bin/bash
+# c6-neuron.sh (2026-11-02): the Neuron project registered in the Cortex brain: its scope from the archive's authority order, four checkpoints
+# from the 10-31 owner-review's gates 0 to 3 (the review's proposal, not owner-ratified: marked so), and its current state ingested.
+export PATH=$HOME/.local/bin:$PATH
+cortex project neuron : "neuron is the owner's executable cognitive graph: a c kernel of physics only on hp (nk) where neurons own the code, a word is a gate, meaning is the action a run performs, definitions come from sources and nothing outside the brain thinks. authority order: the owner's words, then the reference draft of 2026-10-23 in d:\\neuron specs current, then the thesis; builds are evidence, not law."
+cortex checkpoint neuron 1 : "gate 0 baseline (the 10-31 review's proposal, not owner-ratified): freeze owner authority, source versions, first negative tests, test-machine footprint" "||" "a versioned contract and predicted traces are written before code"
+cortex checkpoint neuron 2 : "gate 1 c substrate: narrow physical request and reply, exact address, atomic write, append and return; no language semantics" "||" "the same prescribed physical actions produce exact read and write results and real errors"
+cortex checkpoint neuron 3 : "gate 2 one actual neuron: gate plus independently addressable local dna plus arrival and remainder plus the neuronal hop" "||" "different arrivals select correct shards; an unknown produces a recorded miss; disabling the dna disables the behavior"
+cortex checkpoint neuron 4 : "gate 3 run sheet and readiness: run identity, parent, required cell, correlated result, blocked and resume, receipt" "||" "a wrong cell never resumes; the right cell resumes exactly once; it persists across a restart"
+cortex ingest neuron "2026-11-02 state of the live kernel on hp (tries 35): the relationship formulas are the brains' own rows (formula, pull); a point's x y z lives in the brain and moves by its relationships at a landing; 722,333 points placed on hp in ten passes of 21 s; the sixth's define row calls the recall define; birth lays the define row and spawns the definition. not laid: triads, a per-kind learned vector, a history of places."
+echo "=== hydrate neuron"; cortex hydrate neuron

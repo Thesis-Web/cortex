@@ -1,0 +1,22 @@
+00:23:04 start defined 137619
+00:24:21 defined 138566 | rate 740 a minute | guesses added 0 | refused 1 pending 0 heap 9171
+  pastes main 52.5 sixth 13.9 hops 7.68 of 77 s; gates + 1868 runs + 19191
+    38.7 s n 1328 ms 29.1  INSERT OR REPLACE INTO run_sheet ( run , cell , state , v
+    13.7 s n 1976 ms 6.9  INSERT OR IGNORE INTO sixth.spawned ( gate , sent ) SELEC
+    11.6 s n 647 ms 18.0  INSERT INTO wn.inbox ( run , cell , about , word ) SELECT
+    1.6 s n 1328 ms 1.2  INSERT OR REPLACE INTO run_sheet ( run , cell , state , v
+00:25:37 defined 139668 | rate 861 a minute | guesses added 0 | refused 1 pending 0 heap 9183
+  pastes main 52.3 sixth 14.9 hops 6.74 of 77 s; gates + 1987 runs + 20916
+    37.5 s n 1474 ms 25.5  INSERT OR REPLACE INTO run_sheet ( run , cell , state , v
+    14.6 s n 2133 ms 6.9  INSERT OR IGNORE INTO sixth.spawned ( gate , sent ) SELEC
+    10.5 s n 659 ms 15.9  INSERT INTO wn.inbox ( run , cell , about , word ) SELECT
+    3.8 s n 1474 ms 2.6  INSERT OR REPLACE INTO run_sheet ( run , cell , state , v
+00:26:54 defined 140687 | rate 795 a minute | guesses added 0 | refused 1 pending 2 heap 9213
+  pastes main 52.4 sixth 16.0 hops 5.44 of 77 s; gates + 1792 runs + 20678
+    36.3 s n 1486 ms 24.4  INSERT OR REPLACE INTO run_sheet ( run , cell , state , v
+    15.8 s n 2237 ms 7.1  INSERT OR IGNORE INTO sixth.spawned ( gate , sent ) SELEC
+    10.8 s n 752 ms 14.4  INSERT INTO wn.inbox ( run , cell , about , word ) SELECT
+    4.7 s n 1485 ms 3.1  INSERT OR REPLACE INTO run_sheet ( run , cell , state , v
+over the window 799 a minute; heap KB a define 17.7
+waiting [[0, 539267], [1, 143092], [3, 100762]]
+DONE

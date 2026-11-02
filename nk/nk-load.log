@@ -1,0 +1,5 @@
+load out/snap-test/brain.db: 261 symbols, 702 runs, 48664 receipts, 701 memories, 0 hops pending
+load out/snap-test/sixth.db: 117 symbols, 213 runs, 17493 receipts, 212 memories, 0 hops pending
+load main.rel: 0 rows
+load sixth.asked: 2 rows
+nk: 261 symbols laid in each brain, listening on 127.0.0.1:7007
