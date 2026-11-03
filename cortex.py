@@ -783,6 +783,25 @@ def v_learn(names=None, key_only=False):
     print("learn: weights v%d from %d marks; leave-one-out verdict accuracy %.2f (%d of %d) in %.1f s" % (v, len(rows), hits / len(rows), hits, len(rows), time.time() - t0))
     for w in wrong: print("   missed: " + w)
 def learned_answers_x(x, W): return {k: round(sigmoid(sum(a * b for a, b in zip(W["w"].get(k, []), x))), 3) for k in JUDGE_QUESTIONS}
+def v_verdicts(name, n=None, limit=40):
+    # the owner reads the judge here: every judged line of a project (or of checkpoint n), newest first, with the run that mark and accept and reject take
+    ensure_cx()
+    parts = {}
+    for (ts, v) in q("SELECT ts, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 500", name):
+        d = json.loads(v); parts[d.get("run")] = d
+    rows = q("SELECT n, ts, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT ?", name, 2000 if n is not None else limit)
+    shown = 0
+    print("%-7s %-4s %-13s %-5s %-22s %-11s %-12s %-12s %s" % ("run", "C", "verdict", "p", "judge", "when", "part", "mark", "sentence"))
+    for (run, ts, v) in rows:
+        d = json.loads(v)
+        if n is not None and d.get("n") != n: continue
+        pt = parts.get(run); st = "-"
+        if pt: st = "rejected" if pt.get("rejected_by") == "owner" else ("retired" if (pt.get("superseded_by") or pt.get("rejected_by")) else "part")
+        m = cx_get("mark", name, run); mk = json.loads(m[3]).get("kind") if m else "-"
+        print("%-7d C%-3s %-13s %-5.2f %-22s %-11s %-12s %-12s %s" % (run, d.get("n"), d.get("kind"), d.get("p") or 0, (d.get("judge") or "")[:22], time.strftime("%m-%d %H:%M", time.localtime(ts)), st, mk, (d.get("text") or "")[:90]))
+        shown += 1
+        if shown >= limit: break
+    print("%d judged lines of %s%s. mark one: cortex mark %s <run> <kind> [: why]; the owner's word: cortex accept|reject %s <n> <run>" % (shown, name, (" at C%d" % n) if n is not None else "", name, name))
 def v_status(name=None):
     ensure_cx(); st = ask("stats")["main"]
     r = judge_route()
@@ -816,6 +835,7 @@ USAGE = """cortex <verb> ...
   hydrate <name> [--at n]                  the next worker's whole prompt
   turn <name> [--engine claude|codex] [--model m] [--act]   hydrate, one worker turn, ingest, judge, move
   status [<name>]
+  verdicts <name> [n] [--limit k]          every judged line of the project (or of checkpoint n), newest first: run, verdict, p, judge, when, part, mark, sentence
   freeze <path>                            sha of the handler into the brain; file read-only
   accept <name> <n> [run]                  the owner's word: with a run, that sentence is a part of C n's state; without, C n is done
   reject <name> <n> <run>                  the owner's word: that sentence is not a part of C n's state, whatever the judge said
@@ -859,6 +879,7 @@ def main(argv):
         if " : " in s: s, why = s.split(" : ", 1)
         k = s.split(); v_mark(k[0], int(k[1]), k[2], why)
     elif v == "learn": v_learn([x for x in a if not x.startswith("--")] or None, key_only="--key" in a)
+    elif v == "verdicts": v_verdicts(a[0], int(a[1]) if len(a) > 1 and a[1].isdigit() else None, int(a[a.index("--limit") + 1]) if "--limit" in a else 40)
     elif v == "status": v_status(a[0] if a else None)
     elif v == "formula": v_formula(a[0])
     elif v == "q": print(json.dumps(ask("q " + " ".join(a)))[:4000])   # a keyed read for the builder; the kernel refuses a scan
