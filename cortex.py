@@ -282,7 +282,7 @@ def key_gates(name, run):
 # ---- C16 (the owner, 11-03): the grounds. the receipt is the machine's own print piped in; the owner's words and reference material are sources, projects of typed lines;
 #      every content gate of a claim is checked against them; a value is settled against the receipt; a gate with no ground is a question the cortex asks, not a guess ----
 BANDS = ("owner", "reference")
-NUM = re.compile(r"\d[\w.%]*")
+NUM = re.compile(r"(?<![\w.])\d[\w.%]*")   # a value starts a token: c10.1, c18 and run401 are labels, not values (C17.2)
 def numbers(text):
     # the value tokens of a sentence (393g, 300, 9%); times and dates (13:19, 11-03) are not values
     t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", text.lower())
