@@ -319,7 +319,7 @@ def ground_cells(name, n, run, text, new_syms):
         sym = sym_of(w); held = False
         if w in rwords: g["receipt"] += 1; held = True
         for (src, band) in sources():
-            if band in BANDS and cx_get("gate", src, w): g[band] += 1; held = True
+            if band in BANDS and cx_get("gate", src, w): g[band] += 1; held = True; g.setdefault("by_source", {}); g["by_source"][src] = g["by_source"].get(src, 0) + 1
         if sym not in new or any(cx_get("gate", pj, w) for pj in projects() if pj != name): g["memory"] += 1; held = True
         if not held: g["none"].append(sym)
     g["none"] = sorted(set(g["none"]))
@@ -327,6 +327,7 @@ def ground_cells(name, n, run, text, new_syms):
 def ground_str(g):
     if not g: return "no ground"
     items = ["%s %d" % (k, g[k]) for k in ("receipt", "owner", "reference", "memory") if g.get(k)]
+    if g.get("by_source") and len(g["by_source"]) > 1: items.append("(" + " ".join("%s %d" % kv for kv in sorted(g["by_source"].items(), key=lambda kv: -kv[1])[:4]) + ")")
     if g.get("none"): items.append("none: " + ",".join(g["none"]))
     return " ".join(items) or "no ground"
 def v_receipt(name, n, cmd):
@@ -603,6 +604,7 @@ def formula(cells, answers):
     if rb and cells.get("numbers_in") and not cells.get("numbers_out") and cells["ground"]["receipt"] >= 2: return "progresses", "receipt"   # every value printed by the machine and the receipt's own words, outside the expected's shape
     if answers: return decide(answers), "judgment"
     return "unsettled", "sheet"
+NO_PARTS = set()   # (name, n) pairs judged for the record only: no part added, no state moved (the capture against a done project's newest checkpoint)
 def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     ensure_cx()
     pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
@@ -632,12 +634,12 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     else: p = 1.0 if kind in ("noise", "drift", "dupe") else 0.0
     body = "%s %.3f %s" % (kind, p, judge)
     vrun, at, _ = record("verdict", name, run, body)
-    accepting = kind in ("completes", "progresses", "supersedes")
+    accepting = kind in ("completes", "progresses", "supersedes") and (name, n) not in NO_PARTS
     part = add_part(name, n, run, text, p, judge, cells.get("ground")) if accepting else ("rejected" if retire_part(name, n, run, vrun, "rejected_by") else "")
     if kind == "supersedes" and cells.get("supersedes_run") and not part.startswith("refused") and retire_part(name, n, cells["supersedes_run"], run, "superseded_by"): part += " | retired the part of run %d" % cells["supersedes_run"]
     moved = ""
     if kind == "completes" and p >= THRESH and by not in ("shape", "receipt"): moved = " | a judgment cell's completes does not move the state: the receipt, the shape or the owner's accept does"
-    if kind == "completes" and p >= THRESH and by in ("shape", "receipt"):
+    if kind == "completes" and p >= THRESH and by in ("shape", "receipt") and (name, n) not in NO_PARTS:
         st = cx_get("state", name, n)
         if not st or st[3] != "done":
             v_state(name, n, "done"); n2 = next_checkpoint(name)
@@ -838,7 +840,7 @@ def v_capture(cwd=None, name=None):
     if nxt is None:
         cps = cx_list("checkpoint", name, desc=True, limit=1)
         if not cps: return
-        nxt = cps[0][0]; newest = True   # every checkpoint done: the truth matrix still runs, against the newest one (the owner, 11-03: scan every ingress)
+        nxt = cps[0][0]; newest = True; NO_PARTS.add((name, nxt))   # every checkpoint done: the truth matrix still runs against the newest one, for the record only: no parts, no state (C18.2)
     try:
         kinds = judge_many(name, nxt, new[-20:]); print("judged against C%d%s: %s" % (nxt, " (every checkpoint done; the newest)" if newest else "", " ".join(kinds)))
     except SystemExit as e: print("not judged: %s" % e)
