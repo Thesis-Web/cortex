@@ -1,0 +1,10 @@
+#!/bin/bash
+# t2-neuron.sh (2026-11-02): C13, the guessing brain's design in the owner's words, carried by the neuron project's hydration.
+export PATH=$HOME/.local/bin:$PATH
+cortex ingest neuron "owner 2026-11-02 on the guessing brain: it is another neuron brain taught to be the guessing brain; hc would have to exist, as does the process for a temporary corpus and a corpus store so it can recall temporary corpuses and improve back prop times."
+cortex ingest neuron "owner 2026-11-02: a live adjusted weight system that back props live against a small selected corpus that changes; the weights change over state and time and are only used over categoric uses; the corpus of the model is only the corpus it needs to solve the problem, far smaller than an llm."
+cortex ingest neuron "owner 2026-11-02: the guessing brain answers decide, compare, invent, guess, wild ass guess very fast with the possibilities as they are weighted; it does not decide the truth, it decides the confidence of the current state versus the prior state; it switches corpuses heartbeat to heartbeat: neuron stuff, cortex stuff, guessing at edge, meaning, learning, physics."
+cortex ingest neuron "owner 2026-10-23: a self populating temporary llm, topic oriented: a test is written on a specific topic and given to the guess brain; that topic is researched as fully as possible from source material and organized into a corpus that an llm type model runs over; no off the shelf model, they are all too broad; llm principles like qkv and hidden tiers."
+cortex ingest neuron "owner 2026-10-31: one kernel brain on hp and one sql brain on the hub, each with its own sub brains: sixth, hc, guessing. owner 2026-10-18: memories before the hc are accurate; once at the hc they are condensed, and the further away the more condensed. owner 2026-10-30: pattern match the graph instead of searching a corpus; calling a point number is faster."
+cortex state cortex 13 done
+echo "=== hydrate neuron (tail: the design lines travel as last verdicts only once judged; the ingests are in the brain)"; cortex q "SELECT count(*) FROM main.cx WHERE kind = 'ingest' AND name = 'neuron' AND n > 0"
