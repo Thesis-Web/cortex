@@ -286,7 +286,13 @@ NUM = re.compile(r"(?<![\w.])\d[\w.%]*")   # a value starts a token: c10.1, c18 
 def numbers(text):
     # the value tokens of a sentence (393g, 300, 9%); times and dates (13:19, 11-03) are not values
     t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", text.lower())
+    t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t)   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
     return NUM.findall(t)
+CMD_NOISE = set("ssh echo cat bash python3 hp2 tail head cut sed grep awk then done for do fi if else while read printf true false tee sort uniq wc tr xargs".split())
+def toks(s):
+    return set(w for w in re.findall(r"[a-z][a-z0-9_.-]*", s.lower()) if len(w) >= 2 and w not in STOP and w not in CMD_NOISE)
+def is_self_print(cmd):
+    return cmd.startswith("cortex ") or "/cortex " in cmd or cmd.startswith("cortex")
 _PJ = []
 def projects():
     if not _PJ: _PJ.extend(sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0"))))
@@ -304,15 +310,19 @@ def receipts_of(name, n):
     return json.loads(had[3]) if had else {}
 def ground_cells(name, n, run, text, new_syms):
     # per word gate: which ground holds it (receipt, owner, reference, the project's own memory, none); per number: did the machine print it
-    cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "numbers": numbers(text), "numbers_in": [], "numbers_out": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
-    rc = receipts_of(name, n); rnums, rwords, newest = set(), set(), 0
+    cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "receipt_named": False, "numbers_in_ext": [], "numbers": numbers(text), "numbers_in": [], "numbers_out": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
+    rc = receipts_of(name, n); rnums, rnums_ext, rwords, newest = set(), set(), set(), 0; ct = toks(text)
     for cmd, d in rc.items():
         cells["receipt_cmds"].append(cmd)
+        if toks(cmd) & ct: cells["receipt_named"] = True   # C22: the claim names this print's command
         for l in d.get("lines", []):
-            cells["receipt_runs"] += 1; rnums |= set(numbers(receipt_line(l))); rwords |= set(g for g in content_gates(l["run"]) if not is_value(g)); newest = max(newest, l["run"])
+            cells["receipt_runs"] += 1; nn = set(numbers(receipt_line(l))); rnums |= nn
+            if not is_self_print(cmd): rnums_ext |= nn   # a cortex print of its own verdicts and parts is circular ground for a sentence about them
+            rwords |= set(g for g in content_gates(l["run"]) if not is_value(g)); newest = max(newest, l["run"])
     if cells["receipt_runs"]:
         cells["receipt_before_claim"] = newest < run   # a print the claim could have read; a later print is not evidence against an earlier claim, only a label
         cells["numbers_in"] = [t for t in cells["numbers"] if t in rnums]; cells["numbers_out"] = [t for t in cells["numbers"] if t not in rnums]
+        cells["numbers_in_ext"] = [t for t in cells["numbers"] if t in rnums_ext]
         cells["receipt_newest"] = " ; ".join("%s => %s" % (cmd, " / ".join(receipt_line(l)[:60] for l in d.get("lines", [])[1:3] or d.get("lines", [])[:1])) for cmd, d in rc.items())
     g = cells["ground"]; new = set(new_syms)
     for w in set(x for x in content_gates(run) if not is_value(x)):
@@ -594,14 +604,15 @@ def formula(cells, answers):
     if cells.get("same_as"): return "dupe", "shape"                                   # the kernel's own repeat of an earlier run
     if cells.get("echo"): return "dupe", "shape"                                      # the expected sentence's own shape with nothing out of line: words, no observation
     rb = cells.get("receipt_before_claim")
-    if rb and cells.get("numbers_out") and (cells["ground"]["receipt"] >= 2 or cells.get("shape_expected", 0) >= 0.5): return "hallucination", "receipt"   # a value the machine never printed, said after the print
+    about = cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.5   # C22: the claim is about this print: names its command, cites its values, or states the expected
+    if rb and cells.get("numbers_out") and about: return "hallucination", "receipt"   # a value the machine never printed, said after the print, by a claim about that print
     if cells.get("supersedes_run"): return "supersedes", ("receipt" if rb and cells.get("numbers_in") and not cells.get("numbers_out") else "shape")   # the same shape as an accepted part, only value or time gates out of line
     if cells.get("shape_gates", 0) >= 4 and cells["shape_shared_project"] == 0: return "drift", "shape"   # no word gate shared with the scope, checkpoint or expected
     if cells["words"] >= 4 and cells["shared_scope"] == 0 and cells["shared_checkpoint"] == 0 and cells["shared_expected"] == 0 and not cells["observed"]: return "drift", "sheet"
     if cells.get("receipt_runs") and cells.get("numbers_in") and not cells.get("numbers_out") and cells["shape_expected"] >= 0.7: return "completes", "receipt"   # the expected's shape and every value printed by the machine (a later print confirming an earlier claim counts)
     if cells.get("shape_gates") and cells["shape_expected"] >= 0.7 and cells["values_out"] >= 1 and len(cells["new_to_project"]) <= 1 and not rb: return "completes", "shape"   # the expected's shape plus a value out of line, no print older than the claim to check it against
     if cells["words"] >= 4 and cells["new_words"] == 0 and cells["known_words"] >= 3 and not cells["observed"]: return "dupe", "sheet"   # a restatement with nothing new and nothing observed
-    if rb and cells.get("numbers_in") and not cells.get("numbers_out") and cells["ground"]["receipt"] >= 2: return "progresses", "receipt"   # every value printed by the machine and the receipt's own words, outside the expected's shape
+    if rb and cells.get("numbers_in") and not cells.get("numbers_out") and cells["ground"]["receipt"] >= 2 and (cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.3): return "progresses", "receipt"   # every value printed by the machine, by a claim about that print (C22: a cortex print of its own verdicts does not count)
     if answers: return decide(answers), "judgment"
     return "unsettled", "sheet"
 NO_PARTS = set()   # (name, n) pairs judged for the record only: no part added, no state moved (the capture against a done project's newest checkpoint)
