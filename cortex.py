@@ -260,12 +260,18 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
         k = json.loads(v).get("kind"); hist[k] = hist.get(k, 0) + 1
     cells["history"] = hist
     had = cx_get("ingest", name, text_key(text)); cells["times"] = ingest_text(had[3])[1] if had else 1
+    # the diff cell (the owner: "classifies what is duped information, new information"): the ingest's words against the accepted state's words
+    known = set()
+    for p in parts_of(name, n, 1000): known |= content_words(p["t"])
+    base = content_words(pr[3]) | content_words(ck[3]) | (content_words(ex[3]) if ex else set())
+    cells["new_words"] = len(cw - known - base); cells["known_words"] = len(cw & (known | base))
     return cells
 def formula(cells, answers):
     # the substitution formulas over a full sheet: what the deterministic cells settle, then the judgment cells
     if cells["noise"]: return "noise", "sheet"
     if answers: return decide(answers), "jev"
     if cells["words"] >= 4 and cells["shared_scope"] == 0 and cells["shared_checkpoint"] == 0 and cells["shared_expected"] == 0: return "drift", "sheet"
+    if cells["words"] >= 4 and cells["new_words"] == 0 and cells["known_words"] >= 3: return "dupe", "sheet"   # nothing new against the accepted state
     return "unsettled", "sheet"
 def v_judge(name, n, run, text=None):
     ensure_cx()
@@ -291,7 +297,7 @@ def v_judge(name, n, run, text=None):
     part = add_part(name, n, run, text) if kind in ("completes", "progresses", "supersedes") else ""
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "text": text[:300]}))
     geo = cells["geometry"]
-    print("verdict %s %d run %d: %s %.3f by %s in %.0f ms | sheet words %d shared scope %d checkpoint %d expected %d mark %s times %d noise %s | geometry mag %s rad %s | history %s%s" % (name, n, run, kind, p, judge, (time.time() - t0) * 1000, cells["words"], cells["shared_scope"], cells["shared_checkpoint"], cells["shared_expected"], cells["expected_mark"], cells["times"], cells["noise"] or "-", geo.get("magnitude"), geo.get("radians"), json.dumps(cells["history"]), (" | part " + part) if part else ""))
+    print("verdict %s %d run %d: %s %.3f by %s in %.0f ms | sheet words %d shared scope %d checkpoint %d expected %d new %d known %d mark %s times %d noise %s | geometry mag %s rad %s | history %s%s" % (name, n, run, kind, p, judge, (time.time() - t0) * 1000, cells["words"], cells["shared_scope"], cells["shared_checkpoint"], cells["shared_expected"], cells["new_words"], cells["known_words"], cells["expected_mark"], cells["times"], cells["noise"] or "-", geo.get("magnitude"), geo.get("radians"), json.dumps(cells["history"]), (" | part " + part) if part else ""))
     if answers: print("  answers " + " ".join("%s=%.2f" % kv for kv in sorted(answers.items())))
     elif not cells["noise"]: print("  judgment cells empty: no jev key (typesafe.key or gateway.key in ~/.config/cortex)")
     return kind
@@ -399,7 +405,8 @@ def project_for_cwd(cwd):
     return None
 def v_capture(cwd=None, name=None):
     # the hub's Stop hook pipes the tail of a transcript here: the last assistant text is ingested and, when jev has a key, judged
-    raw = sys.stdin.read(); last = None
+    # every assistant text in the tail, in order (the final message lands after the Stop hook runs, so it is caught at the next Stop; repeats tick)
+    raw = sys.stdin.read(); texts_all = []
     for line in raw.splitlines():
         try: d = json.loads(line)
         except ValueError: continue
@@ -407,17 +414,62 @@ def v_capture(cwd=None, name=None):
         c = d.get("message", {}).get("content")
         texts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"] if isinstance(c, list) else ([c] if isinstance(c, str) else [])
         t = "\n".join(x for x in texts if x and x.strip())
-        if t.strip(): last = t
-    if not last: print("capture: no assistant text in the tail"); return
+        if t.strip(): texts_all.append(t)
+    if not texts_all: print("capture: no assistant text in the tail"); return
     name = name or project_for_cwd(cwd)
     if not name: print("capture: cwd %s belongs to no cortex project; nothing ingested" % cwd); return
-    ensure_cx(); ing = v_ingest(name, last, quiet=True); new = [i for i in ing if not i["same_as"]]
-    print("capture %s: %d sentences, %d new, %d repeats, last text %d bytes" % (name, len(ing), len(new), len(ing) - len(new), len(last.encode())))
+    ensure_cx(); last = "\n".join(texts_all); ing = v_ingest(name, last, quiet=True); new = [i for i in ing if not i["same_as"]]
+    print("capture %s: %d texts, %d sentences, %d new, %d repeats, %d bytes" % (name, len(texts_all), len(ing), len(new), len(ing) - len(new), len(last.encode())))
     nxt = next_checkpoint(name)
     if nxt is None: return
     if jev_key():
         kinds = [v_judge(name, nxt, i["run"], i["text"]) for i in new]; print("judged against C%d: %s" % (nxt, " ".join(kinds)))
     else: print("not judged: no jev key")
+# ---- the owner's input output formula (2026-11-02): before/after + progression = diff output + before and after states + progression
+#      = expected completed output contract: satisfied parts and the remainder not satisfied. A snapshot per report; the next report diffs it. ----
+def snapshot(name):
+    vs = {}
+    for (v,) in q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n", name):
+        d = json.loads(v); vs.setdefault(d.get("n"), {}); vs[d.get("n")][d.get("kind")] = vs[d.get("n")].get(d.get("kind"), 0) + 1
+    cps = {}
+    for (n, run, at, ts, text) in cx_list("checkpoint", name):
+        st = cx_get("state", name, n); ex = cx_get("expected", name, n)
+        cps[str(n)] = {"state": st[3] if st else "open", "parts": len(parts_of(name, n, 1000)), "verdicts": vs.get(n, {}), "text": text, "expected": ex[3] if ex else ""}
+    ing = q("SELECT count(*) FROM main.cx WHERE kind = 'ingest' AND name = ? AND n > 0", name)[0][0]
+    return {"clock": clock(), "ts": int(time.time()), "checkpoints": cps, "ingests": ing, "verdicts": sum(sum(x.values()) for x in vs.values())}
+def v_formula(name):
+    ensure_cx(); now = snapshot(name)
+    prev_rows = q("SELECT value FROM main.cx WHERE kind = 'formula' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 1", name)
+    prev = json.loads(prev_rows[0][0]) if prev_rows else None
+    cps = now["checkpoints"]; N = len(cps); done = [n for n, c in cps.items() if c["state"] == "done"]
+    print("INPUT OUTPUT FORMULA %s: before/after + progression = diff output + before and after states + progression = expected completed output contract" % name)
+    if prev:
+        pd = [n for n, c in prev["checkpoints"].items() if c["state"] == "done"]
+        print("BEFORE (clock %d, %s): %d checkpoints, %d done, %d ingests, %d verdicts, %d parts" % (prev["clock"], time.strftime("%Y-%m-%d %H:%M", time.localtime(prev["ts"])), len(prev["checkpoints"]), len(pd), prev["ingests"], prev["verdicts"], sum(c["parts"] for c in prev["checkpoints"].values())))
+    else: print("BEFORE: (first formula for %s; this report is the before of the next one)" % name)
+    print("AFTER  (clock %d, %s): %d checkpoints, %d done, %d ingests, %d verdicts, %d parts" % (now["clock"], time.strftime("%Y-%m-%d %H:%M", time.localtime(now["ts"])), N, len(done), now["ingests"], now["verdicts"], sum(c["parts"] for c in cps.values())))
+    if prev:
+        moves = []
+        for n, c in cps.items():
+            p = prev["checkpoints"].get(n)
+            if not p: moves.append("C%s new [%s]" % (n, c["state"])); continue
+            if p["state"] != c["state"]: moves.append("C%s %s->%s" % (n, p["state"], c["state"]))
+            if c["parts"] != p["parts"]: moves.append("C%s parts %d->%d" % (n, p["parts"], c["parts"]))
+            dv = sum(c["verdicts"].values()) - sum(p["verdicts"].values())
+            if dv: moves.append("C%s verdicts +%d" % (n, dv))
+        print("PROGRESSION (diff): ingests %+d, verdicts %+d, done %+d; %s" % (now["ingests"] - prev["ingests"], now["verdicts"] - prev["verdicts"], len(done) - len(pd), "; ".join(moves) if moves else "no checkpoint moved"))
+    print("CONTRACT, SATISFIED (%d of %d):" % (len(done), N))
+    for n in done:
+        ps = parts_of(name, int(n), 1)
+        print("  C%s done: %s | part: %s" % (n, cps[n]["expected"][:100] or cps[n]["text"][:100], ps[0]["t"][:110] if ps else "(no part recorded)"))
+    rem = [n for n in cps if n not in done]
+    print("CONTRACT, REMAINDER (%d of %d):" % (len(rem), N))
+    for n in rem:
+        c = cps[n]; miss = []
+        if c["parts"] == 0: miss.append("no accepted part")
+        if not c["verdicts"].get("completes"): miss.append("no completes verdict" + (" (judgment cells need a key)" if not jev_key() else ""))
+        print("  C%s [%s] expected: %s | missing: %s" % (n, c["state"], c["expected"][:110] or "(none)", ", ".join(miss)))
+    cx_put("formula", name, now["clock"], 0, now["clock"], json.dumps(now))
 def v_status(name=None):
     ensure_cx(); st = ask("stats")["main"]
     r = jev_route()
@@ -486,6 +538,7 @@ def main(argv):
             return a[i + 1] if i >= 0 and i + 1 < len(a) and not a[i + 1].startswith("--") else None
         v_capture(opt("--cwd"), opt("--name"))
     elif v == "status": v_status(a[0] if a else None)
+    elif v == "formula": v_formula(a[0])
     elif v == "q": print(json.dumps(ask("q " + " ".join(a)))[:4000])   # a keyed read for the builder; the kernel refuses a scan
     elif v == "freeze": v_freeze(a[0] if a else HANDLER)
     else: print(USAGE); return 2
