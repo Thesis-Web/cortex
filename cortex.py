@@ -822,20 +822,25 @@ def project_for_cwd(cwd):
 def v_capture(cwd=None, name=None):
     # the hub's Stop hook pipes the tail of a transcript here: the last assistant text is ingested and, when jev has a key, judged
     # every assistant text in the tail, in order (the final message lands after the Stop hook runs, so it is caught at the next Stop; repeats tick)
-    raw = sys.stdin.read(); texts_all = []
+    raw = sys.stdin.read(); texts_all = []; hook = {}
     for line in raw.splitlines():
         try: d = json.loads(line)
         except ValueError: continue
+        if d.get("type") == "hook": hook = d; continue   # C20: the hook's own line: cwd, the turn's final message (transcript_path may lag it), session, event
         if d.get("type") != "assistant": continue
         c = d.get("message", {}).get("content")
         texts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"] if isinstance(c, list) else ([c] if isinstance(c, str) else [])
         t = "\n".join(x for x in texts if x and x.strip())
         if t.strip(): texts_all.append(t)
+    final_msg = (hook.get("last_assistant_message") or "").strip()
+    if final_msg and (not texts_all or texts_all[-1].strip() != final_msg): texts_all.append(final_msg)
+    cwd = cwd or hook.get("cwd")
     if not texts_all: print("capture: no assistant text in the tail"); return
     name = name or project_for_cwd(cwd)
     if not name: print("capture: cwd %s belongs to no cortex project; nothing ingested" % cwd); return
     ensure_cx(); last = "\n".join(texts_all); ing = v_ingest(name, last, quiet=True, repeat_to_kernel=False); new = [i for i in ing if not i["same_as"]]
-    print("capture %s: %d texts, %d sentences, %d new, %d repeats, %d bytes" % (name, len(texts_all), len(ing), len(new), len(ing) - len(new), len(last.encode())))
+    print("capture %s: %d texts, %d sentences, %d new, %d repeats, %d bytes%s" % (name, len(texts_all), len(ing), len(new), len(ing) - len(new), len(last.encode()), (", the turn's final message included (%d bytes)" % len(final_msg.encode())) if final_msg else ""))
+    cx_put("capture", name, 0, 0, clock(), json.dumps({"ts": int(time.time()), "texts": len(texts_all), "sentences": len(ing), "new": len(new), "event": hook.get("hook_event_name") or "stop", "session": (hook.get("session_id") or "")[:8], "final": bool(final_msg)}))
     nxt = next_checkpoint(name); newest = False
     if nxt is None:
         cps = cx_list("checkpoint", name, desc=True, limit=1)
@@ -998,6 +1003,12 @@ def v_status(name=None):
         try: now = hashlib.sha256(open(HANDLER, "rb").read()).hexdigest()
         except OSError: now = "(file missing)"
         print("freeze: brain %s file %s %s" % (fr[3][:16], now[:16], "EQUAL" if now == fr[3] else "DIFFERENT"))
+    caps = []
+    for (nm,) in q("SELECT name FROM main.cx WHERE kind = 'capture' AND name >= '' AND n = 0"):
+        c = cx_get("capture", nm, 0)
+        if c:
+            d = json.loads(c[3]); caps.append("%s %s (%s, %d sentences, %d new%s)" % (nm, time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0))), d.get("event", "stop"), d.get("sentences", 0), d.get("new", 0), ", final message in" if d.get("final") else ""))
+    print("captures: " + ("; ".join(caps) if caps else "none yet") + " | a stale time here is a failed or missing capture (C20)")
     names = [name] if name else sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0")))
     for nm in names:
         pr = cx_get("project", nm, 0)
