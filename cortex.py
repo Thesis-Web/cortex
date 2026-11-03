@@ -695,10 +695,17 @@ def hydration_text(name, pr, nxt):
         if ps: lines.append("ACCEPTED SO FAR (parts of C%d's state, each with its time, confidence and ground): " % nxt + " | ".join("%s [%s%s | %s]" % (line_text(p["run"])[:90], time.strftime("%m-%d %H:%M", time.localtime(p.get("ts") or 0)), (" p%.2f %s" % (p["p"], p.get("by") or "")) if p.get("p") is not None else "", ("the owner's word" if p.get("by") == "owner" or (p.get("by") is None and p.get("p") is None) else ground_str(p.get("ground")))) for p in reversed(ps)))
         rc = receipts_of(name, nxt)
         if rc: lines.append("RECEIPTS (the machine's own prints for C%d, the newest of each command): " % nxt + " | ".join("%s => %s [%s]" % (cmd, " / ".join(receipt_line(l)[:70] for l in d.get("lines", [])[:3]), time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0)))) for cmd, d in rc.items()))
+        left = [r for r in remainders_of(name, nxt) if not r.get("satisfied")]
+        if left: lines.append("REMAINDER of C%d (parts left not satisfied): " % nxt + "; ".join("%d %s" % (r["k"], line_text(r["run"])[:100]) for r in left[:6]))
         qs = open_questions(name, nxt, 5)
         if qs: lines.append("OPEN QUESTIONS (words of C%d's claims that no receipt, owner line or reference holds; the owner answers them, a worker never guesses them): " % nxt + "; ".join("run %d: %s" % (d["run"], ", ".join(d["words"])) for d in qs))
         lines.append("END YOUR ANSWER with one line `EXPECTED: met` or `EXPECTED: not met`, then the live output that shows it.")
-    else: lines.append("DO NOW: nothing; every checkpoint is done. Say so.")
+    else:
+        lines.append("DO NOW: nothing; every checkpoint is done. Say so.")
+        left = [(cn, r) for (cn, run, at, ts, ctext) in cx_list("checkpoint", name) for r in remainders_of(name, cn) if not r.get("satisfied")]
+        if left: lines.append("REMAINDER (the contract's parts left not satisfied, from the brain; the owner's word makes one a checkpoint): " + "; ".join("C%d.%d %s" % (cn, r["k"], line_text(r["run"])[:100]) for (cn, r) in left[:10]))
+        nw = next_work(name)
+        if nw: lines.append("NEXT WORK (the first part left that names neither the kernel nor the owner): C%d.%d %s" % nw)
     lines.append("LAWS: report only what you observed as live output; name the command and its output; never invent a result, a term or a file; stay inside the scope; if the expected output is not met say so and why.")
     lines.append("ALL CHECKPOINTS (state; only C%s is yours now):" % (nxt if nxt is not None else "-"))
     for (n, run, at, ts, text) in cx_list("checkpoint", name):
@@ -824,10 +831,13 @@ def v_capture(cwd=None, name=None):
     if not name: print("capture: cwd %s belongs to no cortex project; nothing ingested" % cwd); return
     ensure_cx(); last = "\n".join(texts_all); ing = v_ingest(name, last, quiet=True, repeat_to_kernel=False); new = [i for i in ing if not i["same_as"]]
     print("capture %s: %d texts, %d sentences, %d new, %d repeats, %d bytes" % (name, len(texts_all), len(ing), len(new), len(ing) - len(new), len(last.encode())))
-    nxt = next_checkpoint(name)
-    if nxt is None: return
+    nxt = next_checkpoint(name); newest = False
+    if nxt is None:
+        cps = cx_list("checkpoint", name, desc=True, limit=1)
+        if not cps: return
+        nxt = cps[0][0]; newest = True   # every checkpoint done: the truth matrix still runs, against the newest one (the owner, 11-03: scan every ingress)
     try:
-        kinds = judge_many(name, nxt, new[-20:]); print("judged against C%d: %s" % (nxt, " ".join(kinds)))
+        kinds = judge_many(name, nxt, new[-20:]); print("judged against C%d%s: %s" % (nxt, " (every checkpoint done; the newest)" if newest else "", " ".join(kinds)))
     except SystemExit as e: print("not judged: %s" % e)
 # ---- the owner's input output formula (2026-11-02): before/after + progression = diff output + before and after states + progression
 #      = expected completed output contract: satisfied parts and the remainder not satisfied. A snapshot per report; the next report diffs it. ----
@@ -867,13 +877,50 @@ def v_formula(name):
         ps = parts_of(name, int(n), 1)
         print("  C%s done: %s | part: %s" % (n, cps[n]["expected"][:100] or cps[n]["text"][:100], line_text(ps[0]["run"])[:110] if ps else "(no part recorded)"))
     rem = [n for n in cps if n not in done]
-    print("CONTRACT, REMAINDER (%d of %d):" % (len(rem), N))
+    parts_left = [(int(n), r) for n in cps for r in remainders_of(name, int(n)) if not r.get("satisfied")]
+    print("CONTRACT, REMAINDER (%d checkpoints open, %d parts left not satisfied):" % (len(rem), len(parts_left)))
     for n in rem:
         c = cps[n]; miss = []
         if c["parts"] == 0: miss.append("no accepted part")
         if not c["verdicts"].get("completes"): miss.append("no completes verdict")
         print("  C%s [%s] expected: %s | missing: %s" % (n, c["state"], c["expected"][:110] or "(none)", ", ".join(miss)))
+    for (n, r) in parts_left: print("  C%d.%d left: %s" % (n, r["k"], line_text(r["run"])[:130]))
+    nw = next_work(name)
+    print("NEXT WORK (the first part left that names neither the kernel nor the owner): %s" % (("C%d.%d %s" % nw) if nw else "none; what is left waits on the kernel or the owner"))
     cx_put("formula", name, now["clock"], 0, now["clock"], json.dumps(now))
+GATED = ("waits on the kernel", "waits on the owner")   # a remainder part that says it waits on the kernel or the owner is not the front door next work
+def remainders_of(name, n):
+    had = cx_get("remainder", name, n)
+    return json.loads(had[3]) if had else []
+def next_work(name):
+    for (cn, run, at, ts, ctext) in cx_list("checkpoint", name):
+        for r in remainders_of(name, cn):
+            if r.get("satisfied"): continue
+            t = line_text(r["run"])
+            if not any(g in t for g in GATED): return cn, r["k"], t
+    return None
+def v_remainder(name, n=None, text=None, k=None, note=None):
+    # cortex remainder <name> <n> : <part left not satisfied>   |   cortex remainder <name> <n> <k> satisfied [: by what]   |   cortex remainder <name>
+    ensure_cx()
+    if n is None:
+        tot = open_ = 0
+        for (cn, run, at, ts, ctext) in cx_list("checkpoint", name):
+            for r in remainders_of(name, cn):
+                tot += 1; open_ += 0 if r.get("satisfied") else 1
+                print("C%d.%d %s%s" % (cn, r["k"], line_text(r["run"])[:140], (" [satisfied %s: %s]" % (time.strftime("%m-%d %H:%M", time.localtime(r.get("satisfied_ts", 0))), r["satisfied"])) if r.get("satisfied") else ""))
+        nw = next_work(name)
+        print("%d remainder parts of %s, %d not satisfied. NEXT WORK: %s" % (tot, name, open_, ("C%d.%d %s" % nw) if nw else "none that is the front door's; the rest wait on the kernel or the owner"))
+        return
+    if not cx_get("checkpoint", name, n): raise SystemExit("no such checkpoint: %s %d" % (name, n))
+    rs = remainders_of(name, n)
+    if k is not None:
+        hit = [r for r in rs if r["k"] == k]
+        if not hit: raise SystemExit("no remainder part %d on %s C%d" % (k, name, n))
+        hit[0]["satisfied"] = note or "yes"; hit[0]["satisfied_ts"] = int(time.time())
+        cx_put("remainder", name, n, hit[0]["run"], clock(), json.dumps(rs)); print("remainder %s C%d.%d satisfied: %s" % (name, n, k, note or "yes")); return
+    r = typed("cortex remainder %s %d : %s" % (name, n, text)); run = r["run"]; key_gates(name, run)
+    rs.append({"k": len(rs) + 1, "run": run, "ts": int(time.time()), "satisfied": None})
+    cx_put("remainder", name, n, run, clock(), json.dumps(rs)); print("remainder %s C%d.%d run %d: %s" % (name, n, len(rs), run, text[:120]))
 def v_mark(name, run, kind, why=""):
     # the labeled set: the owner's (or the known-truth) word on what a judged sentence was; cortex learn trains the weights on these
     ensure_cx()
@@ -975,6 +1022,8 @@ USAGE = """cortex <verb> ...
   source <name> owner|reference : <text>   register a source (the owner's words, a textbook, code docs; say where from and as of); then
   source <name> -                          type the source's sentences from stdin (build time, no judge); a claim's words are then checked against it
   questions <name> [n]                     the open meaning questions: words of judged claims that no receipt, owner line or reference holds
+  remainder <name> [<n> : <text>]          the contract's parts left not satisfied, typed on their checkpoint; <name> alone lists them and names the next work
+  remainder <name> <n> <k> satisfied [: by what]
   freeze <path>                            sha of the handler into the brain; file read-only
   accept <name> <n> [run]                  the owner's word: with a run, that sentence is a part of C n's state; without, C n is done
   reject <name> <n> <run>                  the owner's word: that sentence is not a part of C n's state, whatever the judge said
@@ -1025,6 +1074,11 @@ def main(argv):
         else:
             s2 = " ".join(a); k2, t2 = split_colon(a); v_source(k2[0], k2[1] if len(k2) > 1 else None, t2)
     elif v == "questions": v_questions(a[0], int(a[1]) if len(a) > 1 else None)
+    elif v == "remainder":
+        if len(a) == 1: v_remainder(a[0])
+        elif len(a) >= 4 and a[3] == "satisfied":
+            s3 = " ".join(a); note = s3.split(" : ", 1)[1] if " : " in s3 else None; v_remainder(a[0], int(a[1]), None, int(a[2]), note)
+        else: k3, t3 = split_colon(a); v_remainder(k3[0], int(k3[1]), t3)
     elif v == "status": v_status(a[0] if a else None)
     elif v == "formula": v_formula(a[0])
     elif v == "q": print(json.dumps(ask("q " + " ".join(a)))[:4000])   # a keyed read for the builder; the kernel refuses a scan
