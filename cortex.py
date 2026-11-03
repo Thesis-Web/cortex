@@ -225,6 +225,13 @@ def content_gates(run):
         if s and (s.isdigit() or (len(s) >= 2 and s not in STOP and any(c.isalpha() for c in s))): out.append(g)
     return out
 def is_value(g): return sym_of(g).isdigit()
+_TXT = {}
+def line_text(run):
+    # the sentence of a run, replayed from its gates (the owner, 11-03: words do not live in the brain; the space is a gate too, so the replay is exact); the body after the typed prefix
+    if run not in _TXT:
+        r = "".join(sym_of(g) for g in shape_of(run)); _TXT[run] = r.split(" : ", 1)[1] if " : " in r else r
+    return _TXT[run]
+def receipt_line(l): return line_text(l["run"]).split(" => ", 1)[-1]
 def seq_diff(a, b):
     # the gates out of line between two shapes: replaced, inserted or deleted in the alignment of the two gate lists
     oa, ob = [], []
@@ -299,11 +306,11 @@ def ground_cells(name, n, run, text, new_syms):
     for cmd, d in rc.items():
         cells["receipt_cmds"].append(cmd)
         for l in d.get("lines", []):
-            cells["receipt_runs"] += 1; rnums |= set(numbers(l["t"])); rwords |= set(g for g in content_gates(l["run"]) if not is_value(g)); newest = max(newest, l["run"])
+            cells["receipt_runs"] += 1; rnums |= set(numbers(receipt_line(l))); rwords |= set(g for g in content_gates(l["run"]) if not is_value(g)); newest = max(newest, l["run"])
     if cells["receipt_runs"]:
         cells["receipt_before_claim"] = newest < run   # a print the claim could have read; a later print is not evidence against an earlier claim, only a label
         cells["numbers_in"] = [t for t in cells["numbers"] if t in rnums]; cells["numbers_out"] = [t for t in cells["numbers"] if t not in rnums]
-        cells["receipt_newest"] = " ; ".join("%s => %s" % (cmd, " / ".join(l["t"][:60] for l in d.get("lines", [])[1:3] or d.get("lines", [])[:1])) for cmd, d in rc.items())
+        cells["receipt_newest"] = " ; ".join("%s => %s" % (cmd, " / ".join(receipt_line(l)[:60] for l in d.get("lines", [])[1:3] or d.get("lines", [])[:1])) for cmd, d in rc.items())
     g = cells["ground"]; new = set(new_syms)
     for w in set(x for x in content_gates(run) if not is_value(x)):
         sym = sym_of(w); held = False
@@ -330,10 +337,10 @@ def v_receipt(name, n, cmd):
         body = "%s => %s" % (cmd, l)
         try: r = typed("cortex receipt %s %d : %s" % (name, n, body))
         except RuntimeError as e: print("receipt line refused: %s" % e); continue
-        run = r["run"]; cx_put("receipt", name, text_key(body), run, clock(), json.dumps({"n": n, "cmd": cmd, "t": l, "ts": int(time.time())})); key_gates(name, run); got.append({"run": run, "t": l})
+        run = r["run"]; cx_put("receipt", name, text_key(body), run, clock(), json.dumps({"n": n, "cmd": cmd, "ts": int(time.time())})); key_gates(name, run); got.append({"run": run})
     rc[cmd] = {"ts": int(time.time()), "lines": got}   # the newest print of this command is the ground; older prints stay as typed lines in the brain
     cx_put("receipts", name, n, got[-1]["run"] if got else 0, clock(), json.dumps(rc))
-    for x in got: print("receipt run %d %s C%d: %s => %s" % (x["run"], name, n, cmd, x["t"][:100]))
+    for x in got: print("receipt run %d %s C%d: %s => %s" % (x["run"], name, n, cmd, receipt_line(x)[:100]))
     print("receipt: %d lines typed in %.0f ms; %s C%d has receipts of: %s" % (len(got), (time.time() - t0) * 1000, name, n, ", ".join(sorted(rc))))
 def v_source(name, band=None, text=None):
     # a source is a project of typed lines: cortex source <name> owner|reference : <what it is, where from, as of>; then cortex source <name> - types its lines from stdin (build time, no judge)
@@ -506,9 +513,9 @@ def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
             if not had:
                 if not quiet: print("dropped (repeated in this batch): %s" % s[:80])
                 continue
-            t, times = ingest_text(had[3]); times += 1
+            times = ingest_text(had[3])[1] + 1
             kr = typed("cortex ingest %s : %s" % (name, s)) if repeat_to_kernel else None   # the kernel ticks its own counter: same_as the first run, no second memory row (the owner, 11-03)
-            cx_put("ingest", name, k, had[0], had[1], json.dumps({"t": t, "times": times}))
+            cx_put("ingest", name, k, had[0], had[1], json.dumps({"times": times}))
             out.append({"run": had[0], "clock": had[1], "born": 0, "seconds": 0.0, "same_as": had[0], "again": times, "text": s})
             if not quiet: print("ingest run %d again %d (a repeat%s): %s" % (had[0], times, (", kernel run %d same_as %s" % (kr["run"], (run_row(kr["run"]) or [0, 0])[1])) if kr else "; nothing typed", s[:100]))
             continue
@@ -517,11 +524,11 @@ def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
             if had:
                 first = cx_get("ingest", name, int(had[3]))
                 if first:
-                    t, times = ingest_text(first[3]); cx_put("ingest", name, int(had[3]), first[0], first[1], json.dumps({"t": t, "times": times + 1}))
+                    cx_put("ingest", name, int(had[3]), first[0], first[1], json.dumps({"times": ingest_text(first[3])[1] + 1}))
             if not quiet: print("dropped (restated%s): %s" % ((" run %d" % had[0]) if had else " in this batch", s[:80]))
             continue
         line = "cortex ingest %s : %s" % (name, s); r = typed(line); run = r["run"]; at = clock()
-        cx_put("ingest", name, k, run, at, json.dumps({"t": s, "times": 1})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run)
+        cx_put("ingest", name, k, run, at, json.dumps({"times": 1})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run)
         out.append({"run": run, "clock": at, "born": r["born"], "seconds": r["seconds"], "same_as": 0, "again": 1, "text": s})
         if not quiet: print("ingest run %d clock %d born %d %.3fs: %s" % (run, at, r["born"], r["seconds"], s[:100]))
     print("filter: %d sentences, kept %d, dupe %d, restated %d, noise %d, %.0f ms" % (len(fates), counts["keep"], counts["dupe"], counts["restated"], counts["noise"], (time.time() - t0) * 1000))
@@ -536,13 +543,13 @@ def add_part(name, n, run, text, p=None, by=None, ground=None):
         if p is not None and d.get("p") is None: d["p"], d["by"] = p, by      # a part judged before C15 gets its confidence and judge on its next judgment
         if ground and not d.get("ground"): d["ground"] = ground               # and its ground (C16)
         cx_put("part", name, k, had[0], had[1], json.dumps(d)); return "tick %d" % d["times"]
-    cx_put("part", name, k, run, clock(), json.dumps({"t": text, "n": n, "run": run, "times": 1, "p": p, "by": by, "ground": ground, "ts": int(time.time())})); return "added"
+    cx_put("part", name, k, run, clock(), json.dumps({"n": n, "run": run, "times": 1, "p": p, "by": by, "ground": ground, "ts": int(time.time())})); return "added"
 def retire_part(name, n, old_run, new_run, why):
     # a part leaves the accepted state: superseded_by a newer value, or rejected_by a re-judgment; the row stays as history
-    for (ts, v) in q("SELECT ts, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
+    for (k, ts, v) in q("SELECT n, ts, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
         d = json.loads(v)
         if d.get("run") == old_run and d.get("n") == n and (new_run == "owner" or not d.get(why)):
-            d[why] = new_run; cx_put("part", name, text_key(d["t"]), d["run"], clock(), json.dumps(d)); return True
+            d[why] = new_run; cx_put("part", name, k, d["run"], clock(), json.dumps(d)); return True
     return False
 def parts_of(name, n, limit=5, history=False):
     out = []
@@ -554,7 +561,7 @@ def parts_of(name, n, limit=5, history=False):
     return out[:limit]
 def accepted_state(name, n):
     ps = parts_of(name, n)
-    return " | ".join(p["t"] for p in reversed(ps)) if ps else "(nothing accepted yet)"
+    return " | ".join(line_text(p["run"]) for p in reversed(ps)) if ps else "(nothing accepted yet)"
 # ---- the judge as a run data sheet (handler C11): deterministic cells first, judgment cells when a judge exists, then the formula ----
 def sheet_cells(name, n, run, text, pr, ck, ex):
     cw = content_words(text)
@@ -569,7 +576,7 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
     # the diff cell (the owner: "classifies what is duped information, new information"): the ingest's words against the accepted state's words
     known = set()
     parts = parts_of(name, n, 1000)
-    for p in parts: known |= content_words(p["t"])
+    for p in parts: known |= content_words(line_text(p["run"]))
     base = content_words(pr[3]) | content_words(ck[3]) | (content_words(ex[3]) if ex else set())
     cells["new_words"] = len(cw - known - base); cells["known_words"] = len(cw & (known | base))
     cov, by_rel = coverage(content_words(ex[3]) if ex else set(), cw); cells["coverage_expected"] = cov; cells["by_relation"] = by_rel
@@ -600,7 +607,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     if text is None:
         rows = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
         if not rows: raise SystemExit("ingest run %s is not in the index" % run)
-        text = ingest_text(rows[0][0])[0]
+        text = line_text(run)
     t0 = time.time(); cells = sheet_cells(name, n, run, text, pr, ck, ex)
     state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "ingest": text}
     answers, model = {}, None
@@ -635,7 +642,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
                 s2 = cx_get("state", name, n2)
                 if not s2 or s2[3] != "working": v_state(name, n2, "working")
             moved = " | C%d done by this verdict; next C%s" % (n, n2)
-    cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "text": text[:300]}))
+    cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part}))
     geo = cells["geometry"]
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", (" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else ""))
     if len(cells.get("ground", {}).get("none", [])) >= 2 and kind not in ("noise", "dupe", "drift"): ask_question(name, n, run, cells["ground"]["none"], vrun)
@@ -685,9 +692,9 @@ def hydration_text(name, pr, nxt):
         lines.append("DO NOW, C%d: %s" % (nxt, ck[3]))
         if ex: lines.append("EXPECTED OUTPUT: %s" % ex[3])
         ps = parts_of(name, nxt)
-        if ps: lines.append("ACCEPTED SO FAR (parts of C%d's state, each with its time, confidence and ground): " % nxt + " | ".join("%s [%s%s | %s]" % (p["t"][:90], time.strftime("%m-%d %H:%M", time.localtime(p.get("ts") or 0)), (" p%.2f %s" % (p["p"], p.get("by") or "")) if p.get("p") is not None else "", ("the owner's word" if p.get("by") == "owner" or (p.get("by") is None and p.get("p") is None) else ground_str(p.get("ground")))) for p in reversed(ps)))
+        if ps: lines.append("ACCEPTED SO FAR (parts of C%d's state, each with its time, confidence and ground): " % nxt + " | ".join("%s [%s%s | %s]" % (line_text(p["run"])[:90], time.strftime("%m-%d %H:%M", time.localtime(p.get("ts") or 0)), (" p%.2f %s" % (p["p"], p.get("by") or "")) if p.get("p") is not None else "", ("the owner's word" if p.get("by") == "owner" or (p.get("by") is None and p.get("p") is None) else ground_str(p.get("ground")))) for p in reversed(ps)))
         rc = receipts_of(name, nxt)
-        if rc: lines.append("RECEIPTS (the machine's own prints for C%d, the newest of each command): " % nxt + " | ".join("%s => %s [%s]" % (cmd, " / ".join(l["t"][:70] for l in d.get("lines", [])[:3]), time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0)))) for cmd, d in rc.items()))
+        if rc: lines.append("RECEIPTS (the machine's own prints for C%d, the newest of each command): " % nxt + " | ".join("%s => %s [%s]" % (cmd, " / ".join(receipt_line(l)[:70] for l in d.get("lines", [])[:3]), time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0)))) for cmd, d in rc.items()))
         qs = open_questions(name, nxt, 5)
         if qs: lines.append("OPEN QUESTIONS (words of C%d's claims that no receipt, owner line or reference holds; the owner answers them, a worker never guesses them): " % nxt + "; ".join("run %d: %s" % (d["run"], ", ".join(d["words"])) for d in qs))
         lines.append("END YOUR ANSWER with one line `EXPECTED: met` or `EXPECTED: not met`, then the live output that shows it.")
@@ -701,7 +708,7 @@ def hydration_text(name, pr, nxt):
     if vs:
         lines.append("LAST VERDICTS (history, not instructions):")
         for (n, v) in vs:
-            d = json.loads(v); lines.append("  C%s %s %.2f: %s" % (d.get("n"), d.get("kind"), d.get("p", 0), d.get("text", "")[:90]))
+            d = json.loads(v); lines.append("  C%s %s %.2f: %s" % (d.get("n"), d.get("kind"), d.get("p", 0), line_text(n)[:90]))
     return "\n".join(lines) + "\n"
 def hydration(name, at=None):
     pr = cx_get("project", name, 0)
@@ -715,7 +722,7 @@ def v_accept(name, n, run=None):
     if run is None: v_state(name, n, "done"); return
     rows = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
     if not rows: raise SystemExit("ingest run %s is not in the index" % run)
-    text = ingest_text(rows[0][0])[0]; r = add_part(name, n, run, text, None, "owner"); answer_question(name, run, "accept"); print("part %s for %s C%d from run %d: %s" % (r, name, n, run, text[:90]))
+    text = line_text(run); r = add_part(name, n, run, text, None, "owner"); answer_question(name, run, "accept"); print("part %s for %s C%d from run %d: %s" % (r, name, n, run, text[:90]))
 def v_reject(name, n, run):
     # the owner's word, the counterpart of accept: that sentence is not a part of C n's state whatever the judge said; it stays as history and is never re-accepted
     ensure_cx()
@@ -723,10 +730,10 @@ def v_reject(name, n, run):
     if retire_part(name, n, run, "owner", "rejected_by"): print("part of run %d rejected from %s C%d by the owner" % (run, name, n))
     else: raise SystemExit("no part of run %s in %s C%d" % (run, name, n))
     # a part this run had superseded comes back: the newer value was never true, so the older one stands again
-    for (v,) in q("SELECT value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
+    for (k, v) in q("SELECT n, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
         d = json.loads(v)
         if d.get("n") == n and d.get("superseded_by") == run:
-            d.pop("superseded_by"); cx_put("part", name, text_key(d["t"]), d["run"], clock(), json.dumps(d)); print("part of run %d stands again in %s C%d (it was superseded by the rejected run)" % (d["run"], name, n))
+            d.pop("superseded_by"); cx_put("part", name, k, d["run"], clock(), json.dumps(d)); print("part of run %d stands again in %s C%d (it was superseded by the rejected run)" % (d["run"], name, n))
 MODEL_BY_KIND = {"read": "haiku", "write": "sonnet", "design": "opus"}   # the router's model per step kind (handler C7); a judgment step goes to jev
 def worker(engine, model, prompt, cwd, act):
     if engine == "claude":
@@ -744,8 +751,8 @@ def worker(engine, model, prompt, cwd, act):
 def judgment_step(name, n, ck):
     # the router: a judgment step is one jev question over the project's state; no model turn. The answer is ingested and judged like any output.
     pr = cx_get("project", name, 0); ex = cx_get("expected", name, n)
-    part_texts = [json.loads(v).get("t", "") for (v,) in q("SELECT value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name)]
-    state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "accepted_parts_of_the_project": part_texts[:20], "last_verdicts": [json.loads(v).get("text", "")[:200] for (_, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", name)]}
+    part_texts = [line_text(json.loads(v).get("run") or 0) for (v,) in q("SELECT value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name)]
+    state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "accepted_parts_of_the_project": part_texts[:20], "last_verdicts": [line_text(json.loads(v).get("run") or 0)[:200] for (_, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", name)]}
     allparts = set()
     for t in part_texts: allparts |= content_words(t)
     cov, by_rel = coverage(content_words(ck[3]), allparts)
@@ -858,7 +865,7 @@ def v_formula(name):
     print("CONTRACT, SATISFIED (%d of %d):" % (len(done), N))
     for n in done:
         ps = parts_of(name, int(n), 1)
-        print("  C%s done: %s | part: %s" % (n, cps[n]["expected"][:100] or cps[n]["text"][:100], ps[0]["t"][:110] if ps else "(no part recorded)"))
+        print("  C%s done: %s | part: %s" % (n, cps[n]["expected"][:100] or cps[n]["text"][:100], line_text(ps[0]["run"])[:110] if ps else "(no part recorded)"))
     rem = [n for n in cps if n not in done]
     print("CONTRACT, REMAINDER (%d of %d):" % (len(rem), N))
     for n in rem:
@@ -897,7 +904,7 @@ def v_learn(names=None, key_only=False):
             d = json.loads(value); ck = cx_get("checkpoint", nm, d["n"]); ex = cx_get("expected", nm, d["n"])
             ing = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", nm, run)
             if not ing or not ck or not pr: continue
-            rows.append((feats(sheet_cells(nm, d["n"], run, ingest_text(ing[0][0])[0], pr, ck, ex)), d["kind"], nm, run))
+            rows.append((feats(sheet_cells(nm, d["n"], run, line_text(run), pr, ck, ex)), d["kind"], nm, run))
     if len(rows) < 6: print("learn: %d marks; at least 6 are needed" % len(rows)); return
     def fit(train): return {k: train_logistic([r[0] for r in train], [1.0 if LABEL_Q.get(r[1]) == k else 0.0 for r in train]) for k in JUDGE_QUESTIONS}
     hits, wrong = 0, []
@@ -926,7 +933,7 @@ def v_verdicts(name, n=None, limit=40):
         pt = parts.get(run); st = "-"
         if pt: st = "rejected" if pt.get("rejected_by") == "owner" else ("retired" if (pt.get("superseded_by") or pt.get("rejected_by")) else "part")
         m = cx_get("mark", name, run); mk = json.loads(m[3]).get("kind") if m else "-"
-        print("%-7d C%-3s %-13s %-5.2f %-22s %-11s %-12s %-12s %-24s %s" % (run, d.get("n"), d.get("kind"), d.get("p") or 0, (d.get("judge") or "")[:22], time.strftime("%m-%d %H:%M", time.localtime(ts)), st, mk, ground_str((d.get("sheet") or {}).get("ground"))[:24] if (d.get("sheet") or {}).get("ground") else "(judged before c16)", (d.get("text") or "")[:90]))
+        print("%-7d C%-3s %-13s %-5.2f %-22s %-11s %-12s %-12s %-24s %s" % (run, d.get("n"), d.get("kind"), d.get("p") or 0, (d.get("judge") or "")[:22], time.strftime("%m-%d %H:%M", time.localtime(ts)), st, mk, ground_str((d.get("sheet") or {}).get("ground"))[:24] if (d.get("sheet") or {}).get("ground") else "(judged before c16)", line_text(run)[:90]))
         shown += 1
         if shown >= limit: break
     print("%d judged lines of %s%s. mark one: cortex mark %s <run> <kind> [: why]; the owner's word: cortex accept|reject %s <n> <run>" % (shown, name, (" at C%d" % n) if n is not None else "", name, name))
@@ -948,7 +955,7 @@ def v_status(name=None):
         for (n, run, at, ts, text) in cx_list("checkpoint", nm):
             s = cx_get("state", nm, n); print("  C%d [%s]%s %s" % (n, s[3] if s else "open", " NEXT" if n == nxt else "", text[:110]))
         for (n, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", nm):
-            d = json.loads(v); print("  verdict run %d C%s %s %.2f (%s): %s" % (n, d.get("n"), d.get("kind"), d.get("p", 0), d.get("judge"), d.get("text", "")[:70]))
+            d = json.loads(v); print("  verdict run %d C%s %s %.2f (%s): %s" % (n, d.get("n"), d.get("kind"), d.get("p", 0), d.get("judge"), line_text(n)[:70]))
 def v_freeze(path):
     ensure_cx(); sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
     run, at, _ = record("freeze", "handler", 0, sha); os.chmod(path, 0o444)
