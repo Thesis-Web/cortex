@@ -3,7 +3,7 @@
 # decides by the truth table in CORTEX-HANDLER.md section 7; a worker (claude -p / codex exec) works one turn on the hydration and nothing else.
 # Every Cortex record is one line typed at the brain's main prompt (a run, a clock, a memory row, a dedupe tick); main.cx is the keyed index of
 # those lines (one row per kind/name/n, replaced in place), because the kernel refuses a read without a key. No log table, no timer, no sweep.
-import socket, json, sys, os, re, time, hashlib, subprocess, urllib.request, urllib.error
+import socket, json, sys, os, re, time, hashlib, subprocess, shutil, urllib.request, urllib.error
 PORT = int(os.environ.get("CORTEX_PORT", "7007"))
 HOME = os.path.expanduser("~")
 KEYFILE = os.path.join(HOME, ".config", "cortex", "typesafe.key")
@@ -58,11 +58,19 @@ def clean(text):
     t = re.sub(r"\s+", " ", t).strip().lower()
     return t
 def sentences(text):
-    # a fenced block is live output: kept, its fence marks dropped, each of its lines a sentence of its own
-    text = re.sub(r"```[a-zA-Z0-9_-]*\n?(.*?)```", lambda m: "\n" + m.group(1) + "\n", text, flags=re.S)
+    # a fenced block is live output and belongs to the sentence that introduced it: its lines are joined onto that sentence (the owner: the
+    # observation is the sentence's evidence, not a sentence of its own); a block with nothing before it stands alone
+    text = re.sub(r"```[a-zA-Z0-9_-]*\n?(.*?)```", lambda m: "\n\x01" + " ; ".join(l.strip() for l in m.group(1).splitlines() if l.strip()) + "\n", text, flags=re.S)
     parts = re.split(r"(?<=[.!?])\s+|\n+", text)
-    out = []
+    merged = []
     for p in parts:
+        if p.startswith("\x01"):
+            body = p[1:].strip()
+            if merged and body: merged[-1] = merged[-1].rstrip(":").rstrip() + ": " + body
+            elif body: merged.append(body)
+        else: merged.append(p)
+    out = []
+    for p in merged:
         p = clean(p)
         if len(p) < 3: continue
         while len(p) > 700:
@@ -174,6 +182,85 @@ JUDGE_QUESTIONS = {
     "invents":     {"type": "noul", "instructions": "`ingest` names a result, thing or term that neither `scope`, `checkpoint`, `expected` nor `accepted_state` mention, and does not present it as an observed output", "criteria": {"false": "every thing the ingest names is in the scope or state, or is presented as something observed"}},
     "contradicts": {"type": "noul", "instructions": "`ingest` contradicts `accepted_state` without naming an observation", "criteria": {"false": "the ingest agrees with the accepted state, or names an observation for the difference"}},
 }
+
+# ---- the graph cells (the guessing brain's first job, deterministic): the expected output covered by the ingest's words and their relationship rows ----
+OBS = re.compile(r"\d|`|\"|\b(printed|prints|returned|returns|output|shows|showed|ran|run|answered|exit|listed|lists)\b")
+def gate_of(word):
+    rows = q("SELECT gate FROM main.label WHERE symbol = ?", word); return rows[0][0] if rows else 0
+def related(word):
+    # the gates a word reaches in the brain by key: its relationship rows and the words of its own definition (the kernel's defwords table)
+    g = gate_of(word)
+    if not g: return set()
+    out = set(o for (o,) in q("SELECT other FROM main.rel WHERE gate = ?", g)) | {g}
+    try: out |= set(w for (w,) in q("SELECT word FROM main.defwords WHERE gate = ?", g))
+    except RuntimeError: pass
+    return out
+def coverage(target_words, ingest_words):
+    # the share of the target's content words present in the ingest, or related to an ingest word by a row the brain holds (keyed reads only)
+    if not target_words: return 0.0, 0
+    ing = set()
+    for w in ingest_words: ing |= related(w)
+    covered = by_rel = 0
+    for t in target_words:
+        if t in ingest_words: covered += 1
+        elif gate_of(t) in ing: covered += 1; by_rel += 1
+    return round(covered / len(target_words), 3), by_rel
+CLAUDE_BIN = shutil.which("claude") or (os.path.expanduser("~/.local/bin/claude") if os.path.exists(os.path.expanduser("~/.local/bin/claude")) else None)
+JUDGE_MODEL = os.environ.get("CORTEX_JUDGE_MODEL", "haiku")
+JUDGE_PROMPT = """You are a judge. Below is a STATE (json) and numbered SENTENCES. For every sentence give, for each of these seven statements, the probability from 0 to 1 that the statement is true of that sentence read against the state:
+completes: the sentence reports that `expected` was observed as live output (not a plan, not intent).
+progresses: the sentence brings `checkpoint` closer to `expected` than `accepted_state` does.
+regresses: the sentence is further from `expected` than `accepted_state`.
+supersedes: the sentence states a newer fact about the same thing `accepted_state` describes.
+off_scope: the sentence is about something outside `scope`.
+invents: the sentence names a result, thing or term that scope, checkpoint, expected and accepted_state never mention, and does not present it as observed.
+contradicts: the sentence contradicts `accepted_state` without naming an observation.
+Answer with one JSON object only, no prose: {"<number>": {"completes": p, "progresses": p, "regresses": p, "supersedes": p, "off_scope": p, "invents": p, "contradicts": p}, ...}
+STATE:
+%s
+SENTENCES:
+%s
+"""
+def claude_judge(state, items):
+    # the subscription model as the judge (already paid): one call for a whole batch, a JSON of probabilities back; a failure is an error, never a verdict
+    if not CLAUDE_BIN: raise RuntimeError("no claude on this machine")
+    prompt = JUDGE_PROMPT % (json.dumps(state), "\n".join("%d: %s" % (r, t) for r, t in items))
+    p = subprocess.run([CLAUDE_BIN, "-p", "--model", JUDGE_MODEL, "--output-format", "text"], input=prompt, capture_output=True, text=True, timeout=600)
+    m = re.search(r"\{.*\}", p.stdout, flags=re.S)
+    if p.returncode != 0 or not m: raise RuntimeError("claude judge gave no JSON (rc %d): %s" % (p.returncode, (p.stderr or p.stdout)[-300:]))
+    d = json.loads(m.group(0)); out = {}
+    for r, t in items:
+        a = d.get(str(r), {}); out[r] = {k: round(float(a.get(k, 0.0)), 3) for k in JUDGE_QUESTIONS}
+    return out
+HOLDS_PROMPT = """You are a judge. Below is the STATE of a project (json): its scope, the sentences accepted as its state so far (accepted_parts_of_the_project), and the last verdicts. Answer one question: what is the probability, from 0 to 1, that this STATEMENT is true given only that state?
+STATEMENT: %s
+Answer with one JSON object only, no prose: {"holds": p}
+STATE:
+%s
+"""
+def claude_holds(state, statement):
+    if not CLAUDE_BIN: raise RuntimeError("no claude on this machine")
+    p = subprocess.run([CLAUDE_BIN, "-p", "--model", JUDGE_MODEL, "--output-format", "text"], input=HOLDS_PROMPT % (statement, json.dumps(state)), capture_output=True, text=True, timeout=600)
+    m = re.search(r"\{.*\}", p.stdout, flags=re.S)
+    if p.returncode != 0 or not m: raise RuntimeError("claude holds gave no JSON (rc %d): %s" % (p.returncode, (p.stderr or p.stdout)[-300:]))
+    return round(float(json.loads(m.group(0)).get("holds", 0.0)), 3)
+def judge_route():
+    # the judge for what the sheet leaves unsettled: jev when a key exists, else the subscription model, else none
+    f = os.environ.get("CORTEX_JUDGE")
+    if f in ("none", "graph"): return None
+    if f != "claude" and jev_route(): return "jev"
+    if CLAUDE_BIN: return "claude"
+    return None
+def judge_batch(state, items):
+    # items: [(run, text)]; returns {run: answers}, the judge's name
+    r = judge_route()
+    if r == "jev":
+        out = {}; model = JEV_MODEL
+        for run, t in items:
+            resp = jev(dict(state, ingest=t), JUDGE_QUESTIONS); out[run] = {k: round(v.get("noul", 0.0), 3) for k, v in resp["answers"].items()}; model = resp.get("model", JEV_MODEL)
+        return out, "jev:" + model
+    if r == "claude": return claude_judge(state, items), "claude:%s (subscription)" % JUDGE_MODEL
+    return {}, None
 def decide(a):
     # the truth table (handler section 7), in code
     if a.get("completes", 0) >= THRESH: return "completes"
@@ -265,15 +352,19 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
     for p in parts_of(name, n, 1000): known |= content_words(p["t"])
     base = content_words(pr[3]) | content_words(ck[3]) | (content_words(ex[3]) if ex else set())
     cells["new_words"] = len(cw - known - base); cells["known_words"] = len(cw & (known | base))
+    cov, by_rel = coverage(content_words(ex[3]) if ex else set(), cw); cells["coverage_expected"] = cov; cells["by_relation"] = by_rel
+    cells["observed"] = bool(OBS.search(text))
     return cells
 def formula(cells, answers):
     # the substitution formulas over a full sheet: what the deterministic cells settle, then the judgment cells
     if cells["noise"]: return "noise", "sheet"
     if answers: return decide(answers), "jev"
-    if cells["words"] >= 4 and cells["shared_scope"] == 0 and cells["shared_checkpoint"] == 0 and cells["shared_expected"] == 0: return "drift", "sheet"
-    if cells["words"] >= 4 and cells["new_words"] == 0 and cells["known_words"] >= 3: return "dupe", "sheet"   # nothing new against the accepted state
+    if cells["words"] >= 4 and cells["shared_scope"] == 0 and cells["shared_checkpoint"] == 0 and cells["shared_expected"] == 0 and not cells["observed"]: return "drift", "sheet"
+    if cells["coverage_expected"] >= 0.7 and cells["observed"]: return "completes", "graph"                    # the expected output covered and an observation named
+    if cells["words"] >= 4 and cells["new_words"] == 0 and cells["known_words"] >= 3 and not cells["observed"]: return "dupe", "sheet"   # a restatement with nothing new and nothing observed
+    if cells["new_words"] >= 2 and (cells["shared_checkpoint"] + cells["shared_expected"]) >= 1 and cells["observed"]: return "progresses", "graph"
     return "unsettled", "sheet"
-def v_judge(name, n, run, text=None):
+def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     ensure_cx()
     pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
     if not pr or not ck: raise SystemExit("no such project/checkpoint: %s %s" % (name, n))
@@ -284,23 +375,47 @@ def v_judge(name, n, run, text=None):
     t0 = time.time(); cells = sheet_cells(name, n, run, text, pr, ck, ex)
     state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "ingest": text}
     answers, model = {}, None
-    if not cells["noise"]:
+    kind, by = formula(cells, {})
+    if kind == "unsettled" and answers_given is not None: answers = answers_given; model = judge_name
+    elif kind == "unsettled":
         try:
-            resp = jev(state, JUDGE_QUESTIONS)
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-            raise SystemExit("jev call failed, no verdict written: %s" % e)
-        if resp: answers = {k: round(v.get("noul", 0.0), 3) for k, v in resp["answers"].items()}; model = resp.get("model", JEV_MODEL)
-    kind, by = formula(cells, answers); judge = model if by == "jev" else "sheet"
-    p = (answers.get(kind, 0.0) if kind in answers else max(answers.values())) if answers else 0.0
+            got, model = judge_batch(state, [(run, text)]); answers = got.get(run, {})
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
+            raise SystemExit("judge call failed, no verdict written: %s" % e)
+    if answers: kind, by = formula(cells, answers)
+    judge = model if (by == "jev" and model) else ("graph" if by == "graph" else "sheet")
+    p = (answers.get(kind, 0.0) if kind in answers else max(answers.values())) if answers else (cells["coverage_expected"] if (by == "graph" and kind == "completes") else (0.5 if by == "graph" else 0.0))
     body = "%s %.3f %s" % (kind, p, judge)
     vrun, at, _ = record("verdict", name, run, body)
     part = add_part(name, n, run, text) if kind in ("completes", "progresses", "supersedes") else ""
+    moved = ""
+    if kind == "completes" and p >= THRESH:
+        st = cx_get("state", name, n)
+        if not st or st[3] != "done":
+            v_state(name, n, "done"); n2 = next_checkpoint(name)
+            if n2 is not None and n2 != n:
+                s2 = cx_get("state", name, n2)
+                if not s2 or s2[3] != "working": v_state(name, n2, "working")
+            moved = " | C%d done by this verdict; next C%s" % (n, n2)
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "text": text[:300]}))
     geo = cells["geometry"]
-    print("verdict %s %d run %d: %s %.3f by %s in %.0f ms | sheet words %d shared scope %d checkpoint %d expected %d new %d known %d mark %s times %d noise %s | geometry mag %s rad %s | history %s%s" % (name, n, run, kind, p, judge, (time.time() - t0) * 1000, cells["words"], cells["shared_scope"], cells["shared_checkpoint"], cells["shared_expected"], cells["new_words"], cells["known_words"], cells["expected_mark"], cells["times"], cells["noise"] or "-", geo.get("magnitude"), geo.get("radians"), json.dumps(cells["history"]), (" | part " + part) if part else ""))
+    print("verdict %s %d run %d: %s %.3f by %s in %.0f ms | sheet words %d shared scope %d checkpoint %d expected %d new %d known %d coverage %.2f (%d by relation) observed %s mark %s times %d noise %s | geometry mag %s rad %s | history %s%s" % (name, n, run, kind, p, judge, (time.time() - t0) * 1000, cells["words"], cells["shared_scope"], cells["shared_checkpoint"], cells["shared_expected"], cells["new_words"], cells["known_words"], cells["coverage_expected"], cells["by_relation"], cells["observed"], cells["expected_mark"], cells["times"], cells["noise"] or "-", geo.get("magnitude"), geo.get("radians"), json.dumps(cells["history"]), (" | part " + part) if part else ""))
+    if moved: print(" " + moved.strip(" |"))
     if answers: print("  answers " + " ".join("%s=%.2f" % kv for kv in sorted(answers.items())))
-    elif not cells["noise"]: print("  judgment cells empty: no jev key (typesafe.key or gateway.key in ~/.config/cortex)")
+    elif kind == "unsettled": print("  judgment cells empty: no judge (set a key, or claude on PATH for the subscription judge)")
     return kind
+def judge_many(name, n, items):
+    # the sheet for every sentence first; one judge call for the batch the sheet left unsettled; then every verdict written
+    pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
+    if not pr or not ck or not items: return []
+    state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n)}
+    pending = [(i["run"], i["text"]) for i in items if formula(sheet_cells(name, n, i["run"], i["text"], pr, ck, ex), {})[0] == "unsettled"]
+    got, model = {}, None
+    if pending:
+        try: got, model = judge_batch(state, pending)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
+            raise SystemExit("judge call failed, no verdict written: %s" % e)
+    return [v_judge(name, n, i["run"], i["text"], got.get(i["run"], {}) if i["run"] in got else None, model) for i in items]
 def next_checkpoint(name):
     cps = cx_list("checkpoint", name)
     for (n, run, at, ts, text) in cps:
@@ -362,11 +477,20 @@ def worker(engine, model, prompt, cwd, act):
 def judgment_step(name, n, ck):
     # the router: a judgment step is one jev question over the project's state; no model turn. The answer is ingested and judged like any output.
     pr = cx_get("project", name, 0); ex = cx_get("expected", name, n)
-    state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "last_verdicts": [json.loads(v).get("text", "")[:200] for (_, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", name)]}
-    resp = jev(state, {"holds": {"type": "noul", "instructions": "`checkpoint` is true of the state described by `scope`, `accepted_state` and `last_verdicts`", "criteria": {"false": "the state does not show the checkpoint's statement to be true"}}})
-    if not resp: raise SystemExit("judgment step needs jev; no key (typesafe.key or gateway.key in ~/.config/cortex)")
-    p = resp["answers"]["holds"]["noul"]
-    return "judgment by %s: the statement holds with probability %.2f. EXPECTED: %s" % (resp.get("model", JEV_MODEL), p, "met" if p >= THRESH else "not met"), p
+    part_texts = [json.loads(v).get("t", "") for (v,) in q("SELECT value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name)]
+    state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "accepted_parts_of_the_project": part_texts[:20], "last_verdicts": [json.loads(v).get("text", "")[:200] for (_, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", name)]}
+    allparts = set()
+    for t in part_texts: allparts |= content_words(t)
+    cov, by_rel = coverage(content_words(ck[3]), allparts)
+    if cov >= 0.7: return "judgment by graph: the statement holds with probability %.2f (%d words by relationship), no model asked. EXPECTED: met" % (cov, by_rel), cov
+    r = judge_route()
+    if r == "jev":
+        resp = jev(state, {"holds": {"type": "noul", "instructions": "`checkpoint` is true of the state described by `scope`, `accepted_state` and `last_verdicts`", "criteria": {"false": "the state does not show the checkpoint's statement to be true"}}})
+        p = resp["answers"]["holds"]["noul"]; who = "jev:" + resp.get("model", JEV_MODEL)
+    elif r == "claude":
+        p = claude_holds(state, ck[3]); who = "claude:%s (subscription)" % JUDGE_MODEL
+    else: raise SystemExit("judgment step: the graph covered %.2f and no judge is set" % cov)
+    return "judgment by %s: the statement holds with probability %.2f. EXPECTED: %s" % (who, p, "met" if p >= THRESH else "not met"), p
 def v_turn(name, engine="claude", model=None, act=False, at=None):
     ensure_cx(); nxt = at if at is not None else next_checkpoint(name)
     if nxt is None: print("nothing to do: every checkpoint of %s is done" % name); return
@@ -377,20 +501,26 @@ def v_turn(name, engine="claude", model=None, act=False, at=None):
     if model is None: model = MODEL_BY_KIND.get(kind, "sonnet") if engine == "claude" else "default"
     h = hydration(name, nxt); cwd = os.path.join(WORKDIR, name); os.makedirs(cwd, exist_ok=True)
     if kind == "judgment":
-        print("turn %s C%d: a judgment step, routed to jev (no model turn)" % (name, nxt))
+        print("turn %s C%d: a judgment step, routed to the judge (no worker)" % (name, nxt))
         out, p = judgment_step(name, nxt, cx_get("checkpoint", name, nxt)); err, rc, secs = "", 0, 0.0
-        print("jev answered: %s" % out)
+        print("the judge answered: %s" % out)
+        run_ = v_ingest(name, out, quiet=True)
+        if p >= THRESH:
+            r0 = run_[0]["run"] if run_ else 0; add_part(name, nxt, r0, out[:300]); v_state(name, nxt, "done"); n2 = next_checkpoint(name)
+            if n2 is not None: v_state(name, n2, "working")
+            print("C%d done by the judgment (%.2f); next C%s" % (nxt, p, n2))
+        else: print("C%d stays working: the judgment was %.2f" % (nxt, p))
+        return
     else:
         print("turn %s C%d [%s]: %s %s, prompt %d bytes (the hydration, nothing else)" % (name, nxt, kind, engine, model, len(h.encode())))
         out, err, rc, secs = worker(engine, model, h, cwd, act)
     print("worker rc %d in %.1fs, output %d bytes" % (rc, secs, len(out.encode())))
     if rc != 0 or not out.strip(): print("worker stderr: " + err[-800:]); raise SystemExit("worker failed, nothing ingested")
-    ing = v_ingest(name, out, quiet=True); kinds = []
-    for i in ing:
-        if i["same_as"]: continue
-        kinds.append(v_judge(name, nxt, i["run"], i["text"]))
+    ing = v_ingest(name, out, quiet=True); kinds = judge_many(name, nxt, [i for i in ing if not i["same_as"]])
     print("ingested %d sentences (%d repeats), verdicts: %s" % (len(ing), sum(1 for i in ing if i["same_as"]), " ".join(kinds) or "none"))
-    if "completes" in kinds:
+    st_now = cx_get("state", name, nxt)
+    if st_now and st_now[3] == "done": print("C%d done by its verdict; next C%s" % (nxt, next_checkpoint(name)))
+    elif "completes" in kinds:
         v_state(name, nxt, "done"); n2 = next_checkpoint(name)
         if n2 is not None: v_state(name, n2, "working")
         print("C%d done; next C%s" % (nxt, n2))
@@ -422,9 +552,9 @@ def v_capture(cwd=None, name=None):
     print("capture %s: %d texts, %d sentences, %d new, %d repeats, %d bytes" % (name, len(texts_all), len(ing), len(new), len(ing) - len(new), len(last.encode())))
     nxt = next_checkpoint(name)
     if nxt is None: return
-    if jev_key():
-        kinds = [v_judge(name, nxt, i["run"], i["text"]) for i in new]; print("judged against C%d: %s" % (nxt, " ".join(kinds)))
-    else: print("not judged: no jev key")
+    try:
+        kinds = judge_many(name, nxt, new[-20:]); print("judged against C%d: %s" % (nxt, " ".join(kinds)))
+    except SystemExit as e: print("not judged: %s" % e)
 # ---- the owner's input output formula (2026-11-02): before/after + progression = diff output + before and after states + progression
 #      = expected completed output contract: satisfied parts and the remainder not satisfied. A snapshot per report; the next report diffs it. ----
 def snapshot(name):
@@ -467,13 +597,13 @@ def v_formula(name):
     for n in rem:
         c = cps[n]; miss = []
         if c["parts"] == 0: miss.append("no accepted part")
-        if not c["verdicts"].get("completes"): miss.append("no completes verdict" + (" (judgment cells need a key)" if not jev_key() else ""))
+        if not c["verdicts"].get("completes"): miss.append("no completes verdict")
         print("  C%s [%s] expected: %s | missing: %s" % (n, c["state"], c["expected"][:110] or "(none)", ", ".join(miss)))
     cx_put("formula", name, now["clock"], 0, now["clock"], json.dumps(now))
 def v_status(name=None):
     ensure_cx(); st = ask("stats")["main"]
-    r = jev_route()
-    print("brain: gates %d runs %d hops %d refused %d clock %d | jev %s | index rows %d" % (st["gates"], st["runs"], st["hops"], st["refused"], clock(), ("via " + r["via"]) if r else "NO KEY (typesafe.key or gateway.key in ~/.config/cortex)", q("SELECT count(*) FROM main.cx WHERE kind = 'checkpoint' AND name = ? AND n >= 0", name or "")[0][0] if name else -1))
+    r = judge_route()
+    print("brain: gates %d runs %d hops %d refused %d clock %d | judge: sheet+graph, then %s | index rows %d" % (st["gates"], st["runs"], st["hops"], st["refused"], clock(), ("jev via " + jev_route()["via"]) if r == "jev" else ("claude:%s (subscription)" % JUDGE_MODEL if r == "claude" else "none"), q("SELECT count(*) FROM main.cx WHERE kind = 'checkpoint' AND name = ? AND n >= 0", name or "")[0][0] if name else -1))
     fr = cx_get("freeze", "handler", 0)
     if fr:
         try: now = hashlib.sha256(open(HANDLER, "rb").read()).hexdigest()
