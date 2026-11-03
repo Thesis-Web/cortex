@@ -61,6 +61,8 @@ def sentences(text):
     # a fenced block is live output and belongs to the sentence that introduced it: its lines are joined onto that sentence (the owner: the
     # observation is the sentence's evidence, not a sentence of its own); a block with nothing before it stands alone
     text = re.sub(r"```[a-zA-Z0-9_-]*\n?(.*?)```", lambda m: "\n\x01" + " ; ".join(l.strip() for l in m.group(1).splitlines() if l.strip()) + "\n", text, flags=re.S)
+    text = re.sub(r"\*\*|__|~~", "", text)                                   # emphasis marks are markup, not words (C10.1)
+    text = re.sub(r"(?m)^[ \t]*(?:#{1,6}|[-*\u2022]|\d{1,2}[.)])[ \t]+", "", text)   # a heading or bullet mark in front of a sentence
     parts = re.split(r"(?<=[.!?])\s+|\n+", text)
     merged = []
     for p in parts:
@@ -88,8 +90,9 @@ def is_noise(s):
     t = s.strip()
     if any(t.startswith(p) for p in NOISE_START): return "command-or-markup"
     if "://" in t: return "url"
-    toks = t.split(); filey = [x for x in toks if "/" in x or re.match(r"^[\w.-]+\.(txt|py|sh|md|db|json|log|html|c|h|so|map|jsonl|service)$", x)]
-    if toks and (toks[0] in filey or len(filey) >= 2): return "path"
+    toks = t.split(); filey = [x for x in toks if ("/" in x and re.search(r"\w/|/\w", x)) or re.match(r"^[\w.-]+\.(txt|py|sh|md|db|json|log|html|c|h|so|map|jsonl|service)$", x)]
+    if toks and toks[0] in filey: return "path"
+    if len(filey) >= 2 and len(content_words(" ".join(x for x in toks if x not in filey))) < 4: return "path"   # C10.1: a sentence that names two paths among its words is a sentence
     if re.search(r"\b(jq|curl|ssh|grep|sed|awk|python3|bash|git|sudo|systemctl|cortex)\s+-", t) or t.endswith(("{", "}", ";", "\\")): return "code"
     nonspace = [c for c in t if not c.isspace()]
     if not nonspace: return "empty"
@@ -333,7 +336,7 @@ def v_receipt(name, n, cmd):
     lines = [clean(l) for l in sys.stdin.read().splitlines() if clean(l)]
     if not lines: raise SystemExit("receipt: nothing on stdin; pipe the command's output in")
     rc = receipts_of(name, n); got = []; t0 = time.time()
-    for l in lines[:40]:
+    for l in lines[:80]:
         body = "%s => %s" % (cmd, l)
         try: r = typed("cortex receipt %s %d : %s" % (name, n, body))
         except RuntimeError as e: print("receipt line refused: %s" % e); continue
