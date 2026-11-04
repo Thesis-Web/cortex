@@ -422,7 +422,7 @@ def sources():
             except ValueError: pass
         _SRC.append(None)
     return [x for x in _SRC if x]
-MEASURES_DEFAULT = {"clock": "date", "tonight": "date", "today": "date", "now": "date", "o'clock": "date",
+MEASURES_DEFAULT = {"clock": "date", "tonight": "date", "today": "date", "o'clock": "date",
                     "mem": "free -m", "memory": "free -m", "swap": "free -m",
                     "disk": "df -h /", "avail": "df -h /", "filesystem": "df -h /", "df": "df -h /",
                     "load": "uptime", "uptime": "uptime",
@@ -457,7 +457,15 @@ def ground_cells(name, n, run, text, new_syms):
             for x in nn: ptext.setdefault(x, rl)
             if not is_self_print(cmd): rnums_ext |= nn   # a cortex print of its own verdicts and parts is circular ground for a sentence about them
             rwords |= set(g for g in content_gates(l["run"]) if not is_value(g))
-    if meas: cells["measure_missing"] = sorted(m0 for m0 in meas if not any(toks(m0) & toks(c0) for c0 in rc.keys()))   # the measures named with no print of them on this checkpoint
+    if meas:
+        cells["measure_missing"] = sorted(m0 for m0 in meas if not any(toks(m0) & toks(c0) for c0 in rc.keys()))   # the measures named with no print of them on this checkpoint
+        if cells["measure_missing"] and cells.get("numbers_out"):
+            mw = set(w for m0 in cells["measure_missing"] for w in meas[m0]); low = text.lower(); unchecked = []
+            for t0 in list(cells["numbers_out"]):
+                i = low.find(t0)
+                before = set(re.findall(r"[a-z][a-z']+", low[max(0, i - 40):i])) if i >= 0 else set()
+                if before & mw: unchecked.append(t0); cells["numbers_out"].remove(t0)   # C35b: this number belongs to the missing print; it is unchecked, not false
+            cells["numbers_unchecked"] = unchecked
     if cells["receipt_runs"]:
         cells["receipt_before_claim"] = older > 0   # at least one print the claim could have read
         cells["numbers_in"] = [t for t in cells["numbers"] if t in rnums]; cells["numbers_out"] = [t for t in cells["numbers"] if t not in rnums]
@@ -772,7 +780,7 @@ def formula(cells, answers):
     if len(sc.get("disagree", [])) >= 3 and not sc.get("confirm"): return "hallucination", "sources"   # C28 (the owner): a statement proven false by three or more sources
     rb = cells.get("receipt_before_claim")
     about = cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.5   # C22: the claim is about this print: names its command, cites its values, or states the expected
-    if rb and cells.get("numbers_out") and about and not cells.get("measure_missing"): return "hallucination", "receipt"   # a value the machine never printed, said after the print, by a claim about that print; C35: not when a print it names is missing, that is a question
+    if rb and cells.get("numbers_out") and about: return "hallucination", "receipt"   # a value the machine never printed, said after the print, by a claim about that print (C35b: a number beside a missing measure's word was set aside as unchecked)
     if cells.get("supersedes_run"): return "supersedes", ("receipt" if rb and cells.get("numbers_in") and not cells.get("numbers_out") else "shape")   # the same shape as an accepted part, only value or time gates out of line
     if cells.get("shape_gates", 0) >= 4 and cells["shape_shared_project"] == 0: return "drift", "shape"   # no word gate shared with the scope, checkpoint or expected
     if cells["words"] >= 4 and cells["shared_scope"] == 0 and cells["shared_checkpoint"] == 0 and cells["shared_expected"] == 0 and not cells["observed"]: return "drift", "sheet"
