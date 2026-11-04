@@ -367,6 +367,25 @@ def numbers(text):
     t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", text.lower())
     t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t)   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
     return NUM.findall(t)
+SCALE = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "billion": 1e9}
+def num_value(tok, text=""):
+    m = re.match(r"^(\d+(?:\.\d+)?)([a-z%]*)$", tok)
+    if not m: return None, ""
+    v, unit = float(m.group(1)), m.group(2)
+    if text:
+        mm = re.search(r"\b" + re.escape(tok) + r"\s+(thousand|million|billion)\b", text.lower())
+        if mm: v *= SCALE[mm.group(1)]; unit = ""
+    return v, unit
+def rounding_of(tok, printed, text=""):
+    # the claim's number is a rounding of a printed one: same unit, within half a percent or within the last kept digit
+    v, u = num_value(tok, text)
+    if v is None: return None
+    for pt in printed:
+        w, pu = num_value(pt)
+        if w is None or (u and pu and u != pu) or w == v: continue
+        dec = len(tok.split(".")[1]) if "." in tok else 0
+        if abs(w - v) <= max(abs(w) * 0.005, 0.5 * 10 ** (-dec)) : return pt
+    return None
 CMD_NOISE = set("ssh echo cat bash python3 hp2 tail head cut sed grep awk then done for do fi if else while read printf true false tee sort uniq wc tr xargs".split())
 def toks(s):
     return set(w for w in re.findall(r"[a-z][a-z0-9_.-]*", s.lower()) if len(w) >= 2 and w not in STOP and w not in CMD_NOISE)
@@ -402,6 +421,10 @@ def ground_cells(name, n, run, text, new_syms):
         cells["receipt_before_claim"] = newest < run   # a print the claim could have read; a later print is not evidence against an earlier claim, only a label
         cells["numbers_in"] = [t for t in cells["numbers"] if t in rnums]; cells["numbers_out"] = [t for t in cells["numbers"] if t not in rnums]
         cells["numbers_in_ext"] = [t for t in cells["numbers"] if t in rnums_ext]
+        cells["numbers_rounded"] = {}
+        for t in list(cells["numbers_out"]):
+            pt = rounding_of(t, rnums, text)
+            if pt: cells["numbers_rounded"][t] = pt; cells["numbers_out"].remove(t); cells["numbers_in"].append(t); (cells["numbers_in_ext"].append(t) if rounding_of(t, rnums_ext, text) else None)   # C22b: a rounding is the printed value, said shorter
         cells["receipt_newest"] = " ; ".join("%s => %s" % (cmd, " / ".join(receipt_line(l)[:60] for l in d.get("lines", [])[1:3] or d.get("lines", [])[:1])) for cmd, d in rc.items())
     g = cells["ground"]; new = set(new_syms)
     for w in set(x for x in content_gates(run) if not is_value(x)):
@@ -767,7 +790,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "voice": iv.get("voice", "hand"), "guess": bool(iv.get("guess"))}))
     tally_voice(iv.get("voice", "hand"), kind, by, bool(iv.get("guess")))
     geo = cells["geometry"]
-    print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", (" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else ""))
+    print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
     pg = cells.get("pair_ground") or {}
     if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s | agreement %d of %d sources%s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-", len(pg.get("agree", [])), pg.get("sources", 0), (" (" + ", ".join(pg["agree"][:4]) + ")") if pg.get("agree") else ""))
     no_source = pg.get("pairs", 0) >= 3 and not pg.get("held_by") and not cells.get("numbers_in_ext")   # no source holds any pair and no print grounds a value: the run left known ground at its first pair
