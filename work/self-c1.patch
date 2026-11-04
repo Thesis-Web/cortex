@@ -1,0 +1,12 @@
+diff --git a/cortex.py b/cortex.py
+index 23119f4..ffb4045 100755
+--- a/cortex.py
++++ b/cortex.py
+@@ -1041,6 +1041,7 @@ def formula(cells, answers):
+     if len(sc.get("disagree", [])) >= 3 and not sc.get("confirm") and not cells.get("designer"): return "hallucination", "sources"   # C37: never for the designer on their own design, that is a question   # C28 (the owner): a statement proven false by three or more sources
+     rb = cells.get("receipt_before_claim")
+     about = cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.5   # C22: the claim is about this print: names its command, cites its values, or states the expected
++    if rb and cells.get("numbers_out") and cells.get("measure_missing"): cells["print_missing"] = list(cells["numbers_out"]); return "unsettled", "sheet"   # 2026-11-04 (cortex why c49, run 2186007): the sheet asked for a print it lacked (measure_missing) and the receipt conviction ran on the same line; a missing print is a question, not a verdict (C35.3)
+     if rb and cells.get("numbers_out") and (cells.get("receipt_named") or cells.get("numbers_in_ext")): return "hallucination", "receipt"   # C35.3: convicted only against a print it names or cites
+     if rb and cells.get("numbers_out") and about: cells["print_missing"] = list(cells["numbers_out"]); return "unsettled", "sheet"   # C35.3: the expected shape with numbers no print holds: ask for the print, never convict   # a value the machine never printed, said after the print, by a claim about that print (C35b: a number beside a missing measure's word was set aside as unchecked)
+     if cells.get("supersedes_run"): return "supersedes", ("receipt" if rb and cells.get("numbers_in") and not cells.get("numbers_out") else "shape")   # the same shape as an accepted part, only value or time gates out of line
