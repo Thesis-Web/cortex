@@ -581,12 +581,16 @@ def ground_cells(name, n, run, text, new_syms):
     # per word gate: which ground holds it (receipt, owner, reference, the project's own memory, none); per number: did the machine print it
     meas = measure_of(text); is_clock = "date" in meas
     cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "receipt_named": False, "numbers_in_ext": [], "numbers": numbers(text, clock=is_clock), "numbers_in": [], "numbers_out": [], "measures": meas, "measure_missing": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
-    rc = receipts_of(name, n); rnums, rnums_ext, rwords, older = set(), set(), set(), 0; ct = toks(text); ptext = {}
+    rc = receipts_of(name, n); rnums, rnums_ext, rwords, older = set(), set(), set(), 0; ct = toks(text); ptext = {}; rnums_newer, ptext_newer = set(), {}
     for cmd, d in rc.items():
         cells["receipt_cmds"].append(cmd)
         lines_older = [l for l in d.get("lines", []) if l["run"] < run]   # C33b: only a print older than the claim judges it; a later print on the same checkpoint is a label, never a switch
         if lines_older and ((toks(cmd) & ct) or any(toks(cmd) & toks(m0) for m0 in meas)): cells["receipt_named"] = True   # C22: the claim names this print's command, or a measure that print settles (C34)
         cells["receipt_runs"] += len(d.get("lines", [])); older += len(lines_older)
+        for l in d.get("lines", []):
+            if l["run"] > run:   # C33c: a print newer than the claim never judges it, but the claim can be made again against it
+                rl2 = receipt_line(l); nn2 = set(numbers(rl2, clock=is_clock)); rnums_newer |= nn2
+                for x in nn2: ptext_newer.setdefault(x, rl2)
         for l in lines_older:
             rl = receipt_line(l); nn = set(numbers(rl, clock=is_clock)); rnums |= nn
             for x in nn: ptext.setdefault(x, rl)
@@ -609,6 +613,7 @@ def ground_cells(name, n, run, text, new_syms):
         for t in list(cells["numbers_out"]):
             pt = rounding_of(t, rnums, text, ptext) or same_quantity(t, rnums, text, ptext)
             if pt: cells["numbers_rounded"][t] = pt; cells["numbers_out"].remove(t); cells["numbers_in"].append(t); (cells["numbers_in_ext"].append(t) if (rounding_of(t, rnums_ext, text, ptext) or same_quantity(t, rnums_ext, text, ptext)) else None)   # C22b, C35: a rounding or the same quantity in another unit is the printed value
+        cells["numbers_in_newer"] = [t for t in cells["numbers_out"] if t in rnums_newer or rounding_of(t, rnums_newer, text, ptext_newer) or same_quantity(t, rnums_newer, text, ptext_newer)]   # C33c
         cells["receipt_newest"] = " ; ".join("%s => %s" % (cmd, " / ".join(receipt_line(l)[:60] for l in d.get("lines", [])[1:3] or d.get("lines", [])[:1])) for cmd, d in rc.items())
     g = cells["ground"]; new = set(new_syms)
     for w in set(x for x in content_gates(run) if not is_value(x)):
@@ -1062,6 +1067,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     rec = "held before" if cells.get("same_as") or cells.get("echo") else ("supersedes run %s" % cells["supersedes_run"]) if cells.get("supersedes_run") else "new to the project record"
     print("  voice: %s%s | belief row: 1 the project record: %s; 2 the words: %s on %d gates (%d confirmed, %d false); 3 the sources: %d confirm, %d disagree, agreement %d of %d | this voice on %s: %s" % (vc, " (a labeled guess)" if iv.get("guess") else "", rec, ("trust %.2f" % wt["trust"]) if wt["trust"] is not None else "no record", wt["gates"], wt["confirmed"], wt["false"], len((cells.get("sources") or {}).get("confirm", [])), len((cells.get("sources") or {}).get("disagree", [])), len((cells.get("pair_ground") or {}).get("agree", [])), (cells.get("pair_ground") or {}).get("sources", 0), name, ("trust %.2f over %d claims" % (pt["trust"], pt["claims"])) if pt and pt["trust"] is not None else "no record yet"))
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
+    if cells.get("numbers_in_newer") and kind in ("hallucination", "unsettled", "drift"): print("  a print newer than this claim holds %s: a later print never switches a verdict (C33b); pipe the print first, then make the claim again (re-ingest it) and judge the new run (C33c)" % ", ".join(cells["numbers_in_newer"]))
     if cells.get("measure_missing") and kind not in ("noise", "dupe") and (name, n) not in NO_PARTS:
         print("  no print to check this: it names %s, settled by %s; ask for that print (C34)" % (", ".join(w for m0 in cells["measure_missing"] for w in cells["measures"][m0]), ", ".join(cells["measure_missing"])))
         ask_question(name, n, run, ["no print of %s for a claim about %s" % (m0, ", ".join(cells["measures"][m0])) for m0 in cells["measure_missing"]], vrun)
