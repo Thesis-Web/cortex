@@ -372,6 +372,8 @@ def numbers(text, clock=False):
     return [y for y in (x.strip("'\"()[]{}").rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t)) if y]   # quotes and brackets around a number are punctuation
 NUM_CLOCK = re.compile(r"(?<![\w.])\d[\w.%:]*")
 SCALE = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "billion": 1e9}
+UNITS = {"ms": ("t", 1.0), "s": ("t", 1e3), "sec": ("t", 1e3), "secs": ("t", 1e3), "min": ("t", 6e4), "mins": ("t", 6e4), "h": ("t", 3.6e6), "hr": ("t", 3.6e6), "hrs": ("t", 3.6e6),
+         "b": ("z", 1.0), "kb": ("z", 1e3), "k": ("z", 1e3), "mb": ("z", 1e6), "m": ("z", 1e6), "gb": ("z", 1e9), "g": ("z", 1e9), "tb": ("z", 1e12), "t": ("z", 1e12)}   # C35: a unit is meaning: the same quantity in another unit is the same value
 def num_value(tok, text=""):
     m = re.match(r"^(\d+(?:\.\d+)?)([a-z%]*)$", tok)
     if not m: return None, "", 1.0
@@ -379,17 +381,29 @@ def num_value(tok, text=""):
     if text:
         mm = re.search(r"\b" + re.escape(tok) + r"\s+(thousand|million|billion)\b", text.lower())
         if mm: scale = SCALE[mm.group(1)]; v *= scale; unit = ""
+        if not unit:
+            mu = re.search(r"\b" + re.escape(tok) + r"\s*(ms|secs?|s|mins?|hrs?|h|kb|mb|gb|tb|b)\b", text.lower())
+            if mu: unit = mu.group(1)
+    if unit in UNITS: kind, mult = UNITS[unit]; return v * mult, kind, scale * mult
     return v, unit, scale
-def rounding_of(tok, printed, text=""):
+def rounding_of(tok, printed, text="", ptext=None):
     # the claim's number is a shorter form of a printed one: same unit, fewer kept digits, within half a unit of the last kept digit at the claim's scale (71 for 71.3, 1.8 million for 1796202; 392 is not a rounding of 393)
     v, u, scale = num_value(tok, text)
     if v is None: return None
     dec = len(tok.split(".")[1]) if "." in tok else 0; tol = 0.5 * scale * 10 ** (-dec)
     for pt in printed:
-        w, pu, _ = num_value(pt)
+        w, pu, _ = num_value(pt, ptext.get(pt, "") if isinstance(ptext, dict) else "")
         if w is None or (u and pu and u != pu) or w == v: continue
         if len(pt.replace(".", "")) <= len(tok.replace(".", "")) and scale == 1.0: continue   # the print is not longer than the claim: not a rounding
         if abs(w - v) <= tol: return pt
+    return None
+def same_quantity(tok, printed, text, ptext):
+    # C35: the claim's number equals a printed one once both carry their units (11.7 s is 11700 ms; 82 mb is a rounding of 82164 kb)
+    v, u, _ = num_value(tok, text)
+    if v is None or u not in ("t", "z"): return None
+    for pt in printed:
+        w, pu, _ = num_value(pt, ptext.get(pt, ""))
+        if pu == u and w is not None and abs(w - v) <= 0.5 * (10 ** -(len(tok.split(".")[1]) if "." in tok else 0)) * (v / float(re.match(r"^(\d+(?:\.\d+)?)", tok).group(1)) if float(re.match(r"^(\d+(?:\.\d+)?)", tok).group(1)) else 1): return pt
     return None
 CMD_NOISE = set("ssh echo cat bash python3 hp2 tail head cut sed grep awk then done for do fi if else while read printf true false tee sort uniq wc tr xargs".split())
 def toks(s):
@@ -408,8 +422,8 @@ def sources():
             except ValueError: pass
         _SRC.append(None)
     return [x for x in _SRC if x]
-MEASURES_DEFAULT = {"clock": "date", "time": "date", "tonight": "date", "today": "date", "now": "date", "o'clock": "date",
-                    "mem": "free -m", "memory": "free -m", "free": "free -m", "swap": "free -m",
+MEASURES_DEFAULT = {"clock": "date", "tonight": "date", "today": "date", "now": "date", "o'clock": "date",
+                    "mem": "free -m", "memory": "free -m", "swap": "free -m",
                     "disk": "df -h /", "avail": "df -h /", "filesystem": "df -h /", "df": "df -h /",
                     "load": "uptime", "uptime": "uptime",
                     "gates": "cortex status", "runs": "cortex status", "hops": "cortex status", "checkpoints": "cortex formula", "ingests": "cortex formula", "verdicts": "cortex formula", "voices": "cortex status", "trust": "cortex status"}
@@ -432,14 +446,15 @@ def ground_cells(name, n, run, text, new_syms):
     # per word gate: which ground holds it (receipt, owner, reference, the project's own memory, none); per number: did the machine print it
     meas = measure_of(text); is_clock = "date" in meas
     cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "receipt_named": False, "numbers_in_ext": [], "numbers": numbers(text, clock=is_clock), "numbers_in": [], "numbers_out": [], "measures": meas, "measure_missing": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
-    rc = receipts_of(name, n); rnums, rnums_ext, rwords, older = set(), set(), set(), 0; ct = toks(text)
+    rc = receipts_of(name, n); rnums, rnums_ext, rwords, older = set(), set(), set(), 0; ct = toks(text); ptext = {}
     for cmd, d in rc.items():
         cells["receipt_cmds"].append(cmd)
         lines_older = [l for l in d.get("lines", []) if l["run"] < run]   # C33b: only a print older than the claim judges it; a later print on the same checkpoint is a label, never a switch
         if lines_older and ((toks(cmd) & ct) or any(toks(cmd) & toks(m0) for m0 in meas)): cells["receipt_named"] = True   # C22: the claim names this print's command, or a measure that print settles (C34)
         cells["receipt_runs"] += len(d.get("lines", [])); older += len(lines_older)
         for l in lines_older:
-            nn = set(numbers(receipt_line(l), clock=is_clock)); rnums |= nn
+            rl = receipt_line(l); nn = set(numbers(rl, clock=is_clock)); rnums |= nn
+            for x in nn: ptext.setdefault(x, rl)
             if not is_self_print(cmd): rnums_ext |= nn   # a cortex print of its own verdicts and parts is circular ground for a sentence about them
             rwords |= set(g for g in content_gates(l["run"]) if not is_value(g))
     if meas: cells["measure_missing"] = sorted(m0 for m0 in meas if not any(toks(m0) & toks(c0) for c0 in rc.keys()))   # the measures named with no print of them on this checkpoint
@@ -449,8 +464,8 @@ def ground_cells(name, n, run, text, new_syms):
         cells["numbers_in_ext"] = [t for t in cells["numbers"] if t in rnums_ext]
         cells["numbers_rounded"] = {}
         for t in list(cells["numbers_out"]):
-            pt = rounding_of(t, rnums, text)
-            if pt: cells["numbers_rounded"][t] = pt; cells["numbers_out"].remove(t); cells["numbers_in"].append(t); (cells["numbers_in_ext"].append(t) if rounding_of(t, rnums_ext, text) else None)   # C22b: a rounding is the printed value, said shorter
+            pt = rounding_of(t, rnums, text, ptext) or same_quantity(t, rnums, text, ptext)
+            if pt: cells["numbers_rounded"][t] = pt; cells["numbers_out"].remove(t); cells["numbers_in"].append(t); (cells["numbers_in_ext"].append(t) if (rounding_of(t, rnums_ext, text, ptext) or same_quantity(t, rnums_ext, text, ptext)) else None)   # C22b, C35: a rounding or the same quantity in another unit is the printed value
         cells["receipt_newest"] = " ; ".join("%s => %s" % (cmd, " / ".join(receipt_line(l)[:60] for l in d.get("lines", [])[1:3] or d.get("lines", [])[:1])) for cmd, d in rc.items())
     g = cells["ground"]; new = set(new_syms)
     for w in set(x for x in content_gates(run) if not is_value(x)):
@@ -757,7 +772,7 @@ def formula(cells, answers):
     if len(sc.get("disagree", [])) >= 3 and not sc.get("confirm"): return "hallucination", "sources"   # C28 (the owner): a statement proven false by three or more sources
     rb = cells.get("receipt_before_claim")
     about = cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.5   # C22: the claim is about this print: names its command, cites its values, or states the expected
-    if rb and cells.get("numbers_out") and about: return "hallucination", "receipt"   # a value the machine never printed, said after the print, by a claim about that print
+    if rb and cells.get("numbers_out") and about and not cells.get("measure_missing"): return "hallucination", "receipt"   # a value the machine never printed, said after the print, by a claim about that print; C35: not when a print it names is missing, that is a question
     if cells.get("supersedes_run"): return "supersedes", ("receipt" if rb and cells.get("numbers_in") and not cells.get("numbers_out") else "shape")   # the same shape as an accepted part, only value or time gates out of line
     if cells.get("shape_gates", 0) >= 4 and cells["shape_shared_project"] == 0: return "drift", "shape"   # no word gate shared with the scope, checkpoint or expected
     if cells["words"] >= 4 and cells["shared_scope"] == 0 and cells["shared_checkpoint"] == 0 and cells["shared_expected"] == 0 and not cells["observed"]: return "drift", "sheet"
@@ -1120,7 +1135,7 @@ def v_capture(cwd=None, name=None):
         cps0 = cx_list("checkpoint", name, desc=True, limit=1); nxt0 = cps0[0][0] if cps0 else None
     nrec = 0
     if nxt0 is not None and results:
-        for (cmd, txt) in results[-12:]:   # the newest twelve prints of the session, before its sentences, so a print precedes the claims that cite it
+        for (cmd, txt) in results[-40:]:   # the prints of the session, forty at most (C35: twelve cut the print a later sentence cited), before its sentences
             cmdline = clean(cmd.strip().splitlines()[0] if cmd.strip() else "command")[:70]
             lines = [clean(l) for l in txt.splitlines() if clean(l)][:20]
             if not lines: continue
@@ -1132,7 +1147,7 @@ def v_capture(cwd=None, name=None):
                 except RuntimeError: continue
                 run0 = r["run"]; cx_put("receipt", name, text_key(body), run0, clock(), json.dumps({"n": nxt0, "cmd": cmdline, "ts": int(time.time()), "session": (hook.get("session_id") or "")[:8]})); key_gates(name, run0); got.append({"run": run0})
             if got: rc[cmdline] = {"ts": int(time.time()), "lines": got}; cx_put("receipts", name, nxt0, got[-1]["run"], clock(), json.dumps(rc)); nrec += len(got)
-        if nrec: print("receipts: %d lines typed from %d tool results for C%d" % (nrec, len(results[-12:]), nxt0))
+        if nrec: print("receipts: %d lines typed from %d tool results for C%d" % (nrec, len(results[-40:]), nxt0))
     own = []
     if owner_texts:
         VOICE[0] = "owner"; own = v_ingest(name, "\n".join(owner_texts), quiet=True, repeat_to_kernel=False); VOICE[0] = "hub:" + ((hook.get("session_id") or "")[:8] or "unknown")
