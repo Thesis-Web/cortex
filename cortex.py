@@ -790,6 +790,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "voice": iv.get("voice", "hand"), "guess": bool(iv.get("guess"))}))
     tally_voice(iv.get("voice", "hand"), kind, by, bool(iv.get("guess")))
     geo = cells["geometry"]
+    print("  voice: %s%s" % (iv.get("voice", "hand"), " (a labeled guess)" if iv.get("guess") else ""))
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
     pg = cells.get("pair_ground") or {}
     if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s | agreement %d of %d sources%s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-", len(pg.get("agree", [])), pg.get("sources", 0), (" (" + ", ".join(pg["agree"][:4]) + ")") if pg.get("agree") else ""))
@@ -978,7 +979,7 @@ def project_for_cwd(cwd):
 def v_capture(cwd=None, name=None):
     # the hub's Stop hook pipes the tail of a transcript here: the last assistant text is ingested and, when jev has a key, judged
     # every assistant text in the tail, in order (the final message lands after the Stop hook runs, so it is caught at the next Stop; repeats tick)
-    raw = sys.stdin.read(); texts_all = []; hook = {}; cmds = {}; results = []
+    raw = sys.stdin.read(); texts_all = []; hook = {}; cmds = {}; results = []; owner_texts = []
     for line in raw.splitlines():
         try: d = json.loads(line)
         except ValueError: continue
@@ -991,6 +992,11 @@ def v_capture(cwd=None, name=None):
                 elif b.get("type") == "tool_result" and b.get("tool_use_id") in cmds:
                     cc = b.get("content"); txt = cc if isinstance(cc, str) else "\n".join(x.get("text", "") for x in cc if isinstance(x, dict)) if isinstance(cc, list) else ""
                     if txt.strip(): results.append((cmds[b.get("tool_use_id")], txt))
+        if d.get("type") == "user" and not d.get("isSidechain"):   # C29: the owner's own words in the session are a voice the judge scores too (the owner, 11-03: i should be judged also yes)
+            cu = d.get("message", {}).get("content"); tu = cu if isinstance(cu, str) else "\n".join(b.get("text", "") for b in cu if isinstance(b, dict) and b.get("type") == "text") if isinstance(cu, list) else ""
+            tu = re.sub(r"(?s)<pasted_content[^>]*>.*?</pasted_content>", " ", tu); tu = re.sub(r"(?s)<system-reminder>.*?</system-reminder>|<command-[a-z-]+>.*?</command-[a-z-]+>|<local-command[^>]*>.*?</local-command[^>]*>", " ", tu)
+            if tu.strip() and not tu.lstrip().startswith("<") and "This session is being continued" not in tu: owner_texts.append(tu.strip())
+            continue
         if d.get("type") != "assistant": continue
         c = d.get("message", {}).get("content")
         texts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"] if isinstance(c, list) else ([c] if isinstance(c, str) else [])
@@ -1022,8 +1028,11 @@ def v_capture(cwd=None, name=None):
                 run0 = r["run"]; cx_put("receipt", name, text_key(body), run0, clock(), json.dumps({"n": nxt0, "cmd": cmdline, "ts": int(time.time()), "session": (hook.get("session_id") or "")[:8]})); key_gates(name, run0); got.append({"run": run0})
             if got: rc[cmdline] = {"ts": int(time.time()), "lines": got}; cx_put("receipts", name, nxt0, got[-1]["run"], clock(), json.dumps(rc)); nrec += len(got)
         if nrec: print("receipts: %d lines typed from %d tool results for C%d" % (nrec, len(results[-12:]), nxt0))
-    last = "\n".join(texts_all); ing = v_ingest(name, last, quiet=True, repeat_to_kernel=False); new = [i for i in ing if not i["same_as"]]
-    print("capture %s: %d texts, %d sentences, %d new, %d repeats, %d bytes%s" % (name, len(texts_all), len(ing), len(new), len(ing) - len(new), len(last.encode()), (", the turn's final message included (%d bytes)" % len(final_msg.encode())) if final_msg else ""))
+    own = []
+    if owner_texts:
+        VOICE[0] = "owner"; own = v_ingest(name, "\n".join(owner_texts), quiet=True, repeat_to_kernel=False); VOICE[0] = "hub:" + ((hook.get("session_id") or "")[:8] or "unknown")
+    last = "\n".join(texts_all); ing = v_ingest(name, last, quiet=True, repeat_to_kernel=False); new = [i for i in ing if not i["same_as"]] + [i for i in own if not i["same_as"]]
+    print("capture %s: %d texts, %d sentences, %d new, %d repeats, %d bytes%s%s" % (name, len(texts_all), len(ing), len(new), len(ing) + len(own) - len(new), len(last.encode()), (", the turn's final message included (%d bytes)" % len(final_msg.encode())) if final_msg else "", (", the owner's voice: %d messages, %d sentences" % (len(owner_texts), len(own))) if owner_texts else ""))
     cx_put("capture", name, 0, 0, clock(), json.dumps({"ts": int(time.time()), "texts": len(texts_all), "sentences": len(ing), "new": len(new), "event": hook.get("hook_event_name") or "stop", "session": (hook.get("session_id") or "")[:8], "final": bool(final_msg)}))
     nxt = next_checkpoint(name); newest = False
     if nxt is None:
