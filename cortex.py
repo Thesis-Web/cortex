@@ -321,10 +321,15 @@ def owner_conflict(run):
         O = content_gates(r0)
         if not O or len(O) < 4: continue
         oa, ob = seq_diff(O, ing); diff = oa + ob
-        if not diff or len(diff) > 3: continue
-        if all(is_value(g) or sym_of(g) in TIME_WORDS or sym_of(g) in NEG_WORDS for g in diff) and any(is_value(g) or sym_of(g) in NEG_WORDS for g in diff):
+        if not diff: continue
+        if value_or_negation_diff(diff):
             return {"source": nm, "run": r0, "line": line_text(r0)[:160], "differs": sorted(set(sym_of(g) for g in diff))}
     return None
+def value_or_negation_diff(diff):
+    # the two shapes differ only by values (runs of digit gates), time words, or one negation: the same statement with another value or its denial
+    if not diff or not all(is_value(g) or sym_of(g) in TIME_WORDS or sym_of(g) in NEG_WORDS for g in diff): return False
+    negs = sum(1 for g in diff if sym_of(g) in NEG_WORDS)
+    return (negs <= 1) and (negs == 1 or any(is_value(g) for g in diff))
 def source_check(run):
     # C28: every source's lines that share this claim's pairs; a near-identical line confirms, one that differs only by a value or a negation disagrees; the sources judge the claim and each other
     confirm, disagree, seen = [], [], set()
@@ -343,7 +348,7 @@ def source_check(run):
         oa, ob = seq_diff(O, ing); diff = oa + ob
         if not diff:
             if nm not in confirm: confirm.append(nm)
-        elif len(diff) <= 3 and all(is_value(g) or sym_of(g) in TIME_WORDS or sym_of(g) in NEG_WORDS for g in diff) and any(is_value(g) or sym_of(g) in NEG_WORDS for g in diff):
+        elif value_or_negation_diff(diff):
             if nm not in [d["source"] for d in disagree]: disagree.append({"source": nm, "run": r0, "line": line_text(r0)[:140], "differs": sorted(set(sym_of(g) for g in diff))})
     return {"confirm": confirm, "disagree": disagree}
 def key_gates(name, run):
