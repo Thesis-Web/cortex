@@ -1249,6 +1249,14 @@ def hydration_text(name, pr, nxt):
             except ValueError: pass
         left = [r for r in remainders_of(name, nxt) if not r.get("satisfied")]
         if left: lines.append("REMAINDER of C%d (parts left not satisfied): " % nxt + "; ".join("%d %s" % (r["k"], line_text(r["run"])[:100]) for r in left[:6]))
+        # C41b: why the last turn did not close this checkpoint: its refusals by receipt, with the cause; feedback, never state (the owner, C40)
+        ref = []
+        for (rn, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 30", name):
+            d = json.loads(v)
+            if d.get("n") != nxt or d.get("kind") != "hallucination" or d.get("judge") != "receipt": continue
+            sh = d.get("sheet") or {}; ref.append("%s -> the number%s %s %s in no print of this checkpoint (pipe that print first, or leave the number out)" % (line_text(rn)[:70], "s" if len(sh.get("numbers_out") or []) > 1 else "", ", ".join(sh.get("numbers_out") or []), "are" if len(sh.get("numbers_out") or []) > 1 else "is"))
+            if len(ref) >= 2: break
+        if ref: lines.append("WHY THE LAST TURN DID NOT CLOSE C%d (refusals by the print; feedback, not state): " % nxt + " | ".join(ref))
         qs = open_questions(name, nxt, 5)
         if qs: lines.append("OPEN QUESTIONS (words of C%d's claims that no receipt, owner line or reference holds; the owner answers them, a worker never guesses them): " % nxt + "; ".join("run %d: %s" % (d["run"], ", ".join(d["words"])) for d in qs))
         lines.append("RECEIPTS RULE: before a sentence cites a print, pipe that print in: <command> | cortex receipt %s %d <command>; a sentence about a print names its command; a number said before its print is a guess; a print older than the claim is the only one that judges it." % (name, nxt))
