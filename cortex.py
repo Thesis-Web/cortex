@@ -679,6 +679,37 @@ def v_receipt(name, n, cmd):
     cx_put("receipts", name, n, got[-1]["run"] if got else 0, clock(), json.dumps(rc))
     for x in got: print("receipt run %d %s C%d: %s => %s" % (x["run"], name, n, cmd, receipt_line(x)[:100]))
     print("receipt: %d lines typed in %.0f ms; %s C%d has receipts of: %s" % (len(got), (time.time() - t0) * 1000, name, n, ", ".join(sorted(rc))))
+def type_receipt(name, n, cmd, lines):
+    # a print typed as receipt lines of a checkpoint from a string (the cortex's own check, C47); the same ground as cortex receipt
+    rc = receipts_of(name, n); got = []
+    for l in [clean(x) for x in lines if clean(x)][:40]:
+        body = "%s => %s" % (cmd, l)
+        if cx_get("receipt", name, text_key(body)): continue
+        try: r = typed("cortex receipt %s %d : %s" % (name, n, body))
+        except RuntimeError: continue
+        cx_put("receipt", name, text_key(body), r["run"], clock(), json.dumps({"n": n, "cmd": cmd, "ts": int(time.time())})); key_gates(name, r["run"]); got.append({"run": r["run"]})
+    if got: rc[cmd] = {"ts": int(time.time()), "lines": got}; cx_put("receipts", name, n, got[-1]["run"], clock(), json.dumps(rc))
+    return len(got)
+def v_check_set(name, n, cmd):
+    ensure_cx()
+    if not cx_get("checkpoint", name, n): raise SystemExit("no such checkpoint: %s %d" % (name, n))
+    cx_put("check", name, n, 0, clock(), json.dumps({"cmd": cmd, "ts": int(time.time())})); print("check of %s C%d: %s" % (name, n, cmd))
+def run_check(name, n, cwd=None):
+    # C47 (the owner, 11-04: test whether the cortex can hold the line and demand it done correctly, not just done): the cortex's own check run after a turn, in the repo, its print typed as a receipt the worker never touched
+    had = cx_get("check", name, n)
+    if not had: return None
+    cmd = json.loads(had[3]).get("cmd"); cwd = cwd or repo_of(name) or os.path.join(WORKDIR, name)
+    try: p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, cwd=cwd, timeout=180); out = (p.stdout + ("\n" + p.stderr if p.stderr.strip() else "")).strip()
+    except subprocess.TimeoutExpired: out = "check wrong: the check command ran past 180 s"
+    lines = [l for l in out.splitlines() if l.strip()] or ["check wrong: the check printed nothing"]
+    last = lines[-1]; ok = last.lower().startswith("check ok")
+    typed_n = type_receipt(name, n, "the cortex check", lines[-12:])
+    cx_put("checklast", name, n, 0, clock(), json.dumps({"ok": ok, "last": last[:400], "ts": int(time.time()), "cmd": cmd}))
+    return {"ok": ok, "last": last, "lines": lines, "typed": typed_n}
+def v_check_run(name, n):
+    r = run_check(name, n)
+    if r is None: raise SystemExit("no check on %s C%d; set one: cortex check %s %d : <command>" % (name, n, name, n))
+    print("check %s C%d: %s | %d receipt lines typed" % (name, n, r["last"][:300], r["typed"]))
 def v_source(name, band=None, text=None, domain=None):
     if band is None and text is None and domain is not None:   # C36: cortex source <name> --domain a,b sets the domains of a registered source
         ensure_cx(); had = cx_get("source", name, 0)
@@ -1243,6 +1274,10 @@ def hydration_text(name, pr, nxt):
             # C41 (the owner: give them enough): the prints the expected names, whole; then the newest three others, three lines each
             for cmd, d in named: lines.append("RECEIPT %s [%s]: " % (cmd[:60], time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0)))) + " / ".join(receipt_line(l)[:120] for l in d.get("lines", [])[:8]))
             if others: lines.append("OTHER RECEIPTS (%d commands on C%d; the newest %d): " % (len(rc), nxt, len(others)) + " | ".join("%s => %s [%s]" % (cmd[:50], " / ".join(receipt_line(l)[:70] for l in d.get("lines", [])[:3]), time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0)))) for cmd, d in others))
+        ck0 = cx_get("check", name, nxt)
+        if ck0:
+            cl = cx_get("checklast", name, nxt); cld = json.loads(cl[3]) if cl else None
+            lines.append("THE CORTEX'S OWN CHECK on C%d (the cortex runs it in the repo after your turn; it decides, your sentences do not; it uses numbers of its own, so special cases and edited tests fail it): %s | last print: %s" % (nxt, json.loads(ck0[3]).get("cmd"), (cld["last"][:300] if cld else "not run yet")))
         nd = cx_get("need", name, nxt)
         if nd:
             try: lines.append("WHAT THE LAST WORKERS SAID THIS HYDRATION LACKED (C41; the liaison or the owner adds it, a worker does not invent it): " + " | ".join(x.get("text", "")[:160] for x in json.loads(nd[3])[-4:]))
@@ -1456,8 +1491,15 @@ def v_build(name, engine="claude", model=None, box_min=30, max_turns=12, act=Tru
         except SystemExit as e: res = {"n": nxt, "engine": engine, "secs": 0.0, "kinds": [], "out": "", "needed": [], "flaws": ["the worker failed: %s" % e]}
         res = res or {}
         after = (cx_get("state", name, nxt) or (0, 0, 0, "open"))[3]; moved = (after == "done") or (parts_cover(name, nxt)[3] > nparts)   # a model's part is not a move
+        chk_note = ""; chk = run_check(name, nxt, cwd)   # C47: the cortex's own check, the worker never touched it
+        if chk is not None:
+            if chk["ok"]: chk_note = " check ok"
+            else:
+                chk_note = " check WRONG: " + chk["last"][:120]
+                if after == "done": v_state(name, nxt, "working"); after = "working"; print("C%d reopened: the cortex's own check failed: %s" % (nxt, chk["last"][:200])); chk_note += " (reopened)"
+                moved = False; v_need(name, nxt, "the cortex own check printed: %s" % chk["last"][:260], who="cortex check")
         line = "turn %d C%d worker %s %.0f s prompt %d bytes verdicts %s moved %s%s%s" % (k, nxt, res.get("engine", engine), res.get("secs", 0.0), res.get("prompt_bytes", 0), ",".join(res.get("kinds") or []) or "none", ("yes, %s" % after) if moved else "no", (" needed: " + " ; ".join(res["needed"])[:100]) if res.get("needed") else "", (" flaw: " + " ; ".join(res["flaws"])[:100]) if res.get("flaws") else "")
-        record("schedule", name, None, clean(line)); print("schedule: " + line); log.append(line)
+        line += chk_note; record("schedule", name, None, clean(line)); print("schedule: " + line); log.append(line)
         if res.get("flaws"): handback(name, nxt, "; ".join(res["flaws"]), res)
         elif not moved and turns[nxt] >= 2: handback(name, nxt, "no progress after %d turns" % turns[nxt], res)
     print("build %s: %d turns in %.0f s; %d hand-backs open; run cortex formula %s" % (name, k, time.time() - t0, len([1 for (hk, hr, ha, ht, hv) in cx_list("handback", name) if not json.loads(hv).get("decided")]), name))
@@ -1806,6 +1848,8 @@ USAGE = """cortex <verb> ...
   freeze <path>                            sha of the handler into the brain; file read-only
   source <name> --domain a,b               the domains of a source (C36); a project routes to domains, agreement counts the routed sources
   sources                                  every source with its band, domains, lines and origin, and the routes
+  check <name> <n> : <command>             C47: the cortex's own check of a checkpoint, run in the repo after every build turn; its print is a receipt the worker never touched; check ok closes, check wrong reopens
+  check <name> <n>                         run the check now and type its print
   need <name> <n> : <text>                 C41: what a worker said the hydration lacked; carried by the next hydration of that checkpoint
   questions <name> --prune                 C40: retire the questions of sentences that are not candidates for state
   states --backfill [project]              C42: seed the state history from the formula snapshots and the current state
@@ -1852,6 +1896,10 @@ def main(argv):
             i = a.index(flag) if flag in a else -1
             return a[i + 1] if i >= 0 and i + 1 < len(a) and not a[i + 1].startswith("--") else None
         v_capture(opt("--cwd"), opt("--name"))
+    elif v == "check":
+        s6 = " ".join(a)
+        if " : " in s6: k6, t6 = split_colon(a); v_check_set(k6[0], int(k6[1]), t6)
+        else: v_check_run(a[0], int(a[1]))
     elif v == "need":
         if "--clear" in a: v_need_clear(a[0], int(a[1]))
         else: k4, t4 = split_colon(a); v_need(k4[0], int(k4[1]), t4)
