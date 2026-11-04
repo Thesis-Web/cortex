@@ -325,6 +325,27 @@ def owner_conflict(run):
         if all(is_value(g) or sym_of(g) in TIME_WORDS or sym_of(g) in NEG_WORDS for g in diff) and any(is_value(g) or sym_of(g) in NEG_WORDS for g in diff):
             return {"source": nm, "run": r0, "line": line_text(r0)[:160], "differs": sorted(set(sym_of(g) for g in diff))}
     return None
+def source_check(run):
+    # C28: every source's lines that share this claim's pairs; a near-identical line confirms, one that differs only by a value or a negation disagrees; the sources judge the claim and each other
+    confirm, disagree, seen = [], [], set()
+    srcs = [nm for (nm, band) in sources()]
+    cand = []
+    for (a, b) in set(pairs_of(run)):
+        for nm in srcs:
+            had = cx_get("pair", nm, pair_key(a, b))
+            if had:
+                r0 = int(json.loads(had[3]).get("first", 0))
+                if r0 and r0 != run and (nm, r0) not in seen: seen.add((nm, r0)); cand.append((nm, r0))
+    ing = content_gates(run)
+    for (nm, r0) in cand[:24]:
+        O = content_gates(r0)
+        if not O or len(O) < 4: continue
+        oa, ob = seq_diff(O, ing); diff = oa + ob
+        if not diff:
+            if nm not in confirm: confirm.append(nm)
+        elif len(diff) <= 3 and all(is_value(g) or sym_of(g) in TIME_WORDS or sym_of(g) in NEG_WORDS for g in diff) and any(is_value(g) or sym_of(g) in NEG_WORDS for g in diff):
+            if nm not in [d["source"] for d in disagree]: disagree.append({"source": nm, "run": r0, "line": line_text(r0)[:140], "differs": sorted(set(sym_of(g) for g in diff))})
+    return {"confirm": confirm, "disagree": disagree}
 def key_gates(name, run):
     # the (project, gate) key: the first run of this project that crossed the gate and how many times since (the owner: the project's metadata on the gate)
     for g in set(content_gates(run)):
@@ -655,12 +676,15 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
     cells.update(ground_cells(name, n, run, text, cells["new_to_project"]))
     cells["pair_ground"] = pair_ground(name, run)
     cells["owner_conflict"] = owner_conflict(run)
+    cells["sources"] = source_check(run)
     return cells
 def formula(cells, answers):
     # the substitution formulas over a full sheet, in order: what the shape settles, then the deterministic word cells, then the judgment cells
     if cells["noise"]: return "noise", "sheet"
     if cells.get("same_as"): return "dupe", "shape"                                   # the kernel's own repeat of an earlier run
     if cells.get("echo"): return "dupe", "shape"                                      # the expected sentence's own shape with nothing out of line: words, no observation
+    sc = cells.get("sources") or {}
+    if len(sc.get("disagree", [])) >= 3 and not sc.get("confirm"): return "hallucination", "sources"   # C28 (the owner): a statement proven false by three or more sources
     rb = cells.get("receipt_before_claim")
     about = cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.5   # C22: the claim is about this print: names its command, cites its values, or states the expected
     if rb and cells.get("numbers_out") and about: return "hallucination", "receipt"   # a value the machine never printed, said after the print, by a claim about that print
@@ -678,7 +702,7 @@ def tally_voice(voice, kind, by, guess):
     had = cx_get("voice", voice, 0); d = json.loads(had[3]) if had else {"claims": 0, "confirmed": 0, "false": 0, "guesses": 0, "first_ts": int(time.time())}
     d["claims"] += 1
     if guess: d["guesses"] += 1
-    elif kind in ("hallucination", "invention") and by in ("receipt", "shape"): d["false"] += 1   # proven by the machine's print or the brain's shape, never by a model's word
+    elif kind in ("hallucination", "invention") and by in ("receipt", "shape", "sources"): d["false"] += 1   # proven by the machine's print, the brain's shape or three sources, never by a model's word
     elif kind in ("completes", "progresses", "supersedes") and by in ("receipt", "shape"): d["confirmed"] += 1
     d["last_ts"] = int(time.time()); cx_put("voice", voice, 0, 0, clock(), json.dumps(d))
 def voices():
@@ -713,7 +737,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     if answers: kind, by = formula(cells, answers)
     judge = model if (by == "judgment" and model) else by
     if answers and by == "judgment": p = answers.get(kind, 0.0) if kind in answers else max(answers.values())
-    elif by in ("shape", "receipt"): p = cells["shape_expected"] if kind == "completes" else 1.0
+    elif by in ("shape", "receipt", "sources"): p = cells["shape_expected"] if kind == "completes" else 1.0
     else: p = 1.0 if kind in ("noise", "drift", "dupe") else 0.0
     body = "%s %.3f %s" % (kind, p, judge)
     vrun, at, _ = record("verdict", name, run, body)
@@ -743,6 +767,8 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s | agreement %d of %d sources%s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-", len(pg.get("agree", [])), pg.get("sources", 0), (" (" + ", ".join(pg["agree"][:4]) + ")") if pg.get("agree") else ""))
     no_source = pg.get("pairs", 0) >= 3 and not pg.get("held_by") and not cells.get("numbers_in_ext")   # no source holds any pair and no print grounds a value: the run left known ground at its first pair
     unknown = (cells.get("ground", {}).get("none") or []) + ([("pair: " + x) for x in pg.get("none", [])[:6]] if no_source else [])
+    sc = cells.get("sources") or {}
+    if sc.get("confirm") or sc.get("disagree"): print("  sources: %d confirm (%s) | %d disagree (%s)" % (len(sc.get("confirm", [])), ", ".join(sc.get("confirm", [])[:4]), len(sc.get("disagree", [])), "; ".join("%s differs by %s: %s" % (d["source"], ",".join(d["differs"]), d["line"][:70]) for d in sc.get("disagree", [])[:3])))
     oc = cells.get("owner_conflict")
     if oc:
         print("  against an owner line (differs by %s): %s" % (",".join(oc["differs"]), oc["line"][:120])); unknown = ["against the owner line run %d (%s): %s" % (oc["run"], ",".join(oc["differs"]), oc["line"][:80])] + unknown
