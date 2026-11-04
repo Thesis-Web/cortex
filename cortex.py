@@ -587,13 +587,17 @@ def ground_cells(name, n, run, text, new_syms):
     meas = measure_of(text); is_clock = "date" in meas
     cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "receipt_named": False, "numbers_in_ext": [], "numbers": numbers(text, clock=is_clock), "numbers_in": [], "numbers_out": [], "measures": meas, "measure_missing": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
     rc = receipts_of(name, n); rnums, rnums_ext, rwords, older = set(), set(), set(), 0; ct = toks(text); ptext = {}; rnums_newer, ptext_newer = set(), {}
+    at = run; had_row = cx_get("ingest", name, text_key(text))
+    try: at = max(run, int((json.loads(had_row[3]) if had_row and had_row[3] and had_row[3].startswith("{") else {}).get("last") or 0))   # C33d: a claim made again is judged at its newest tick
+    except (ValueError, TypeError): at = run
+    cells["claim_at"] = at
     for cmd, d in rc.items():
         cells["receipt_cmds"].append(cmd)
-        lines_older = [l for l in d.get("lines", []) if l["run"] < run]   # C33b: only a print older than the claim judges it; a later print on the same checkpoint is a label, never a switch
+        lines_older = [l for l in d.get("lines", []) if l["run"] < at]   # C33b (C33d: at is the claim's newest tick): only a print older than the claim judges it; a later print on the same checkpoint is a label, never a switch
         if lines_older and ((toks(cmd) & ct) or any(toks(cmd) & toks(m0) for m0 in meas)): cells["receipt_named"] = True   # C22: the claim names this print's command, or a measure that print settles (C34)
         cells["receipt_runs"] += len(d.get("lines", [])); older += len(lines_older)
         for l in d.get("lines", []):
-            if l["run"] > run:   # C33c: a print newer than the claim never judges it, but the claim can be made again against it
+            if l["run"] > at:   # C33c: a print newer than the claim never judges it, but the claim can be made again against it
                 rl2 = receipt_line(l); nn2 = set(numbers(rl2, clock=is_clock)); rnums_newer |= nn2
                 for x in nn2: ptext_newer.setdefault(x, rl2)
         for l in lines_older:
@@ -840,7 +844,9 @@ def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
             kr = typed("cortex ingest : %s" % s) if repeat_to_kernel else None   # the kernel ticks its own counter: same_as the first run, no second memory row (the owner, 11-03)
             try: d1 = json.loads(had[3]) if had[3] and had[3].startswith("{") else {}
             except ValueError: d1 = {}
-            d1["times"] = times; cx_put("ingest", name, k, had[0], had[1], json.dumps(d1))   # the tick keeps the row's voice, guess and attachment
+            d1["times"] = times
+            if kr: d1["last"] = kr["run"]; d1["last_ts"] = int(time.time())   # C33d: the newest tick is when the claim was made again
+            cx_put("ingest", name, k, had[0], had[1], json.dumps(d1))   # the tick keeps the row's voice, guess and attachment
             out.append({"run": had[0], "clock": had[1], "born": 0, "seconds": 0.0, "same_as": had[0], "again": times, "text": s})
             if not quiet: print("ingest run %d again %d (a repeat%s): %s" % (had[0], times, (", kernel run %d same_as %s" % (kr["run"], (run_row(kr["run"]) or [0, 0])[1])) if kr else "; nothing typed", s[:100]))
             continue
@@ -1015,6 +1021,32 @@ def voices():
         out.append((vn, d, (d["confirmed"] / tot) if tot else None))
     return out
 NO_PARTS = set()   # (name, n) pairs judged for the record only: no part added, no state moved (the capture against a done project's newest checkpoint)
+def parts_cover(name, n):
+    # C39 (the owner, 11-04 04:3x: the judge has to be able to judge more than one sentence as in this expected output situation): the expected shape covered by the standing parts together, each grounded by a receipt, the shape or the owner; a model part never closes a checkpoint
+    ex = cx_get("expected", name, n)
+    if not ex: return 0.0, 0, 0, 0
+    Es = set(g for g in content_gates(ex[0]) if not is_value(g))
+    if not Es: return 0.0, 0, 0, 0
+    got, used = set(), 0
+    for p in parts_of(name, n, 1000):
+        if p.get("superseded_by") or p.get("rejected_by") or not p.get("run"): continue
+        if p.get("by") not in ("receipt", "shape", "owner", "sources", None): continue
+        hit = Es & set(content_gates(p["run"]))
+        if len(hit) / len(Es) >= 0.3: got |= hit; used += 1   # C33: a part counts only when it speaks to the expected itself; chatter parts with common words never add up to a close
+    return round(len(got) / len(Es), 3), len(got), len(Es), used
+def close_by_parts(name, n):
+    # C39: the state moves when the parts together meet the expected (0.7 of its gates), the same bar one sentence has
+    if (name, n) in NO_PARTS: return ""
+    cov, k, m, used = parts_cover(name, n)
+    if not used: return ""
+    st = cx_get("state", name, n)
+    if cov >= THRESH and (not st or st[3] != "done"):
+        v_state(name, n, "done"); n2 = next_checkpoint(name)
+        if n2 is not None and n2 != n:
+            s2 = cx_get("state", name, n2)
+            if not s2 or s2[3] != "working": v_state(name, n2, "working")
+        return " | C%d done by its parts together: %d of %d expected gates covered by %d parts (C39); next C%s" % (n, k, m, used, n2)
+    return " | parts together cover %.2f of the expected (%d of %d gates, %d parts)" % (cov, k, m, used)
 def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     ensure_cx()
     pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
@@ -1061,6 +1093,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
                 s2 = cx_get("state", name, n2)
                 if not s2 or s2[3] != "working": v_state(name, n2, "working")
             moved = " | C%d done by this verdict; next C%s" % (n, n2)
+    if not moved and accepting and part and not part.startswith("refused"): moved = close_by_parts(name, n)   # C39
     irow = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run); iv = {}
     try: iv = json.loads(irow[0][0]) if irow else {}
     except (ValueError, TypeError): iv = {}
@@ -1187,6 +1220,8 @@ def v_accept(name, n, run=None):
     rows = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
     if not rows: raise SystemExit("ingest run %s is not in the index" % run)
     text = line_text(run); r = add_part(name, n, run, text, None, "owner"); answer_question(name, run, "accept"); print("part %s for %s C%d from run %d: %s" % (r, name, n, run, text[:90]))
+    m2 = close_by_parts(name, n)
+    if m2: print(m2.strip(" |"))
 def v_reject(name, n, run):
     # the owner's word, the counterpart of accept: that sentence is not a part of C n's state whatever the judge said; it stays as history and is never re-accepted
     ensure_cx()
@@ -1382,6 +1417,8 @@ def v_formula(name):
         c = cps[n]; miss = []
         if c["parts"] == 0: miss.append("no accepted part")
         if not c["verdicts"].get("completes"): miss.append("no completes verdict")
+        cov, k, m, used = parts_cover(name, int(n))
+        if used: miss.append("parts together cover %.2f of the expected (%d of %d gates, %d parts; C39)" % (cov, k, m, used))
         ex = cx_get("expected", name, int(n))
         print("  C%s [%s] expected: %s | missing: %s" % (n, c["state"], (ex[3] if ex else "")[:110] or "(none)", ", ".join(miss)))
     for (n, r) in parts_left: print("  C%d.%d left: %s" % (n, r["k"], line_text(r["run"])[:130]))
