@@ -272,6 +272,31 @@ def shape_cells(name, n, run, pr, ck, ex, parts):
         oa, ob = seq_diff(P, ing); diff = oa + ob
         if diff and any(is_value(g) for g in diff) and all(is_value(g) or sym_of(g) in TIME_WORDS for g in diff): cells["supersedes_run"] = p["run"]; break
     return cells
+def pair_key(a, b): return (a << 20) ^ b if a < (1 << 40) else int(hashlib.sha256(("%d,%d" % (a, b)).encode()).hexdigest()[:15], 16)
+def pairs_of(run):
+    # the adjacent content-gate pairs of a run (words only, digits left out): the hops a reader of the sentence takes between meanings
+    ws = [g for g in content_gates(run) if not is_value(g)]
+    return list(zip(ws, ws[1:]))
+def key_pairs(name, run):
+    # the (project or source, pair) key: how many lines of this project cross from gate a to gate b (C23, build time)
+    for (a, b) in set(pairs_of(run)):
+        k = pair_key(a, b); had = cx_get("pair", name, k)
+        if had:
+            d = json.loads(had[3]); d["times"] = d.get("times", 1) + 1; cx_put("pair", name, k, had[0], had[1], json.dumps(d))
+        else: cx_put("pair", name, k, run, clock(), json.dumps({"a": a, "b": b, "first": run, "times": 1}))
+def pair_ground(name, run):
+    # per pair of the claim: the sources and projects that hold it; the pairs held nowhere are where the run leaves known ground
+    held, memory, none = {}, {}, []
+    srcn = [nm for (nm, band) in sources()]; pjs = [pj for pj in projects()]
+    for (a, b) in pairs_of(run):
+        k = pair_key(a, b)
+        who = [nm for nm in srcn if cx_get("pair", nm, k)]
+        for nm in who: held[nm] = held.get(nm, 0) + 1
+        for pj in pjs:
+            had = cx_get("pair", pj, k)
+            if had and not (pj == name and json.loads(had[3]).get("first") == run): memory[pj] = memory.get(pj, 0) + 1
+        if not who: none.append("%s %s" % (sym_of(a), sym_of(b)))   # held by no source; a project's own ingests are memory, a model's words, never ground
+    return {"pairs": len(pairs_of(run)), "held_by": held, "memory": memory, "none": none}
 def key_gates(name, run):
     # the (project, gate) key: the first run of this project that crossed the gate and how many times since (the owner: the project's metadata on the gate)
     for g in set(content_gates(run)):
@@ -371,7 +396,7 @@ def v_source(name, band=None, text=None):
         if cx_get("source", name, k): dupes += 1; continue
         try: r = typed("cortex source %s : %s" % (name, sent))
         except RuntimeError: refused += 1; continue
-        run = r["run"]; cx_put("source", name, k, run, clock(), "{}"); key_gates(name, run); n_typed += 1   # the words are not stored again (the owner, 11-03: words do not live in the brain); the run's gates replay the sentence
+        run = r["run"]; cx_put("source", name, k, run, clock(), "{}"); key_gates(name, run); key_pairs(name, run); n_typed += 1   # the words are not stored again (the owner, 11-03: words do not live in the brain); the run's gates replay the sentence
         if n_typed % 500 == 0: print("  %d typed, %.0f s" % (n_typed, time.time() - t0), flush=True)
     print("source %s: %d sentences typed, %d repeats, %d noise, %d refused, %.1f s" % (name, n_typed, dupes, noise, refused, time.time() - t0))
 def ask_question(name, n, run, words, vrun):
@@ -542,7 +567,7 @@ def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
             if not quiet: print("dropped (restated%s): %s" % ((" run %d" % had[0]) if had else " in this batch", s[:80]))
             continue
         line = "cortex ingest %s : %s" % (name, s); r = typed(line); run = r["run"]; at = clock()
-        cx_put("ingest", name, k, run, at, json.dumps({"times": 1})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run)
+        cx_put("ingest", name, k, run, at, json.dumps({"times": 1})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
         out.append({"run": run, "clock": at, "born": r["born"], "seconds": r["seconds"], "same_as": 0, "again": 1, "text": s})
         if not quiet: print("ingest run %d clock %d born %d %.3fs: %s" % (run, at, r["born"], r["seconds"], s[:100]))
     print("filter: %d sentences, kept %d, dupe %d, restated %d, noise %d, %.0f ms" % (len(fates), counts["keep"], counts["dupe"], counts["restated"], counts["noise"], (time.time() - t0) * 1000))
@@ -597,6 +622,7 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
     cells["observed"] = bool(OBS.search(text))
     cells.update(shape_cells(name, n, run, pr, ck, ex, parts))
     cells.update(ground_cells(name, n, run, text, cells["new_to_project"]))
+    cells["pair_ground"] = pair_ground(name, run)
     return cells
 def formula(cells, answers):
     # the substitution formulas over a full sheet, in order: what the shape settles, then the deterministic word cells, then the judgment cells
@@ -661,7 +687,11 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part}))
     geo = cells["geometry"]
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", (" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else ""))
-    if len(cells.get("ground", {}).get("none", [])) >= 2 and kind not in ("noise", "dupe", "drift"): ask_question(name, n, run, cells["ground"]["none"], vrun)
+    pg = cells.get("pair_ground") or {}
+    if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-"))
+    no_source = pg.get("pairs", 0) >= 3 and not pg.get("held_by") and not cells.get("numbers_in_ext")   # no source holds any pair and no print grounds a value: the run left known ground at its first pair
+    unknown = (cells.get("ground", {}).get("none") or []) + ([("pair: " + x) for x in pg.get("none", [])[:6]] if no_source else [])
+    if (len(unknown) >= 2 or no_source) and kind not in ("noise", "dupe", "drift"): ask_question(name, n, run, unknown[:8], vrun)
     print("verdict %s %d run %d: %s %.3f by %s in %.0f ms | shape gates %d expected %.2f shared project %d values out %d words out %s new to project %s supersedes %s same_as %s echo %s | words %d shared scope %d checkpoint %d expected %d new %d known %d coverage %.2f observed %s mark %s times %d | geometry mag %s rad %s%s" % (name, n, run, kind, p, judge, (time.time() - t0) * 1000, cells["shape_gates"], cells["shape_expected"], cells["shape_shared_project"], cells["values_out"], ",".join(cells["words_out"]) or "-", ",".join(cells["new_to_project"]) or "-", cells["supersedes_run"] or "-", cells["same_as"] or "-", cells["echo"], cells["words"], cells["shared_scope"], cells["shared_checkpoint"], cells["shared_expected"], cells["new_words"], cells["known_words"], cells["coverage_expected"], cells["observed"], cells["expected_mark"], cells["times"], geo.get("magnitude"), geo.get("radians"), (" | part " + part) if part else ""))
     if moved: print(" " + moved.strip(" |"))
     if answers: print("  answers " + " ".join("%s=%.2f" % kv for kv in sorted(answers.items())))
@@ -987,6 +1017,22 @@ def key_project(nm):
     for run in sorted(runs): key_gates(nm, run)
     if runs: cx_put("keyed", nm, 0, max(runs), clock(), json.dumps({"upto": max(runs), "runs": len(runs), "ts": int(time.time())}))
     return len(runs)
+def key_pairs_all(limit_s=None):
+    # build time: the pair key for every source and project line not keyed yet (C23); prints progress; a time box in seconds
+    t0 = time.time(); n = 0
+    for nm in [nm for (nm, band) in sources()] + projects():
+        had = cx_get("paired", nm, 0); upto = int(json.loads(had[3]).get("upto", 0)) if had else 0; top = upto
+        kinds = ("source",) if nm in [x for (x, b) in sources()] else ("project", "checkpoint", "expected", "ingest", "receipt")
+        for kind in kinds:
+            for (k, run, at, ts, v) in cx_list(kind, nm, limit=100000):
+                if not run or run <= upto: continue
+                key_pairs(nm, run); n += 1; top = max(top, run)
+                if n % 2000 == 0: print("  %d lines paired, %.0f s" % (n, time.time() - t0), flush=True)
+                if limit_s and time.time() - t0 > limit_s: break
+            if limit_s and time.time() - t0 > limit_s: break
+        if top > upto: cx_put("paired", nm, 0, top, clock(), json.dumps({"upto": top, "ts": int(time.time())}))
+        if limit_s and time.time() - t0 > limit_s: print("time box reached in %s" % nm); break
+    print("pairs: %d lines keyed in %.0f s" % (n, time.time() - t0)); return n
 def v_learn(names=None, key_only=False):
     ensure_cx(); t0 = time.time()
     names = names or sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0")))
@@ -1083,6 +1129,7 @@ USAGE = """cortex <verb> ...
   reject <name> <n> <run>                  the owner's word: that sentence is not a part of C n's state, whatever the judge said
   mark <name> <run> <kind> [: <why>]       the labeled set: what that judged sentence was (completes progresses regresses supersedes drift invention hallucination dupe noise unsettled)
   learn [<name> ...] [--key]               the (project, gate) key for every line, then the judge's weights from the marks (leave-one-out accuracy printed); --key keys only
+  learn --pairs [--box seconds]            build time: the (source or project, word pair) key for every line (C23: a claim's pairs held by which sources; a pair held nowhere is a question)
 """
 def main(argv):
     if not argv: print(USAGE); return 2
@@ -1120,7 +1167,9 @@ def main(argv):
         s = " ".join(a); why = ""
         if " : " in s: s, why = s.split(" : ", 1)
         k = s.split(); v_mark(k[0], int(k[1]), k[2], why)
-    elif v == "learn": v_learn([x for x in a if not x.startswith("--")] or None, key_only="--key" in a)
+    elif v == "learn":
+        if "--pairs" in a: key_pairs_all(int(a[a.index("--box") + 1]) if "--box" in a else None)
+        else: v_learn([x for x in a if not x.startswith("--")] or None, key_only="--key" in a)
     elif v == "verdicts": v_verdicts(a[0], int(a[1]) if len(a) > 1 and a[1].isdigit() else None, int(a[a.index("--limit") + 1]) if "--limit" in a else 40)
     elif v == "receipt": v_receipt(a[0], int(a[1]), " ".join(a[2:]))
     elif v == "source":
