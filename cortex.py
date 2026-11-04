@@ -369,7 +369,7 @@ def numbers(text, clock=False):
     if not clock: t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", t)
     else: t = re.sub(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b", lambda m: " %s:%s " % (m.group(1), m.group(2)), t)
     t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t)   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
-    return [x.rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t) if x.rstrip(".,;:")]
+    return [y for y in (x.strip("'\"()[]{}").rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t)) if y]   # quotes and brackets around a number are punctuation
 NUM_CLOCK = re.compile(r"(?<![\w.])\d[\w.%:]*")
 SCALE = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "billion": 1e9}
 def num_value(tok, text=""):
