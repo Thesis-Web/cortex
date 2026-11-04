@@ -371,6 +371,7 @@ def numbers(text, clock=False):
     if not clock: t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", t)
     else: t = re.sub(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b", lambda m: " %s:%s " % (m.group(1), m.group(2)), t)
     t = re.sub(r"`(\d[\w.%]*)`", r" \1 ", t)   # C44c: a backticked number (`6`, `3.0`, `82mb`) is a value; a backticked command is not
+    t = re.sub(r"`([a-z_]+=)(\d[\w.%]*)`", r" \1 \2 ", t)   # C47b: a backticked name=number (`exit=2`) carries its value
     t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"(?<!\S)--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t); t = re.sub(r"(?:^|[\s:;])\$ [^;`]*", " ", t)   # C44b: a quoted shell command ($ python3 sum.py 1 2 3) is a command, its digits are arguments   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
     return [y for y in (x.strip("'\"()[]{}").rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t)) if y and VALUE_TOKEN.match(y)]   # quotes and brackets around a number are punctuation
 NUM_CLOCK = re.compile(r"(?<![\w.])\d[\w.%:]*")
@@ -638,6 +639,10 @@ def ground_cells(name, n, run, text, new_syms):
     if cells["receipt_runs"]:
         cells["receipt_before_claim"] = older > 0   # at least one print the claim could have read
         cells["numbers_in"] = [t for t in cells["numbers"] if t in rnums]; cells["numbers_out"] = [t for t in cells["numbers"] if t not in rnums]
+        spec = name + "-repo"   # C47b: the numbers the project's own spec states (the repo source, the owner's voice) are ground; the worker may describe its input
+        if cx_get("source", spec, 0) and cells["numbers_out"]:
+            held = [t for t in cells["numbers_out"] if gate_of(t) and cx_get("gate", spec, gate_of(t))]
+            if held: cells["numbers_out"] = [t for t in cells["numbers_out"] if t not in held]; cells["numbers_spec"] = held
         cells["numbers_in_ext"] = [t for t in cells["numbers"] if t in rnums_ext]
         cells["numbers_rounded"] = {}
         for t in list(cells["numbers_out"]):
@@ -1187,6 +1192,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     print("  belief %.2f (%s)" % (bl, brule))
     rec = "held before" if cells.get("same_as") or cells.get("echo") else ("supersedes run %s" % cells["supersedes_run"]) if cells.get("supersedes_run") else "new to the project record"
     print("  voice: %s%s | belief row: 1 the project record: %s; 2 the words: %s on %d gates (%d confirmed, %d false); 3 the sources: %d confirm, %d disagree, agreement %d of %d | this voice on %s: %s" % (vc, " (a labeled guess)" if iv.get("guess") else "", rec, ("trust %.2f" % wt["trust"]) if wt["trust"] is not None else "no record", wt["gates"], wt["confirmed"], wt["false"], len((cells.get("sources") or {}).get("confirm", [])), len((cells.get("sources") or {}).get("disagree", [])), len((cells.get("pair_ground") or {}).get("agree", [])), (cells.get("pair_ground") or {}).get("sources", 0), name, ("trust %.2f over %d claims" % (pt["trust"], pt["claims"])) if pt and pt["trust"] is not None else "no record yet"))
+    if cells.get("numbers_spec"): print("  numbers the spec holds (the repo source): %s (C47b)" % ", ".join(cells["numbers_spec"]))
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
     if cells.get("numbers_in_newer") and kind in ("hallucination", "unsettled", "drift"): print("  a print newer than this claim holds %s: a later print never switches a verdict (C33b); pipe the print first, then make the claim again (re-ingest it) and judge the new run (C33c)" % ", ".join(cells["numbers_in_newer"]))
     if cells.get("print_missing") and kind not in ("noise", "dupe", "drift") and (name, n) not in NO_PARTS:   # C35.3
