@@ -829,7 +829,10 @@ def hydration_text(name, pr, nxt):
         ps = parts_of(name, nxt)
         if ps: lines.append("ACCEPTED SO FAR (parts of C%d's state, each with its time, confidence and ground): " % nxt + " | ".join("%s [%s%s | %s]" % (line_text(p["run"])[:90], time.strftime("%m-%d %H:%M", time.localtime(p.get("ts") or 0)), (" p%.2f %s" % (p["p"], p.get("by") or "")) if p.get("p") is not None else "", ("the owner's word" if p.get("by") == "owner" or (p.get("by") is None and p.get("p") is None) else ground_str(p.get("ground")))) for p in reversed(ps)))
         rc = receipts_of(name, nxt)
-        if rc: lines.append("RECEIPTS (the machine's own prints for C%d, the newest of each command): " % nxt + " | ".join("%s => %s [%s]" % (cmd, " / ".join(receipt_line(l)[:70] for l in d.get("lines", [])[:3]), time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0)))) for cmd, d in rc.items()))
+        if rc:
+            et = toks(ex[3]) if ex else set()
+            order = sorted(rc.items(), key=lambda kv: (0 if toks(kv[0]) & et else 1, -kv[1].get("ts", 0)))[:3]   # the prints the expected names first, then the newest; three at most
+            lines.append("RECEIPTS (the machine's own prints for C%d, %d commands, the newest of each; showing %d): " % (nxt, len(rc), len(order)) + " | ".join("%s => %s [%s]" % (cmd[:50], " / ".join(receipt_line(l)[:70] for l in d.get("lines", [])[:3]), time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0)))) for cmd, d in order))
         left = [r for r in remainders_of(name, nxt) if not r.get("satisfied")]
         if left: lines.append("REMAINDER of C%d (parts left not satisfied): " % nxt + "; ".join("%d %s" % (r["k"], line_text(r["run"])[:100]) for r in left[:6]))
         qs = open_questions(name, nxt, 5)
