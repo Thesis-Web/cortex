@@ -82,6 +82,7 @@ def sentences(text):
     return out
 # ---- the ingest filter (handler C10): a context whole, checked line by line; dupes, restatements and noise are dropped before anything is typed ----
 STOP = set("the a an of to in on at for and or but if then than so as is are was were be been being am do does did has have had it its this that these those with by from into over under about not no yes i you he she we they me my our your their his her them us will would can could should may might must very just also only there here".split())
+NEG_WORDS = set("not no never none nothing nor cannot without".split())
 def content_words(s):
     return set(w for w in re.findall(r"[a-z][a-z0-9']{2,}", s.lower()) if w not in STOP)
 NOISE_START = ("$ ", "> ", "❯", "#!", "{", "}", "[", "]", "|", "<", "```", "diff --git", "index ", "+++", "---", "traceback", "file \"")
@@ -225,7 +226,7 @@ def content_gates(run):
     out = []
     for g in gs[i:]:
         s = sym_of(g)
-        if s and (s.isdigit() or (len(s) >= 2 and s not in STOP and any(c.isalpha() for c in s))): out.append(g)
+        if s and (s.isdigit() or (len(s) >= 2 and (s not in STOP or s in NEG_WORDS) and any(c.isalpha() for c in s))): out.append(g)   # C26: a negation changes the meaning, it stays in the shape
     return out
 def is_value(g): return sym_of(g).isdigit()
 _TXT = {}
@@ -299,6 +300,25 @@ def pair_ground(name, run):
     np_ = len(pairs_of(run))
     agree = sorted([nm for nm, c in held.items() if np_ and c * 2 >= np_])   # a source agrees with a claim when it holds at least half of its pairs (C24: the belief row weighs sources agreeing)
     return {"pairs": np_, "held_by": held, "memory": memory, "none": none, "agree": agree, "sources": len(srcn)}
+def owner_conflict(run):
+    # C26: the owner's lines that share this claim's pairs; one that differs only by a value or a negation is a contradiction to ask about, never a verdict (the owner can be wrong by error)
+    owners = [nm for (nm, band) in sources() if band == "owner"]
+    if not owners: return None
+    cand = {}
+    for (a, b) in set(pairs_of(run)):
+        for nm in owners:
+            had = cx_get("pair", nm, pair_key(a, b))
+            if had: cand[int(json.loads(had[3]).get("first", 0))] = nm
+    ing = content_gates(run)
+    for (r0, nm) in list(cand.items())[:12]:
+        if not r0 or r0 == run: continue
+        O = content_gates(r0)
+        if not O or len(O) < 4: continue
+        oa, ob = seq_diff(O, ing); diff = oa + ob
+        if not diff or len(diff) > 3: continue
+        if all(is_value(g) or sym_of(g) in TIME_WORDS or sym_of(g) in NEG_WORDS for g in diff) and any(is_value(g) or sym_of(g) in NEG_WORDS for g in diff):
+            return {"source": nm, "run": r0, "line": line_text(r0)[:160], "differs": sorted(set(sym_of(g) for g in diff))}
+    return None
 def key_gates(name, run):
     # the (project, gate) key: the first run of this project that crossed the gate and how many times since (the owner: the project's metadata on the gate)
     for g in set(content_gates(run)):
@@ -628,6 +648,7 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
     cells.update(shape_cells(name, n, run, pr, ck, ex, parts))
     cells.update(ground_cells(name, n, run, text, cells["new_to_project"]))
     cells["pair_ground"] = pair_ground(name, run)
+    cells["owner_conflict"] = owner_conflict(run)
     return cells
 def formula(cells, answers):
     # the substitution formulas over a full sheet, in order: what the shape settles, then the deterministic word cells, then the judgment cells
@@ -716,7 +737,12 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s | agreement %d of %d sources%s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-", len(pg.get("agree", [])), pg.get("sources", 0), (" (" + ", ".join(pg["agree"][:4]) + ")") if pg.get("agree") else ""))
     no_source = pg.get("pairs", 0) >= 3 and not pg.get("held_by") and not cells.get("numbers_in_ext")   # no source holds any pair and no print grounds a value: the run left known ground at its first pair
     unknown = (cells.get("ground", {}).get("none") or []) + ([("pair: " + x) for x in pg.get("none", [])[:6]] if no_source else [])
-    if (len(unknown) >= 2 or no_source) and kind not in ("noise", "dupe", "drift"): ask_question(name, n, run, unknown[:8], vrun)
+    oc = cells.get("owner_conflict")
+    if oc:
+        print("  against an owner line (differs by %s): %s" % (",".join(oc["differs"]), oc["line"][:120])); unknown = ["against the owner line run %d (%s): %s" % (oc["run"], ",".join(oc["differs"]), oc["line"][:80])] + unknown
+    asking = (name, n) not in NO_PARTS   # a session's narration judged for the record only asks no meaning questions
+    if asking and oc and kind not in ("noise", "dupe"): ask_question(name, n, run, unknown[:8], vrun)   # a claim against the owner's words is asked about whatever its verdict here
+    if asking and (len(unknown) >= 2 or no_source) and kind not in ("noise", "dupe", "drift"): ask_question(name, n, run, unknown[:8], vrun)
     print("verdict %s %d run %d: %s %.3f by %s in %.0f ms | shape gates %d expected %.2f shared project %d values out %d words out %s new to project %s supersedes %s same_as %s echo %s | words %d shared scope %d checkpoint %d expected %d new %d known %d coverage %.2f observed %s mark %s times %d | geometry mag %s rad %s%s" % (name, n, run, kind, p, judge, (time.time() - t0) * 1000, cells["shape_gates"], cells["shape_expected"], cells["shape_shared_project"], cells["values_out"], ",".join(cells["words_out"]) or "-", ",".join(cells["new_to_project"]) or "-", cells["supersedes_run"] or "-", cells["same_as"] or "-", cells["echo"], cells["words"], cells["shared_scope"], cells["shared_checkpoint"], cells["shared_expected"], cells["new_words"], cells["known_words"], cells["coverage_expected"], cells["observed"], cells["expected_mark"], cells["times"], geo.get("magnitude"), geo.get("radians"), (" | part " + part) if part else ""))
     if moved: print(" " + moved.strip(" |"))
     if answers: print("  answers " + " ".join("%s=%.2f" % kv for kv in sorted(answers.items())))
