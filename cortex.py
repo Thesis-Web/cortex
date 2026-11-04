@@ -469,6 +469,11 @@ def v_sources():
     for (nm, b) in sources():
         d = source_info(nm); cnt = q("SELECT count(*) FROM main.cx WHERE kind = 'source' AND name = ? AND n > 0", nm)[0][0]
         print("%-44s %-9s %-26s %7d  %s" % (nm, b, ",".join(d.get("domain") or []) or "-", cnt, (d.get("text") or "")[:100]))
+    dom, nb = {}, {"reference": 0, "owner": 0}
+    for (nm, b) in sources():
+        nb[b] = nb.get(b, 0) + 1
+        for d0 in (source_info(nm).get("domain") or []): dom[d0] = dom.get(d0, 0) + 1
+    print("sources: %d (%d reference, %d owner) | per domain: %s" % (len(sources()), nb.get("reference", 0), nb.get("owner", 0), ", ".join("%s %d" % kv for kv in sorted(dom.items(), key=lambda kv: -kv[1]))))
     R = routes(); print("routes: " + "; ".join("%s -> %s" % (k, ",".join(v)) for k, v in R.items() if k != "note") + " | a project routes to domains; agreement counts the routed sources (C36)")
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 WD_ABBR = {"mon": 0, "tue": 1, "tues": 1, "wed": 2, "thu": 3, "thur": 3, "thurs": 3, "fri": 4, "sat": 5, "sun": 6}
