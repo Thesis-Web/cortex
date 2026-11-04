@@ -297,7 +297,7 @@ def pair_ground(name, run):
     srcn = [nm for (nm, band) in sources()]; routed = [nm for (nm, band) in routed_sources(name)]; pjs = [pj for pj in projects()]
     for (a, b) in pairs_of(run):
         k = pair_key(a, b)
-        who = [nm for nm in srcn if cx_get("pair", nm, k)]
+        who = [nm for nm in srcn if source_holds_pair(nm, a, b)]   # C54: a db source by its pair key
         for nm in who: held[nm] = held.get(nm, 0) + 1
         for pj in pjs:
             had = cx_get("pair", pj, k)
@@ -341,6 +341,13 @@ def source_check(run):
             if had:
                 r0 = int(json.loads(had[3]).get("first", 0))
                 if r0 and r0 != run and (nm, r0) not in seen: seen.add((nm, r0)); cand.append((nm, r0))
+    for nm in srcs:   # C54: a db source has no runs; its lines are compared by text
+        if source_is_db(nm):
+            sc0 = source_confirms_text(nm, line_text(run), [(sym_of(a), sym_of(b)) for (a, b) in set(pairs_of(run))])
+            for x in sc0["confirm"]:
+                if x not in confirm: confirm.append(x)
+            for d0 in sc0["disagree"]:
+                if d0["source"] not in [d["source"] for d in disagree]: disagree.append(dict(d0, run=0))
     ing = content_gates(run)
     for (nm, r0) in cand[:24]:
         O = content_gates(r0)
@@ -480,7 +487,7 @@ def v_sources():
     ensure_cx(); print("%-44s %-9s %-26s %7s  %s" % ("source", "band", "domains", "lines", "what, where from, as of"))
     for (nm, b) in sources():
         d = source_info(nm); cnt = q("SELECT count(*) FROM main.cx WHERE kind = 'source' AND name = ? AND n > 0", nm)[0][0]
-        print("%-44s %-9s %-26s %7d  %s%s" % (nm, b, ",".join(d.get("domain") or []) or "-", cnt, (d.get("text") or "")[:100], (" | path " + d["path"]) if d.get("path") else ""))
+        print("%-44s %-9s %-26s %7d  %s%s%s" % (nm, b, ",".join(d.get("domain") or []) or "-", cnt, (d.get("text") or "")[:100], (" | path " + d["path"]) if d.get("path") else "", (" | db %d lines" % d.get("db_lines", 0)) if d.get("db") else ""))
     dom, nb = {}, {"reference": 0, "owner": 0}
     for (nm, b) in sources():
         nb[b] = nb.get(b, 0) + 1
@@ -667,7 +674,7 @@ def ground_cells(name, n, run, text, new_syms):
         sym = sym_of(w); held = False
         if w in rwords: g["receipt"] += 1; held = True
         for (src, band) in sources():
-            if band in BANDS and cx_get("gate", src, w): g[band] += 1; held = True; g.setdefault("by_source", {}); g["by_source"][src] = g["by_source"].get(src, 0) + 1
+            if band in BANDS and source_holds_gate(src, w): g[band] += 1; held = True; g.setdefault("by_source", {}); g["by_source"][src] = g["by_source"].get(src, 0) + 1   # C54: a db source by its word key
         if sym not in new or any(cx_get("gate", pj, w) for pj in projects() if pj != name): g["memory"] += 1; held = True
         if not held: g["none"].append(sym)
     g["none"] = sorted(set(g["none"]))
@@ -716,7 +723,7 @@ def run_check(name, n, cwd=None):
     had = cx_get("check", name, n)
     if not had: return None
     cmd = json.loads(had[3]).get("cmd"); cwd = cwd or repo_of(name) or os.path.join(WORKDIR, name)
-    try: p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, cwd=cwd, timeout=180); out = (p.stdout + ("\n" + p.stderr if p.stderr.strip() else "")).strip()
+    try: p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, cwd=cwd, timeout=180, env=dict(os.environ, PATH=os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", ""))); out = (p.stdout + ("\n" + p.stderr if p.stderr.strip() else "")).strip()
     except subprocess.TimeoutExpired: out = "check wrong: the check command ran past 180 s"
     lines = [l for l in out.splitlines() if l.strip()] or ["check wrong: the check printed nothing"]
     last = lines[-1]; ok = last.lower().startswith("check ok")
@@ -1323,7 +1330,7 @@ def hydration_text(name, pr, nxt):
         for (rn, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 30", name):
             d = json.loads(v)
             if d.get("n") != nxt or d.get("kind") != "hallucination" or d.get("judge") != "receipt": continue
-            sh = d.get("sheet") or {}; ref.append("%s -> the number%s %s %s in no print of this checkpoint (pipe that print first, or leave the number out)" % (line_text(rn)[:70], "s" if len(sh.get("numbers_out") or []) > 1 else "", ", ".join(sh.get("numbers_out") or []), "are" if len(sh.get("numbers_out") or []) > 1 else "is"))
+            sh = d.get("sheet") or {}; ref.append("run %d: %s -> the number%s %s %s in no print of this checkpoint (pipe that print first, or leave the number out)" % (rn, line_text(rn)[:70], "s" if len(sh.get("numbers_out") or []) > 1 else "", ", ".join(sh.get("numbers_out") or []), "are" if len(sh.get("numbers_out") or []) > 1 else "is"))
             if len(ref) >= 2: break
         if ref: lines.append("WHY THE LAST TURN DID NOT CLOSE C%d (refusals by the print; feedback, not state): " % nxt + " | ".join(ref))
         qs = open_questions(name, nxt, 5)
@@ -1336,6 +1343,7 @@ def hydration_text(name, pr, nxt):
         if left: lines.append("REMAINDER (the contract's parts left not satisfied, from the brain; the owner's word makes one a checkpoint): " + "; ".join("C%d.%d %s" % (cn, r["k"], line_text(r["run"])[:100]) for (cn, r) in left[:10]))
         nw = next_work(name)
         if nw: lines.append("NEXT WORK (the first part left that names neither the kernel nor the owner): C%d.%d %s" % nw)
+    if nxt is not None: lines.append("DISPUTE (C53): if a verdict called a true sentence of yours invention, hallucination or drift, add one line DISPUTE: run <run> <why> (the run numbers are in WHY THE LAST TURN DID NOT CLOSE); the sixth gives a second opinion from the guessing, the project record and the sources, and tells you the shape the brain holds so you can say it that way.")
     lines.append("LAWS: report only what you observed as live output; name the command and its output; never invent a result, a term or a file; stay inside the scope; if the expected output is not met say so and why.")
     lines.append("ALL CHECKPOINTS (state; only C%s is yours now; the done ones one line each, C41):" % (nxt if nxt is not None else "-"))
     for (n, run, at, ts, text) in cx_list("checkpoint", name):
@@ -1436,7 +1444,11 @@ def v_turn(name, engine="claude", model=None, act=False, at=None, cwd=None):
     needed = [m.group(1).strip() for m in re.finditer(r"(?mi)^\s*needed:\s*(.+?)\s*$", out)]; flaws = [m.group(1).strip() for m in re.finditer(r"(?mi)^\s*flaw:\s*(.+?)\s*$", out)]   # C41, C44: the worker's own lines
     for x in needed:
         if x.lower() not in ("none", "nothing", "-"): v_need(name, nxt, x, who="%s:%s" % (engine, model))
-    body = re.sub(r"(?mi)^\s*(needed|flaw):.*$", "", out)
+    disputes = [(int(m.group(1)), m.group(2).strip()) for m in re.finditer(r"(?mi)^\s*dispute:\s*(?:run\s+)?(\d+)\s*(.*)$", out)]
+    for (dr, why) in disputes[:3]:   # C53: the worker asks for a second opinion; the sixth rules and the next hydration carries it
+        try: ruling, shape = v_dispute(name, dr, why or "the worker holds it correct"); v_need(name, nxt, "the sixth on run %d: %s | %s" % (dr, ruling[:140], shape[:200]), who="sixth")
+        except (SystemExit, Exception) as e: print("dispute on run %d failed: %s" % (dr, e))
+    body = re.sub(r"(?mi)^\s*(needed|flaw|dispute):.*$", "", out)
     ing = v_ingest(name, body, quiet=True); kinds = judge_many(name, nxt, [i for i in ing if not i["same_as"]])
     print("ingested %d sentences (%d repeats), verdicts: %s" % (len(ing), sum(1 for i in ing if i["same_as"]), " ".join(kinds) or "none"))
     st_now = cx_get("state", name, nxt)
@@ -1941,6 +1953,12 @@ def code_ground(name, run, limit=3):
     for (a, b) in pairs_of(run):
         k = pair_key(a, b)
         for nm in pathed:
+            if source_is_db(nm):   # C54: the db row itself names the file and line
+                if not cx_get("spair", nm, text_key("%s %s" % (sym_of(a), sym_of(b)))): continue
+                for (sid, t, p, l) in db_lines_holding(nm, [sym_of(a), sym_of(b)], 1):
+                    if p and (nm, p, l) not in seen: seen.add((nm, p, l)); out.append("%s %s:%s holds %s %s" % (nm, p, l, sym_of(a), sym_of(b)))
+                if len(out) >= limit: return out
+                continue
             had = cx_get("pair", nm, k)
             if not had: continue
             first = json.loads(had[3]).get("first"); p, l = source_line_of(nm, first)
@@ -1963,11 +1981,14 @@ def v_questions_ask(name):
             toks = [t for t in re.findall(r"[a-z][a-z0-9_']+", body.lower()) if t not in STOP]
             gates = [gate_of_word(t) for t in toks]
             holders = []
-            if w.startswith("pair: ") and len(gates) == 2 and all(gates): holders = [(nm, cx_get("pair", nm, pair_key(gates[0], gates[1]))) for nm in srcs]; holders = [(nm, h) for (nm, h) in holders if h]
-            elif gates and all(gates): holders = [(nm, cx_get("gate", nm, gates[0])) for nm in srcs if all(cx_get("gate", nm, g) for g in gates)]
+            if w.startswith("pair: ") and len(gates) == 2 and all(gates): holders = [(nm, source_holds_pair(nm, gates[0], gates[1])) for nm in srcs]; holders = [(nm, h) for (nm, h) in holders if h]
+            elif gates and all(gates): holders = [(nm, source_holds_gate(nm, gates[0])) for nm in srcs if all(source_holds_gate(nm, g) for g in gates)]
             if holders:
                 where = []
                 for (nm, h) in holders[:3]:
+                    if source_is_db(nm):   # C54, C51.1: the lines found, from the source db, with path and line
+                        for (sid, t, p, l) in db_lines_holding(nm, toks, 1): where.append("%s%s: %s" % (nm, (" %s:%s" % (p, l)) if p else "", t[:100]))
+                        continue
                     first = json.loads(h[3]).get("first"); p, l = source_line_of(nm, first)
                     where.append("%s%s" % (nm, (" %s:%s" % (p, l)) if p else ""))
                 found.append("%s held by %s" % (w, ", ".join(where)))
@@ -2022,7 +2043,7 @@ WHY_RULES = {
     "asked and convicted at once": ("the sheet asked for a print it lacked and the formula convicted the same line", "a missing print is a question, not a verdict (C35.3), but the formula ran the receipt conviction anyway", "when measure_missing or print_missing is set, the verdict is unsettled with the question, never hallucination by receipt"),
     "a number held by a print was called out": ("the number the verdict called out is in a print of this checkpoint older than the claim", "the receipt cells read the newest lines of each print only, or the number was cut from the typed receipt line", "the receipt cells must read every typed line of the checkpoint's prints older than the claim"),
 }
-def v_why(name, plan=False):
+def v_why(name, plan=False, quiet=False):
     # C49 (the owner, 11-04 15:3x: the sixth should see the trust drop the incorrect judgement and ask why did this happen, how did it happen, can it be fixed, do we have a plan,
     # then the cortex can register its own plan, ask the headless to build it): the verdicts of this project the record itself proves wrong, each with the cells that decided it
     # and the rule; --plan registers the cortex's own plan on the project cortex-self (a clone of the front door, built by the headless against the test brain on port 7010)
@@ -2049,8 +2070,8 @@ def v_why(name, plan=False):
         if why: faults.append({"run": run, "n": n, "kind": kind, "by": by, "why": why, "cells": cells, "text": line_text(run)[:140], "ts": vts})
     kinds = {}
     for f in faults: kinds[f["why"]] = kinds.get(f["why"], 0) + 1
-    print("why %s: %d verdicts of %d the record proves wrong%s" % (name, len(faults), len(vs), (": " + ", ".join("%s %d" % kv for kv in sorted(kinds.items(), key=lambda kv: -kv[1]))) if kinds else ""))
-    for f in faults[:30]:
+    if not quiet: print("why %s: %d verdicts of %d the record proves wrong%s" % (name, len(faults), len(vs), (": " + ", ".join("%s %d" % kv for kv in sorted(kinds.items(), key=lambda kv: -kv[1]))) if kinds else ""))
+    for f in (faults[:30] if not quiet else []):
         how = WHY_RULES[f["why"]]
         print("  run %d C%d %s by %s [%s]: %s\n    why: %s | cells: %s\n    how: %s | fix: %s" % (f["run"], f["n"], f["kind"], f["by"], time.strftime("%m-%d %H:%M", time.localtime(f["ts"] or 0)), f["text"], how[0], f["cells"], how[1], how[2]))
     if not plan or not faults: return faults
@@ -2090,7 +2111,8 @@ def test_kernel(cmd):
             time.sleep(1)
     def start_test():
         os.makedirs(T, exist_ok=True)
-        subprocess.Popen("cd %s && NK_MAP=%s/brain.map nohup ./nk 7010 egg-symbols.txt sources wn gcide mwt moby map sqldoc measured guess wikt > %s/nk.log 2>&1 < /dev/null &" % (NK, T, T), shell=True)
+        lst = open(os.path.join(NK, "sources", "LIST")).read().split() if os.path.exists(os.path.join(NK, "sources", "LIST")) else "wn gcide mwt moby map sqldoc measured wikt cx".split()
+        subprocess.Popen("cd %s && NK_MAP=%s/brain.map nohup ./nk 7010 egg-symbols.txt sources %s > %s/nk.log 2>&1 < /dev/null &" % (NK, T, " ".join(lst), T), shell=True)
         for i in range(600):
             if up(7010): return True
             time.sleep(1)
@@ -2179,7 +2201,294 @@ def v_lesson(name, track, ladder=None, picks=None):
         v_checkpoint(name, n, text, exp); v_check_set(name, n, "python3 %s/checks/lesson.py %s %s" % (WORKDIR, name, slug))
         print("  C%d %s difficulty %d: %d tests, key: %s" % (n, slug, e.get("difficulty", 0), ntests, keyline[:120])); got.append(n); n += 1
     print("lesson %s: %d checkpoints registered from %s in difficulty order (%s); the keys in %s; read them with cortex status %s, then cortex build %s --box 30 --turns 12" % (name, len(got), track, " ".join("C%d" % x for x in got), keys, name, name))
+# ---- C54 (the owner, 11-04 16:4x: i thought the sources were transcribed in full into mini source dbs, so they have a sql prompt the mother pasted to and hit enter): the cortex
+#      sources as source dbs behind the mother. One attached db, cx.db (the kernel allows ten attachments; the sixth and the eight kernel sources hold nine, the guesser's slot
+#      freed: the owner took the guesser out 10-31), holding every cortex source with its own symbol gate in cx.me; the corpus rows carry the sentence, its path and line;
+#      a request is a row in cx.inbox (a word, or a pair "a b", one source or all); the work trigger answers into cx.outbox; the carry trigger hands each return to mother,
+#      which lays it as a return run under the asking run with its src row; the brain keeps the pointer and re-cuts the text from the source row at read (C27). ----
+CX_SCHEMA = """CREATE TABLE IF NOT EXISTS me (source TEXT PRIMARY KEY, gate INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS corpus (id INTEGER PRIMARY KEY, source TEXT NOT NULL, word TEXT NOT NULL, hw TEXT, text TEXT NOT NULL, path TEXT, line INTEGER);
+CREATE INDEX IF NOT EXISTS corpus_word ON corpus (word); CREATE INDEX IF NOT EXISTS corpus_source ON corpus (source);
+CREATE TABLE IF NOT EXISTS words (word TEXT NOT NULL, id INTEGER NOT NULL, source TEXT NOT NULL); CREATE INDEX IF NOT EXISTS words_word ON words (word);
+CREATE TABLE IF NOT EXISTS inbox (id INTEGER PRIMARY KEY, run INTEGER, cell INTEGER, about INTEGER, word TEXT, source TEXT);
+CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, run INTEGER, cell INTEGER, about INTEGER, text TEXT, src INTEGER, source TEXT);
+CREATE TRIGGER IF NOT EXISTS work_word AFTER INSERT ON inbox WHEN instr(NEW.word, ' ') = 0 BEGIN
+  INSERT INTO outbox (run, cell, about, text, src, source) SELECT NEW.run, NEW.cell, NEW.about, c.text, c.id, c.source FROM words w JOIN corpus c ON c.id = w.id WHERE w.word = NEW.word AND (NEW.source IS NULL OR c.source = NEW.source) ORDER BY c.id LIMIT 24;
+  DELETE FROM inbox WHERE id = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS work_pair AFTER INSERT ON inbox WHEN instr(NEW.word, ' ') > 0 BEGIN
+  INSERT INTO outbox (run, cell, about, text, src, source) SELECT NEW.run, NEW.cell, NEW.about, c.text, c.id, c.source FROM corpus c WHERE c.id IN (SELECT id FROM words WHERE word = substr(NEW.word, 1, instr(NEW.word, ' ') - 1)) AND c.id IN (SELECT id FROM words WHERE word = substr(NEW.word, instr(NEW.word, ' ') + 1)) AND (NEW.source IS NULL OR c.source = NEW.source) ORDER BY c.id LIMIT 24;
+  DELETE FROM inbox WHERE id = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS carry AFTER INSERT ON outbox BEGIN
+  SELECT mother('INSERT INTO main.secondary (run, cell, gate, about, text, src) VALUES (?, ?, ?, ?, ?, ?)', NEW.run, NEW.cell, (SELECT gate FROM me WHERE source = NEW.source), NEW.src, NEW.text, NEW.src);
+  DELETE FROM outbox WHERE id = NEW.id; END;"""
+def cx_db_path():
+    d = os.environ.get("CORTEX_SRCDIR") or (os.path.join(HOME, "cortex", "nk-new", "sources") if PORT == 7010 else os.path.join(HOME, "cortex", "nk", "sources"))
+    return os.path.join(d, "cx.db")
+def cx_db():
+    import sqlite3
+    p = cx_db_path(); new = not os.path.exists(p); c = sqlite3.connect(p, timeout=60)
+    if new: c.executescript(CX_SCHEMA); c.commit()
+    return c
+def source_symbol(name):
+    # the source's symbol in the brain: short (the kernel keeps a symbol short), unique by a hash tail
+    slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    return "src_" + slug if len(slug) <= 20 else "src_" + slug[:14].strip("_") + "_" + hashlib.sha256(name.encode()).hexdigest()[:6]
+def source_gate(name):
+    # the source's own symbol in the brain (born once), its gate kept in cx.me so a return carries it as its arrival
+    sym = source_symbol(name); rows = q("SELECT gate FROM main.label WHERE symbol = ?", sym)
+    if not rows:
+        try: typed(sym)
+        except RuntimeError: pass
+        rows = q("SELECT gate FROM main.label WHERE symbol = ?", sym)
+    if not rows: raise SystemExit("the source symbol %s has no gate" % sym)
+    g = rows[0][0]; q("INSERT OR REPLACE INTO cx.me (source, gate) VALUES (?, ?)", name, g); return g
+def source_is_db(nm):
+    try: return bool(source_info(nm).get("db"))
+    except Exception: return False
+def source_holds_gate(nm, g):
+    if source_is_db(nm): return cx_get("sword", nm, text_key(sym_of(g)))
+    return cx_get("gate", nm, g)
+def source_holds_pair(nm, a, b):
+    if source_is_db(nm): return cx_get("spair", nm, text_key("%s %s" % (sym_of(a), sym_of(b))))
+    return cx_get("pair", nm, pair_key(a, b))
+def source_db_type(name, items, quiet=False, replace=False):
+    # items: (sentence, path, line); the sentences into cx.db (corpus and words), the word and pair keys into the index; nothing typed into the brain
+    t0 = time.time(); c = cx_db(); cur = c.cursor(); n_typed = dupes = noise = 0; words_seen, pairs_seen = {}, {}
+    for (sent, path, line) in items:
+        if is_noise(sent): noise += 1; continue
+        k = text_key(sent); had = cx_get("source", name, k)
+        if had and (not replace or '"db"' in (had[3] or "")): dupes += 1; continue   # a typed row is replaced by the migration; a db row is a repeat
+        cw = [w for w in re.findall(r"[a-z][a-z0-9_']+", sent.lower()) if w not in STOP]
+        if not cw: noise += 1; continue
+        cur.execute("INSERT INTO corpus (source, word, text, path, line) VALUES (?, ?, ?, ?, ?)", (name, cw[0], sent, path, line)); sid = cur.lastrowid
+        cur.executemany("INSERT INTO words (word, id, source) VALUES (?, ?, ?)", [(w, sid, name) for w in sorted(set(cw))])
+        cx_put("source", name, k, 0, clock(), json.dumps({"db": sid, "path": path, "line": line}) if path else json.dumps({"db": sid}))
+        for w in set(cw): words_seen[w] = words_seen.get(w, 0) + 1
+        for (a, b) in zip(cw, cw[1:]): pairs_seen["%s %s" % (a, b)] = pairs_seen.get("%s %s" % (a, b), 0) + 1
+        n_typed += 1
+        if n_typed % 2000 == 0:
+            c.commit()
+            if not quiet: print("  %d into the db, %.0f s" % (n_typed, time.time() - t0), flush=True)
+    c.commit(); c.close()
+    for w, cnt in words_seen.items():
+        k = text_key(w); had = cx_get("sword", name, k); d = json.loads(had[3]) if had else {"n": 0}; d["n"] = d.get("n", 0) + cnt; cx_put("sword", name, k, 0, 0, json.dumps(d))
+    for pr, cnt in pairs_seen.items():
+        k = text_key(pr); had = cx_get("spair", name, k); d = json.loads(had[3]) if had else {"n": 0}; d["n"] = d.get("n", 0) + cnt; cx_put("spair", name, k, 0, 0, json.dumps(d))
+    had = cx_get("source", name, 0); d = json.loads(had[3]); d["db"] = True; d["db_lines"] = d.get("db_lines", 0) + n_typed; cx_put("source", name, 0, had[0], had[1], json.dumps(d)); _SRCD.pop(name, None)
+    g = source_gate(name)
+    if not quiet: print("source %s into cx.db: %d sentences, %d words keyed, %d pairs keyed, %d repeats, %d noise, gate %d, %.1f s; the brain run count did not grow" % (name, n_typed, len(words_seen), len(pairs_seen), dupes, noise, g, time.time() - t0))
+    return n_typed
+def v_source_db(name, band, text, domain, path=None, globs=None, from_brain=False, raw=None):
+    ensure_cx()
+    if not cx_get("source", name, 0):
+        if not text: raise SystemExit("register the source first: cortex source %s owner|reference --db : <what it is>" % name)
+        v_source(name, band or "reference", text, domain or ["software"])
+    items = []
+    if from_brain:
+        # the migration: a source typed as lines into the brain replayed from its runs into cx.db; the typed runs stay as history
+        rows = q("SELECT n, run, value FROM main.cx WHERE kind = 'source' AND name = ? AND n > 0 AND run > 0 LIMIT 400000", name)
+        for (n, run, v) in rows:
+            try: d = json.loads(v) if v and v.startswith("{") else {}
+            except ValueError: d = {}
+            if d.get("db"): continue
+            t = line_text(run)
+            if t: items.append((t, d.get("path"), d.get("line")))
+            if len(items) % 5000 == 0 and items: print("  %d replayed" % len(items), flush=True)
+        print("source %s: %d lines replayed from the brain" % (name, len(items)))
+    elif path:
+        root = os.path.abspath(os.path.expanduser(path)); had = cx_get("source", name, 0); d = json.loads(had[3]); d["path"] = root; cx_put("source", name, 0, had[0], had[1], json.dumps(d)); _SRCD.pop(name, None)
+        for f in code_files(root, globs):
+            rel = os.path.relpath(f, root)
+            for (ln, para) in file_paragraphs(f):
+                plines = [x.lower() for x in para.splitlines()]
+                for sent in sentences(para):
+                    head = sent.lower()[:25]; off = next((i for i, x in enumerate(plines) if head in x), 0); items.append((sent, rel, ln + off))
+    else:
+        for sent in sentences(raw if raw is not None else sys.stdin.read()): items.append((sent, None, None))
+    return source_db_type(name, items, replace=from_brain)
+def db_rows_of(name, sids):
+    if not sids: return {}
+    c = cx_db(); out = {}
+    for (sid, text, path, line, src) in c.execute("SELECT id, text, path, line, source FROM corpus WHERE id IN (%s)" % ",".join(str(int(s)) for s in sids)): out[sid] = (text, path, line, src)
+    c.close(); return out
+def v_ask_source(name, word, run=None):
+    # cortex ask-source <name|all> <word or 'a b'> [--run R]: the request written into cx.inbox under run R; the returns read back as the return runs under R, each with its src row
+    ensure_cx(); c = cx_db(); c.close()
+    if run is None:
+        r = typed("cortex ask %s : %s" % (name, word)); run = r["run"]
+    gates = {row[1]: row[0] for row in q("SELECT source, gate FROM cx.me")}
+    before = set(t["id"] for t in (ask("run main %d" % run).get("tree") or []) if t.get("kind") == 3)
+    q("INSERT INTO cx.inbox (run, cell, about, word, source) VALUES (?, 24, 0, ?, %s)" % ("NULL" if name == "all" else "?"), *( [run, word] if name == "all" else [run, word, name]))
+    time.sleep(0.3)
+    kids = [t for t in (ask("run main %d" % run).get("tree") or []) if t.get("kind") == 3 and t["id"] not in before]   # the return runs: arrival = the source's gate, about = the src row (the cortex contract; the kernel's define puts the asked gate there)
+    made = {t["id"]: int(t.get("about") or 0) for t in kids}
+    got = db_rows_of(name, [v for v in made.values() if v])
+    print("ask-source %s %r under run %d: %d returns laid as return runs (the brain keeps the pointer, the text re-cut from the source row at read)" % (name, word, run, len(kids)))
+    out = []
+    for t in kids[:12]:
+        sid = made.get(t["id"]); meta = got.get(sid) if sid else None
+        line = "return run %d arrival %s (%s) src %s %s: %s" % (t["id"], t.get("arrival"), gates.get(t.get("arrival"), "?"), sid, ("%s:%s" % (meta[1], meta[2])) if meta and meta[1] else "", (t.get("text") or (meta[0] if meta else ""))[:140]); out.append(line); print("  " + line)
+    return out
+def v_source_migrate_all(box_min=120):
+    # every reference source typed as lines moved into cx.db (the owner sources stay as lines: the designer's record in the brain); one source at a time, a line per source
+    t0 = time.time(); done = []
+    for (nm, band) in sources():
+        if band != "reference" or source_is_db(nm): continue
+        if time.time() - t0 > box_min * 60: print("box of %d min reached" % box_min); break
+        n = v_source_db(nm, None, None, None, from_brain=True); done.append((nm, n))
+    print("migrated %d sources into cx.db in %.0f s: %s" % (len(done), time.time() - t0, ", ".join("%s %d" % x for x in done)))
+
+def db_lines_holding(nm, words, limit=3):
+    # the corpus rows of a db source holding every word given (a word or a pair), with path and line
+    c = cx_db(); ws = [w for w in words if w]
+    if not ws: c.close(); return []
+    sql = "SELECT c.id, c.text, c.path, c.line FROM corpus c WHERE c.source = ? " + " ".join("AND c.id IN (SELECT id FROM words WHERE word = ?)" for w in ws) + " ORDER BY c.id LIMIT %d" % limit
+    rows = list(c.execute(sql, [nm] + ws)); c.close(); return rows
+def source_confirms_text(nm, text, pairs_words):
+    # C28 for a db source: the corpus rows sharing at least half of the claim's pairs, compared word for word: the same words = confirm; the same but a value or a negation = disagree
+    cand = {}
+    for (a, b) in pairs_words:
+        for (sid, t, p, l) in db_lines_holding(nm, [a, b], 6): cand[sid] = t
+    cw = content_words(text) | set(numbers(text)); out = {"confirm": [], "disagree": []}
+    for sid, t in list(cand.items())[:40]:
+        tw = content_words(t) | set(numbers(t)); diff = (cw ^ tw)
+        if not diff: out["confirm"].append(nm)
+        elif diff and all(re.match(r"^\d", x) or x in NEG_WORDS or x in TIME_WORDS for x in diff) and len(cw & tw) >= max(3, len(cw) // 2): out["disagree"].append({"source": nm, "line": t[:160], "differs": sorted(diff)})
+    return out
+# ---- C53 (the owner, 11-04 16:4x: a second police officer like the sixth to catch the things the judge misses; the llm asks for a second opinion; the sixth steps in and
+#      calls the guessing, or the brain data on the topic, or the sources, or all three, to help the judge make a better ruling, or to inform the llm the data might not be
+#      wrong but the way you shaped the data is: say the same thing in a more correct way). The ruling is typed on the sixth prompt, the sixth's own record. ----
+def nearest_shape(name, n, run):
+    # the line the brain holds nearest to the claim: the expected of C n or one of its parts, by shared content gates
+    cg = set(g for g in content_gates(run) if not is_value(g)); best = (0, None, None)
+    cands = []
+    ex = cx_get("expected", name, n)
+    if ex and ex[0]: cands.append(("the expected of C%s" % n, ex[0]))
+    for p in parts_of(name, n): cands.append(("a part of C%s" % n, p["run"]))
+    for (label, r0) in cands:
+        og = set(g for g in content_gates(r0) if not is_value(g)); shared = len(cg & og)
+        if shared > best[0]: best = (shared, label, r0)
+    return best
+def v_second(name, run, reason=None):
+    ensure_cx(); row = q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n = ?", name, run)
+    if not row: raise SystemExit("run %d has no verdict on %s" % (run, name))
+    d = jload(row[0][0]); n = d.get("n"); kind, by, sh = d.get("kind"), d.get("judge"), d.get("sheet") or {}; text = line_text(run)
+    print("second opinion on %s run %d (%s %.2f by %s): %s" % (name, run, kind, d.get("p") or 0, by, text[:120]))
+    if reason: print("  the dispute: %s" % reason[:200])
+    # read 1, the guessing: the brain's own define of the words no ground holds (the sixth's define row calls the recall define)
+    none = [w for w in ((sh.get("ground") or {}).get("none") or []) if not w.startswith("pair")][:3]; guessed = []
+    for w in none:
+        defs = kernel_define(w)
+        if defs: guessed.append("%s = %s: %s" % (w, defs[0][0], defs[0][1][:80]))
+    r1 = "; ".join(guessed) if guessed else ("every word has ground, nothing to guess" if not none else "no definition in the dictionaries for " + ", ".join(none))
+    print("  1 the guessing (the brain's own define): " + r1)
+    # read 2, the project record
+    pg = pair_ground(name, run); mem = pg.get("memory") or {}; held_mem = max(mem.values()) if mem else 0; np_ = pg.get("pairs") or 0
+    shared, label, r0 = nearest_shape(name, n, run); shape_line = line_text(r0)[:160] if r0 else ""
+    r2 = "%d of %d pairs held by the record (%s); nearest shape %s, %d gates shared: %s" % (held_mem, np_, " ".join("%s %d" % kv for kv in sorted(mem.items(), key=lambda kv: -kv[1])[:3]) or "none", label or "none", shared, shape_line[:100])
+    print("  2 the project record: " + r2)
+    # read 3, the sources
+    held = pg.get("held_by") or {}; top = sorted(held.items(), key=lambda kv: -kv[1])[:4]; found = []
+    for nm, cnt in top:
+        if source_is_db(nm):
+            for (a, b) in pairs_of(run)[:16]:
+                rows = db_lines_holding(nm, [sym_of(a), sym_of(b)], 1)
+                if rows: found.append("%s %s:%s %s" % (nm, rows[0][2] or "-", rows[0][3] or "-", rows[0][1][:70])); break
+    r3 = "%s hold %s of %d pairs%s" % (", ".join("%s %d" % kv for kv in top) or "no source", "/".join(str(c) for nm, c in top) or "0", np_, ("; " + "; ".join(found)) if found else "")
+    print("  3 the sources: " + r3)
+    # the ruling: a machine print the judge read is not overruled; data a source or the record holds moves an off rail verdict to unsettled
+    src_half = bool(top) and top[0][1] * 2 >= np_ > 0; mem_half = np_ > 0 and held_mem * 2 >= np_; moved = False
+    if kind in ("invention", "hallucination", "drift") and by == "receipt" and sh.get("numbers_out"): ruling = "the judge stands: no print holds %s, and a source cannot stand in for the machine's print; pipe the print, then say it again" % ", ".join(sh["numbers_out"][:4])
+    elif kind in ("invention", "hallucination", "drift") and (src_half or mem_half): ruling = "the data is held by %s: the verdict moves to unsettled by the sixth; the judge's call stays as history" % ("the sources " + ", ".join(nm for nm, c in top[:2]) if src_half else "the project record"); moved = True
+    elif kind in ("invention", "hallucination", "drift"): ruling = "the judge stands: neither a source nor the record holds the data; the words with no ground: %s" % (", ".join(none) or "-")
+    else: ruling = "the verdict was %s by %s; nothing to overrule, but the shape below is the one the brain holds" % (kind, by)
+    shape = ("the brain holds this shape (%s): %s | your values: %s" % (label, shape_line, ", ".join(sh.get("numbers") or []) or "none")) if r0 else "no shape held yet for C%s" % n
+    print("  ruling: " + ruling); print("  say it this way: " + shape)
+    body = "run %d: %s | %s" % (run, ruling[:200], shape[:200])
+    try: srun = ask("type sixth cortex second %s %d : %s" % (name, run, clean(body))).get("run") or 0
+    except Exception: srun = 0
+    cx_put("second", name, run, srun, clock(), json.dumps({"n": n, "ruling": ruling, "shape": shape, "reads": [r1[:300], r2[:300], r3[:300]], "moved": moved, "reason": (reason or "")[:300], "ts": int(time.time()), "sixth_run": srun}))
+    if moved:
+        v_judge(name, n, run, answers_given={"unsettled": 0.7}, judge_name="sixth")
+    print("  the ruling typed on the sixth as run %d" % srun)
+    return ruling, shape
+def v_dispute(name, run, reason):
+    ensure_cx(); record("dispute", name, run, clean(reason)[:400]); return v_second(name, run, reason)
+# ---- C55 (the owner, 11-04 16:4x: why did, why does, how did, how does, when did, when is, when does, what should be done next): the question word routes to the record ----
+def state_hist(name, n):
+    # the state history of a checkpoint as a list (the row holds a list, or a dict with the list under hist or history); the state row itself when the history is empty
+    st = cx_get("states", name, n); hist = []
+    if st:
+        h = jload(st[3]); hist = h if isinstance(h, list) else ((h.get("hist") or h.get("history") or []) if isinstance(h, dict) else [])
+    if not hist:
+        s0 = cx_get("state", name, n)
+        if s0: hist = [{"state": s0[3], "run": s0[0], "at": s0[1], "ts": s0[2]}]
+    return hist
+def v_askq(name, qtext):
+    ensure_cx(); t = qtext.lower().strip().rstrip("?"); reads = []
+    m_run = re.search(r"\brun\s+(\d+)", t); m_c = re.search(r"\bc\s?(\d+)\b", t)
+    if t.startswith("why"):
+        if m_run:
+            run = int(m_run.group(1)); row = q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n = ?", name, run)
+            if not row: print("run %d has no verdict on %s" % (run, name)); return
+            d = jload(row[0][0]); sh = d.get("sheet") or {}
+            print("why run %d got %s by %s (C%s): numbers out %s | words out %s | no ground for %s | measure missing %s | shape of the expected %.2f | sources confirm %d disagree %d" % (run, d.get("kind"), d.get("judge"), d.get("n"), ",".join(sh.get("numbers_out") or []) or "-", ",".join((sh.get("words_out") or [])[:8]) or "-", ",".join((sh.get("ground") or {}).get("none") or []) or "-", ",".join(sh.get("measure_missing") or []) or "-", sh.get("shape_expected") or 0, len((sh.get("sources") or {}).get("confirm") or []), len((sh.get("sources") or {}).get("disagree") or [])))
+            for f in v_why(name, quiet=True):
+                if f["run"] == run: print("  and the record proves it wrong: %s | %s" % (f["why"], f["cells"]))
+            sec = cx_get("second", name, run)
+            if sec: print("  the sixth ruled: %s" % jload(sec[3]).get("ruling", "")[:200])
+            reads = ["the verdict row", "cortex why", "the sixth's record"]
+        elif m_c:
+            n = int(m_c.group(1)); vs = [(r, jload(v)) for (r, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name)]
+            mine = [(r, d) for (r, d) in vs if d.get("n") == n][:8]
+            print("why C%d stands as it does: %d verdicts; the newest: %s" % (n, len(mine), " | ".join("run %d %s by %s" % (r, d.get("kind"), d.get("judge")) for (r, d) in mine[:5])))
+            for f in v_why(name, quiet=True):
+                if f["n"] == n: print("  the record proves run %d wrong: %s" % (f["run"], f["why"]))
+            reads = ["the verdict rows of C%d" % n, "cortex why"]
+        else:
+            fs = v_why(name, quiet=True); print("why, over %s: %d verdicts the record proves wrong: %s" % (name, len(fs), "; ".join("run %d %s" % (f["run"], f["why"]) for f in fs[:6]) or "none")); reads = ["cortex why"]
+    elif t.startswith("how"):
+        if m_c:
+            n = int(m_c.group(1)); sched = [v for (k, r, a, ts, v) in cx_list("schedule", name) if (" C%d " % n) in (v or "")]
+            print("how C%d moved: %d build turns%s" % (n, len(sched), (": " + " | ".join(s[:110] for s in sched[-4:])) if sched else ""))
+            for p in parts_of(name, n)[:6]: print("  part by %s p%.2f: %s" % (p.get("by") or "-", p.get("p") or 0, line_text(p["run"])[:100]))
+            hist = state_hist(name, n)
+            if hist: print("  states: " + " -> ".join("%s %s" % (h.get("state"), time.strftime("%m-%d %H:%M", time.localtime(h.get("ts") or 0))) for h in hist[-6:]))
+            reads = ["the schedule lines", "the parts of C%d" % n, "the state history"]
+        elif m_run:
+            run = int(m_run.group(1)); x = ask("run main %d" % run); r = x.get("run") or {}; kids = x.get("tree") or []
+            print("how run %d went: arrival %s, kind %s, %s hops, ended %s, %d runs in its tree (%d returns), text: %s" % (run, r.get("arrival"), r.get("kind"), r.get("hops"), r.get("ended"), len(kids), sum(1 for k in kids if k.get("kind") == 3), (r.get("text") or "")[:100]))
+            reads = ["run main %d" % run]
+        else: print("how: name a checkpoint (C n) or a run (run N)")
+    elif t.startswith("when"):
+        if m_c:
+            n = int(m_c.group(1)); hist = state_hist(name, n)
+            if hist: print("when C%d: " % n + " -> ".join("%s at %s" % (h.get("state"), time.strftime("%m-%d %H:%M", time.localtime(h.get("ts") or 0))) for h in hist))
+            else:
+                s0 = cx_get("state", name, n); print("when C%d: %s since %s (no history yet; cortex states --backfill)" % (n, s0[3] if s0 else "open", time.strftime("%m-%d %H:%M", time.localtime(s0[2])) if s0 else "-"))
+            reads = ["the state history of C%d" % n]
+        else:
+            words = [w for w in t.split()[1:] if w not in ("was", "is", "did", "does", "the", "state", "of", name)]
+            v_at(name, words or ["today"]); reads = ["cortex at"]
+    elif "next" in t:
+        nw = next_work(name); print("what next on %s: " % name + ("C%d.%d %s" % nw if nw else "nothing of the front door's; the rest wait on the kernel or the owner")); reads = ["the remainder"]
+    elif t.startswith("what is") or t.startswith("what does") or t.startswith("what are"):
+        w = re.sub(r"^what (is|does|are)( an?| the)? ", "", t).split(" mean")[0].strip(); toks_ = [x for x in re.findall(r"[a-z][a-z0-9_']+", w) if x not in STOP]
+        defs = kernel_define(toks_[0]) if toks_ else []
+        print("what is %s: %s" % (w, ("; ".join("%s: %s" % (f, d0[:90]) for f, d0 in defs[:3])) if defs else "no definition in the brain's dictionaries"))
+        for (nm, band) in sources():
+            if source_is_db(nm):
+                for (sid, txt, p, l) in db_lines_holding(nm, toks_[:2], 1): print("  %s %s:%s %s" % (nm, p or "-", l or "-", txt[:110]))
+        reads = ["define", "the source dbs"]
+    else: print("not routed yet: ask why did/does (run N or C n), how did (C n or run N), when did (C n) or when is (a day), what next, what is <word>")
+    if reads: print("  reads: " + ", ".join(reads))
 USAGE = """cortex <verb> ...
+  second <project> <run>          C53: the sixth's second opinion on a verdict: the guessing, the project record, the sources; a ruling and the shape the brain holds
+  dispute <project> <run> : <why>   C53: the llm disputes a verdict; the sixth rules
+  ask <project> <question>        C55: why did (run N | C n), how did (C n | run N), when did (C n), when is <day>, what next, what is <word>
+  source <name> reference --db [--path <folder> [--glob a,b] | --from-brain | -] : <what>   C54: a source into cx.db (the attached source db), keyed by word and pair in the index; nothing typed into the brain
+  ask-source <name|all> <word or "a b"> [--run R]   C54: the request in cx.inbox, the returns laid as return runs under R with their src rows
+  sources --migrate [--box min]   C54: every reference source typed as lines moved into cx.db
   lesson <project> <track folder> [--ladder 1,2,3,4,5,6 | --pick slug,slug]   C52: a public teaching track as an outline, the key held by the cortex
   why <project> [--plan]        C49: the verdicts the record proves wrong, with the cells and the rule; --plan registers the cortex own plan on cortex-self
   self start|stop|refresh       the test system: the cascade kernel on 7010 over a copy of the live brain
@@ -2276,7 +2585,13 @@ def main(argv):
         if "--domain" in a: i = a.index("--domain"); dom = [x for x in a[i + 1].split(",") if x]; a = a[:i] + a[i + 2:]
         if "--path" in a: i = a.index("--path"); path7 = a[i + 1]; a = a[:i] + a[i + 2:]
         if "--glob" in a: i = a.index("--glob"); globs7 = [x for x in a[i + 1].split(",") if x]; a = a[:i] + a[i + 2:]
-        if path7 is not None:
+        if "--db" in a:
+            a = [x for x in a if x != "--db"]; fb = "--from-brain" in a; a = [x for x in a if x != "--from-brain"]
+            s7 = " ".join(a); t7 = None
+            if " : " in s7: s7, t7 = s7.split(" : ", 1)
+            k7 = s7.split(); stdin_ = len(k7) >= 2 and k7[-1] == "-"
+            v_source_db(k7[0], (k7[1] if len(k7) > 1 and k7[1] in BANDS else None), t7, dom, path7, globs7, fb, (sys.stdin.read() if stdin_ else None))
+        elif path7 is not None:
             s7 = " ".join(a); t7 = None
             if " : " in s7: s7, t7 = s7.split(" : ", 1)
             k7 = s7.split(); v_source_path(k7[0], k7[1] if len(k7) > 1 else "reference", path7, t7, dom, globs7)
@@ -2291,7 +2606,14 @@ def main(argv):
         v_lesson(a[0], a[1], ladder, picks)
     elif v == "why": v_why(a[0], "--plan" in a)
     elif v == "self": test_kernel(a[0] if a else "")
-    elif v == "sources": v_sources()
+    elif v == "second": v_second(a[0], int(a[1]))
+    elif v == "dispute":
+        s8 = " ".join(a); t8 = s8.split(" : ", 1)[1] if " : " in s8 else "the worker holds it correct"; k8 = s8.split(" : ", 1)[0].split(); v_dispute(k8[0], int(k8[1]), t8)
+    elif v == "ask": v_askq(a[0], " ".join(a[1:]))
+    elif v == "sources":
+        if "--migrate" in a: v_source_migrate_all(int(a[a.index("--box") + 1]) if "--box" in a else 120)
+        else: v_sources()
+    elif v == "ask-source": v_ask_source(a[0], " ".join(x for x in a[1:] if not x.startswith("--") and not (a.index(x) > 0 and a[a.index(x) - 1] == "--run")), int(a[a.index("--run") + 1]) if "--run" in a else None)
     elif v == "states":
         if "--backfill" in a:
             for nm in ([x for x in a if not x.startswith("--")] or projects()): states_backfill(nm)
