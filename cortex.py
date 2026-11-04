@@ -371,7 +371,7 @@ def numbers(text, clock=False):
     if not clock: t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", t)
     else: t = re.sub(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b", lambda m: " %s:%s " % (m.group(1), m.group(2)), t)
     t = re.sub(r"`(\d[\w.%]*)`", r" \1 ", t)   # C44c: a backticked number (`6`, `3.0`, `82mb`) is a value; a backticked command is not
-    t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t); t = re.sub(r"(?:^|[\s:;])\$ [^;`]*", " ", t)   # C44b: a quoted shell command ($ python3 sum.py 1 2 3) is a command, its digits are arguments   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
+    t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"(?<!\S)--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t); t = re.sub(r"(?:^|[\s:;])\$ [^;`]*", " ", t)   # C44b: a quoted shell command ($ python3 sum.py 1 2 3) is a command, its digits are arguments   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
     return [y for y in (x.strip("'\"()[]{}").rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t)) if y and VALUE_TOKEN.match(y)]   # quotes and brackets around a number are punctuation
 NUM_CLOCK = re.compile(r"(?<![\w.])\d[\w.%:]*")
 VALUE_TOKEN = re.compile(r"^(\d+(\.\d+)?[a-z%]{0,3}|\d{1,2}:\d{2}(:\d{2})?)$")   # C35.1: a value is digits, a decimal, a short unit or a clock; 60e27de and 7c20c611 are names, not values
