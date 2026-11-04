@@ -108,7 +108,7 @@ def is_noise(s):
     if len(content_words(t)) < 2: return "too-few-words"
     return None
 def wordset_key(s):
-    return int(hashlib.sha256(" ".join(sorted(content_words(s) | set(numbers(s)))).encode()).hexdigest()[:15], 16)
+    return int(hashlib.sha256(" ".join(sorted(content_words(s) | set(numbers(s, clock=True)))).encode()).hexdigest()[:15], 16)
 def filter_lines(name, sents):
     # each sentence gets one fate: keep, dupe (exact repeat), restated (same words, or its words inside an earlier sentence of this batch), noise
     out, seen_sets, seen_keys, counts = [], [], set(), {"keep": 0, "dupe": 0, "restated": 0, "noise": 0}
@@ -362,29 +362,34 @@ def key_gates(name, run):
 #      every content gate of a claim is checked against them; a value is settled against the receipt; a gate with no ground is a question the cortex asks, not a guess ----
 BANDS = ("owner", "reference")
 NUM = re.compile(r"(?<![\w.])\d[\w.%]*")   # a value starts a token: c10.1, c18 and run401 are labels, not values (C17.2)
-def numbers(text):
-    # the value tokens of a sentence (393g, 300, 9%); times and dates (13:19, 11-03) are not values
-    t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", text.lower())
+def numbers(text, clock=False):
+    # the value tokens of a sentence (393g, 300, 9%); times and dates (13:19, 11-03) are not values unless the claim is about a clock (C34)
+    t = text.lower()
+    t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)   # 2,188 is one number
+    if not clock: t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", t)
+    else: t = re.sub(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b", lambda m: " %s:%s " % (m.group(1), m.group(2)), t)
     t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t)   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
-    return NUM.findall(t)
+    return [x.rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t) if x.rstrip(".,;:")]
+NUM_CLOCK = re.compile(r"(?<![\w.])\d[\w.%:]*")
 SCALE = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "billion": 1e9}
 def num_value(tok, text=""):
     m = re.match(r"^(\d+(?:\.\d+)?)([a-z%]*)$", tok)
-    if not m: return None, ""
-    v, unit = float(m.group(1)), m.group(2)
+    if not m: return None, "", 1.0
+    v, unit, scale = float(m.group(1)), m.group(2), 1.0
     if text:
         mm = re.search(r"\b" + re.escape(tok) + r"\s+(thousand|million|billion)\b", text.lower())
-        if mm: v *= SCALE[mm.group(1)]; unit = ""
-    return v, unit
+        if mm: scale = SCALE[mm.group(1)]; v *= scale; unit = ""
+    return v, unit, scale
 def rounding_of(tok, printed, text=""):
-    # the claim's number is a rounding of a printed one: same unit, within half a percent or within the last kept digit
-    v, u = num_value(tok, text)
+    # the claim's number is a shorter form of a printed one: same unit, fewer kept digits, within half a unit of the last kept digit at the claim's scale (71 for 71.3, 1.8 million for 1796202; 392 is not a rounding of 393)
+    v, u, scale = num_value(tok, text)
     if v is None: return None
+    dec = len(tok.split(".")[1]) if "." in tok else 0; tol = 0.5 * scale * 10 ** (-dec)
     for pt in printed:
-        w, pu = num_value(pt)
+        w, pu, _ = num_value(pt)
         if w is None or (u and pu and u != pu) or w == v: continue
-        dec = len(tok.split(".")[1]) if "." in tok else 0
-        if abs(w - v) <= max(abs(w) * 0.005, 0.5 * 10 ** (-dec)) : return pt
+        if len(pt.replace(".", "")) <= len(tok.replace(".", "")) and scale == 1.0: continue   # the print is not longer than the claim: not a rounding
+        if abs(w - v) <= tol: return pt
     return None
 CMD_NOISE = set("ssh echo cat bash python3 hp2 tail head cut sed grep awk then done for do fi if else while read printf true false tee sort uniq wc tr xargs".split())
 def toks(s):
@@ -403,22 +408,41 @@ def sources():
             except ValueError: pass
         _SRC.append(None)
     return [x for x in _SRC if x]
+MEASURES_DEFAULT = {"clock": "date", "time": "date", "tonight": "date", "today": "date", "now": "date", "o'clock": "date",
+                    "mem": "free -m", "memory": "free -m", "free": "free -m", "swap": "free -m",
+                    "disk": "df -h /", "avail": "df -h /", "filesystem": "df -h /", "df": "df -h /",
+                    "load": "uptime", "uptime": "uptime",
+                    "gates": "cortex status", "runs": "cortex status", "hops": "cortex status", "checkpoints": "cortex formula", "ingests": "cortex formula", "verdicts": "cortex formula", "voices": "cortex status", "trust": "cortex status"}
+def measures():
+    had = cx_get("measures", "judge", 0)
+    if had:
+        try: return json.loads(had[3])
+        except ValueError: pass
+    cx_put("measures", "judge", 0, 0, clock(), json.dumps(MEASURES_DEFAULT)); return dict(MEASURES_DEFAULT)
+def measure_of(text):
+    # C34: the words of a claim that name a measure, and the prints that settle them (the owner: if date and today had actions, meaning, this would be possible)
+    M = measures(); ws = set(re.findall(r"[a-z][a-z']+", text.lower())); hit = {}
+    for w in ws:
+        if w in M: hit.setdefault(M[w], []).append(w)
+    return hit
 def receipts_of(name, n):
     had = cx_get("receipts", name, n)
     return json.loads(had[3]) if had else {}
 def ground_cells(name, n, run, text, new_syms):
     # per word gate: which ground holds it (receipt, owner, reference, the project's own memory, none); per number: did the machine print it
-    cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "receipt_named": False, "numbers_in_ext": [], "numbers": numbers(text), "numbers_in": [], "numbers_out": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
+    meas = measure_of(text); is_clock = "date" in meas
+    cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "receipt_named": False, "numbers_in_ext": [], "numbers": numbers(text, clock=is_clock), "numbers_in": [], "numbers_out": [], "measures": meas, "measure_missing": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
     rc = receipts_of(name, n); rnums, rnums_ext, rwords, older = set(), set(), set(), 0; ct = toks(text)
     for cmd, d in rc.items():
         cells["receipt_cmds"].append(cmd)
         lines_older = [l for l in d.get("lines", []) if l["run"] < run]   # C33b: only a print older than the claim judges it; a later print on the same checkpoint is a label, never a switch
-        if lines_older and (toks(cmd) & ct): cells["receipt_named"] = True   # C22: the claim names this print's command
+        if lines_older and ((toks(cmd) & ct) or any(toks(cmd) & toks(m0) for m0 in meas)): cells["receipt_named"] = True   # C22: the claim names this print's command, or a measure that print settles (C34)
         cells["receipt_runs"] += len(d.get("lines", [])); older += len(lines_older)
         for l in lines_older:
-            nn = set(numbers(receipt_line(l))); rnums |= nn
+            nn = set(numbers(receipt_line(l), clock=is_clock)); rnums |= nn
             if not is_self_print(cmd): rnums_ext |= nn   # a cortex print of its own verdicts and parts is circular ground for a sentence about them
             rwords |= set(g for g in content_gates(l["run"]) if not is_value(g))
+    if meas: cells["measure_missing"] = sorted(m0 for m0 in meas if not any(toks(m0) & toks(c0) for c0 in rc.keys()))   # the measures named with no print of them on this checkpoint
     if cells["receipt_runs"]:
         cells["receipt_before_claim"] = older > 0   # at least one print the claim could have read
         cells["numbers_in"] = [t for t in cells["numbers"] if t in rnums]; cells["numbers_out"] = [t for t in cells["numbers"] if t not in rnums]
@@ -866,6 +890,9 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     rec = "held before" if cells.get("same_as") or cells.get("echo") else ("supersedes run %s" % cells["supersedes_run"]) if cells.get("supersedes_run") else "new to the project record"
     print("  voice: %s%s | belief row: 1 the project record: %s; 2 the words: %s on %d gates (%d confirmed, %d false); 3 the sources: %d confirm, %d disagree, agreement %d of %d | this voice on %s: %s" % (vc, " (a labeled guess)" if iv.get("guess") else "", rec, ("trust %.2f" % wt["trust"]) if wt["trust"] is not None else "no record", wt["gates"], wt["confirmed"], wt["false"], len((cells.get("sources") or {}).get("confirm", [])), len((cells.get("sources") or {}).get("disagree", [])), len((cells.get("pair_ground") or {}).get("agree", [])), (cells.get("pair_ground") or {}).get("sources", 0), name, ("trust %.2f over %d claims" % (pt["trust"], pt["claims"])) if pt and pt["trust"] is not None else "no record yet"))
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
+    if cells.get("measure_missing") and kind not in ("noise", "dupe") and (name, n) not in NO_PARTS:
+        print("  no print to check this: it names %s, settled by %s; ask for that print (C34)" % (", ".join(w for m0 in cells["measure_missing"] for w in cells["measures"][m0]), ", ".join(cells["measure_missing"])))
+        ask_question(name, n, run, ["no print of %s for a claim about %s" % (m0, ", ".join(cells["measures"][m0])) for m0 in cells["measure_missing"]], vrun)
     pg = cells.get("pair_ground") or {}
     if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s | agreement %d of %d sources%s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-", len(pg.get("agree", [])), pg.get("sources", 0), (" (" + ", ".join(pg["agree"][:4]) + ")") if pg.get("agree") else ""))
     no_source = pg.get("pairs", 0) >= 3 and not pg.get("held_by") and not cells.get("numbers_in_ext")   # no source holds any pair and no print grounds a value: the run left known ground at its first pair
