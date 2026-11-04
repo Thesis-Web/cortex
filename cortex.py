@@ -409,16 +409,18 @@ def receipts_of(name, n):
 def ground_cells(name, n, run, text, new_syms):
     # per word gate: which ground holds it (receipt, owner, reference, the project's own memory, none); per number: did the machine print it
     cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "receipt_named": False, "numbers_in_ext": [], "numbers": numbers(text), "numbers_in": [], "numbers_out": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
-    rc = receipts_of(name, n); rnums, rnums_ext, rwords, newest = set(), set(), set(), 0; ct = toks(text)
+    rc = receipts_of(name, n); rnums, rnums_ext, rwords, older = set(), set(), set(), 0; ct = toks(text)
     for cmd, d in rc.items():
         cells["receipt_cmds"].append(cmd)
-        if toks(cmd) & ct: cells["receipt_named"] = True   # C22: the claim names this print's command
-        for l in d.get("lines", []):
-            cells["receipt_runs"] += 1; nn = set(numbers(receipt_line(l))); rnums |= nn
+        lines_older = [l for l in d.get("lines", []) if l["run"] < run]   # C33b: only a print older than the claim judges it; a later print on the same checkpoint is a label, never a switch
+        if lines_older and (toks(cmd) & ct): cells["receipt_named"] = True   # C22: the claim names this print's command
+        cells["receipt_runs"] += len(d.get("lines", [])); older += len(lines_older)
+        for l in lines_older:
+            nn = set(numbers(receipt_line(l))); rnums |= nn
             if not is_self_print(cmd): rnums_ext |= nn   # a cortex print of its own verdicts and parts is circular ground for a sentence about them
-            rwords |= set(g for g in content_gates(l["run"]) if not is_value(g)); newest = max(newest, l["run"])
+            rwords |= set(g for g in content_gates(l["run"]) if not is_value(g))
     if cells["receipt_runs"]:
-        cells["receipt_before_claim"] = newest < run   # a print the claim could have read; a later print is not evidence against an earlier claim, only a label
+        cells["receipt_before_claim"] = older > 0   # at least one print the claim could have read
         cells["numbers_in"] = [t for t in cells["numbers"] if t in rnums]; cells["numbers_out"] = [t for t in cells["numbers"] if t not in rnums]
         cells["numbers_in_ext"] = [t for t in cells["numbers"] if t in rnums_ext]
         cells["numbers_rounded"] = {}
@@ -564,7 +566,7 @@ def judge_batch(state, items):
 FEATS = ("words", "shared_scope", "shared_checkpoint", "shared_expected", "new_words", "known_words", "coverage_expected", "observed", "mark_met", "times", "shape_gates", "shape_expected", "shape_shared_project", "values_out", "n_words_out", "n_new", "echo")
 LOGS = set(("words", "shared_scope", "shared_checkpoint", "shared_expected", "new_words", "known_words", "times", "shape_gates", "shape_shared_project", "values_out", "n_words_out", "n_new"))
 LABEL_Q = {"completes": "completes", "progresses": "progresses", "regresses": "regresses", "supersedes": "supersedes", "drift": "off_scope", "invention": "invents", "hallucination": "contradicts"}
-MARKS = set(LABEL_Q) | {"dupe", "noise", "unsettled"}
+MARKS = set(LABEL_Q) | {"dupe", "noise", "unsettled", "holds", "guess"}
 def feats(cells):
     c = dict(cells); c["mark_met"] = 1.0 if cells.get("expected_mark") == "met" else 0.0; c["n_words_out"] = len(cells.get("words_out", [])); c["n_new"] = len(cells.get("new_to_project", []))
     x = [1.0]
@@ -619,9 +621,14 @@ def ingest_text(value):
         d = json.loads(value); return d.get("t", ""), int(d.get("times", 1))
     except (ValueError, TypeError, AttributeError): return value, 1
 VOICE = ["hand"]   # who is speaking into the cortex: the hand (a builder's or the owner's ingest), or a session seen by the capture (hub:<session>)
-GUESS = re.compile(r"\b(i am guessing|i guess|my guess|a guess|guessing here|i think|maybe|perhaps|probably|not sure)\b")
+GUESS = re.compile(r"\b(i am guessing|i guess|my guess|a guess|guessing here|i think|maybe|perhaps|probably|not sure|likely|for example|an example|example|e\.g\.|hypothesis|hypothetically|should be able to)\b")
+GUESS_PARA = set()   # C33: the sentences of a paragraph that says it is guessing or gives an example; filled by v_ingest per text, read per sentence
 def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
     ensure_cx(); out = []; t0 = time.time()
+    GUESS_PARA.clear()
+    for para in re.split(r"\n\s*\n|\n", text):
+        if GUESS.search(para.lower()):
+            for s0 in sentences(para): GUESS_PARA.add(text_key(s0))
     fates, counts = filter_lines(name, sentences(text))
     for s, fate, why in fates:
         k = text_key(s)
@@ -652,13 +659,13 @@ def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
         held = cx_get("line", "*", k)   # C30: the sentence may already be a run, typed once by another project
         if held:
             run, at = held[0], clock(); d0 = json.loads(held[3]); d0["projects"] = sorted(set(d0.get("projects", []) + [name])); cx_put("line", "*", k, run, held[1], json.dumps(d0))
-            cx_put("ingest", name, k, run, at, json.dumps({"times": 1, "voice": VOICE[0], "guess": bool(GUESS.search(s)), "attached_from": d0.get("first")})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
+            cx_put("ingest", name, k, run, at, json.dumps({"times": 1, "voice": VOICE[0], "guess": bool(GUESS.search(s)) or (k in GUESS_PARA), "attached_from": d0.get("first")})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
             out.append({"run": run, "clock": at, "born": 0, "seconds": 0.0, "same_as": 0, "again": 1, "text": s})
             if not quiet: print("ingest run %d attached to %s (typed once under %s; now %s): %s" % (run, name, d0.get("first"), ",".join(d0["projects"]), s[:100]))
             continue
         line = "cortex ingest : %s" % s; r = typed(line); run = r["run"]; at = clock()   # C30: one run, no project in the prefix; the projects live in the index
         cx_put("line", "*", k, run, at, json.dumps({"first": name, "projects": [name]}))
-        cx_put("ingest", name, k, run, at, json.dumps({"times": 1, "voice": VOICE[0], "guess": bool(GUESS.search(s))})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
+        cx_put("ingest", name, k, run, at, json.dumps({"times": 1, "voice": VOICE[0], "guess": bool(GUESS.search(s)) or (k in GUESS_PARA)})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
         out.append({"run": run, "clock": at, "born": r["born"], "seconds": r["seconds"], "same_as": 0, "again": 1, "text": s})
         if not quiet: print("ingest run %d clock %d born %d %.3fs: %s" % (run, at, r["born"], r["seconds"], s[:100]))
     print("filter: %d sentences, kept %d, dupe %d, restated %d, noise %d, %.0f ms" % (len(fates), counts["keep"], counts["dupe"], counts["restated"], counts["noise"], (time.time() - t0) * 1000))
@@ -733,13 +740,14 @@ def formula(cells, answers):
     if cells.get("receipt_runs") and cells.get("numbers_in") and not cells.get("numbers_out") and cells["shape_expected"] >= 0.7: return "completes", "receipt"   # the expected's shape and every value printed by the machine (a later print confirming an earlier claim counts)
     if cells.get("shape_gates") and cells["shape_expected"] >= 0.7 and cells["values_out"] >= 1 and len(cells["new_to_project"]) <= 1 and not rb: return "completes", "shape"   # the expected's shape plus a value out of line, no print older than the claim to check it against
     if cells["words"] >= 4 and cells["new_words"] == 0 and cells["known_words"] >= 3 and not cells["observed"]: return "dupe", "sheet"   # a restatement with nothing new and nothing observed
-    if rb and cells.get("numbers_in") and not cells.get("numbers_out") and cells["ground"]["receipt"] >= 2 and (cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.3): return "progresses", "receipt"   # every value printed by the machine, by a claim about that print (C22: a cortex print of its own verdicts does not count)
+    if rb and cells.get("numbers_in") and not cells.get("numbers_out") and cells["ground"]["receipt"] >= 2 and (cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.3):
+        return ("progresses" if cells.get("shape_expected", 0) >= 0.3 else "holds"), "receipt"   # C33 (the owner): a printed value holds; it is progress only when it speaks to the expected output
     if answers: return decide(answers), "judgment"
     return "unsettled", "sheet"
 def outcome_of(kind, by, guess):
     if guess: return "guesses"
     if kind in ("hallucination", "invention") and by in ("receipt", "shape", "sources"): return "false"   # proven by the machine's print, the brain's shape or three sources, never by a model's word
-    if kind in ("completes", "progresses", "supersedes") and by in ("receipt", "shape", "sources"): return "confirmed"
+    if kind in ("completes", "progresses", "supersedes", "holds") and by in ("receipt", "shape", "sources"): return "confirmed"
     return None
 def tally_voice(voice, kind, by, guess, name=None, run=None):
     # C25 (the owner, 11-03 17:0x): inputs are measured; a fact proven false lowers that voice's trust, a labeled guess does not.
@@ -774,7 +782,7 @@ def belief_of(voice, name, kind, by, sc):
     owner_srcs = set(nm for (nm, b) in sources() if b == "owner")
     conf = sc.get("confirm", []) if sc else []
     ref_conf = [x for x in conf if x not in owner_srcs]; owner_conf = any(x in owner_srcs for x in conf) or band == "owner"
-    if by == "receipt" and kind in ("completes", "progresses", "supersedes"): return 1.0, "the machine's print"
+    if by == "receipt" and kind in ("completes", "progresses", "supersedes", "holds"): return 1.0, "the machine's print"
     if len(ref_conf) >= 2: return (B["reference_agree"] if band == "owner" else B["llm_and_two_sources"]), "two sources agree"
     if len(ref_conf) == 1 and owner_conf: return B["owner_and_source"], "the owner and a source agree"
     if len(ref_conf) == 1: return B["reference_alone"], "a reference alone"
@@ -827,11 +835,11 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     if answers: kind, by = formula(cells, answers)
     judge = model if (by == "judgment" and model) else by
     if answers and by == "judgment": p = answers.get(kind, 0.0) if kind in answers else max(answers.values())
-    elif by in ("shape", "receipt", "sources"): p = cells["shape_expected"] if kind == "completes" else 1.0
+    elif by in ("shape", "receipt", "sources"): p = cells["shape_expected"] if kind in ("completes", "progresses") else 1.0
     else: p = 1.0 if kind in ("noise", "drift", "dupe") else 0.0
     body = "%s %.3f %s" % (kind, p, judge)
     vrun, at, _ = record("verdict", name, run, body)
-    accepting = kind in ("completes", "progresses", "supersedes") and (name, n) not in NO_PARTS
+    accepting = kind in ("completes", "progresses", "supersedes") and (name, n) not in NO_PARTS   # holds adds no part: true, not progress (C33)
     gr = dict(cells.get("ground") or {}); pg0 = cells.get("pair_ground") or {}
     if pg0.get("pairs"): gr["agree"] = len(pg0.get("agree", [])); gr["of"] = pg0.get("sources", 0)
     bl0, br0 = belief_of(iv0.get("voice", "hand") if (iv0 := (lambda rr: (json.loads(rr[0][0]) if rr and rr[0][0].startswith("{") else {}))(q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run))) else "hand", name, kind, by, cells.get("sources") or {}); gr["belief"] = bl0
