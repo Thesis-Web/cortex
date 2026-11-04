@@ -755,7 +755,8 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     if kind == "unsettled":
         if answers_given is not None: answers, model = answers_given, judge_name
         else:
-            la = learned_answers(cells); lv = (weights() or {}).get("v", 0)
+            la = learned_answers(cells); W0 = weights() or {}; lv = W0.get("v", 0)
+            if W0.get("acc", 1.0) < 0.7: la = None; print("  learned v%s abstains: %.2f on leave-one-out, below 0.7 (more marks needed)" % (lv, W0.get("acc", 0)))
             if la is not None and decide(la) != "unsettled": answers, model = la, "learned v%d" % lv
             elif judge_route():
                 try: got, model = judge_batch(state, [(run, text)]); answers = got.get(run, {})
@@ -819,7 +820,7 @@ def judge_many(name, n, items):
     for i in items:
         cells = sheet_cells(name, n, i["run"], i["text"], pr, ck, ex)
         if formula(cells, {})[0] != "unsettled": continue
-        la = learned_answers(cells, W)
+        la = learned_answers(cells, W) if (W or {}).get("acc", 1.0) >= 0.7 else None
         if la is not None and decide(la) != "unsettled": given[i["run"]] = (la, "learned v%d" % W.get("v", 0))
         else: pending.append((i["run"], i["text"]))
     got, model = {}, None
@@ -1182,6 +1183,7 @@ def v_learn(names=None, key_only=False):
         else: wrong.append("%s run %d: marked %s, learned %s" % (rows[i][2], rows[i][3], rows[i][1], got))
     v = (weights() or {}).get("v", 0) + 1
     rec = {"v": v, "w": fit(rows), "feats": list(FEATS), "rows": len(rows), "loo": round(hits / len(rows), 3), "ts": int(time.time())}
+    rec["acc"] = round(hits / len(rows), 3) if rows else 0.0   # the leave-one-out accuracy travels with the weights; below 0.7 the judge does not use them
     cx_put("weights", "judge", 0, 0, clock(), json.dumps(rec)); cx_put("weights", "judge", v, 0, clock(), json.dumps(rec))
     print("learn: weights v%d from %d marks; leave-one-out verdict accuracy %.2f (%d of %d) in %.1f s" % (v, len(rows), hits / len(rows), hits, len(rows), time.time() - t0))
     for w in wrong: print("   missed: " + w)
