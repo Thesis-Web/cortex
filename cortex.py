@@ -735,14 +735,39 @@ def formula(cells, answers):
     if rb and cells.get("numbers_in") and not cells.get("numbers_out") and cells["ground"]["receipt"] >= 2 and (cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.3): return "progresses", "receipt"   # every value printed by the machine, by a claim about that print (C22: a cortex print of its own verdicts does not count)
     if answers: return decide(answers), "judgment"
     return "unsettled", "sheet"
-def tally_voice(voice, kind, by, guess):
-    # C25 (the owner, 11-03 17:0x): inputs are measured; a fact proven false lowers that voice's trust, a labeled guess does not; the count is a keyed row per voice
+def outcome_of(kind, by, guess):
+    if guess: return "guesses"
+    if kind in ("hallucination", "invention") and by in ("receipt", "shape", "sources"): return "false"   # proven by the machine's print, the brain's shape or three sources, never by a model's word
+    if kind in ("completes", "progresses", "supersedes") and by in ("receipt", "shape", "sources"): return "confirmed"
+    return None
+def tally_voice(voice, kind, by, guess, name=None, run=None):
+    # C25 (the owner, 11-03 17:0x): inputs are measured; a fact proven false lowers that voice's trust, a labeled guess does not.
+    # C31 (the owner, 11-03 21:3x): the topic is the project first, then the words the claim touches; the checkpoint is not a topic. One keyed row per voice, one per (voice, gate).
     had = cx_get("voice", voice, 0); d = json.loads(had[3]) if had else {"claims": 0, "confirmed": 0, "false": 0, "guesses": 0, "first_ts": int(time.time())}
-    d["claims"] += 1
-    if guess: d["guesses"] += 1
-    elif kind in ("hallucination", "invention") and by in ("receipt", "shape", "sources"): d["false"] += 1   # proven by the machine's print, the brain's shape or three sources, never by a model's word
-    elif kind in ("completes", "progresses", "supersedes") and by in ("receipt", "shape"): d["confirmed"] += 1
+    oc = outcome_of(kind, by, guess); d["claims"] += 1
+    if oc: d[oc] += 1
+    if name:
+        bp = d.setdefault("by_project", {}).setdefault(name, {"claims": 0, "confirmed": 0, "false": 0, "guesses": 0}); bp["claims"] += 1
+        if oc: bp[oc] += 1
     d["last_ts"] = int(time.time()); cx_put("voice", voice, 0, 0, clock(), json.dumps(d))
+    if run and oc in ("confirmed", "false"):
+        for g in set(x for x in content_gates(run) if not is_value(x)):
+            hg = cx_get("vgate", voice, g); e = json.loads(hg[3]) if hg else {"confirmed": 0, "false": 0}
+            e[oc] += 1; cx_put("vgate", voice, g, run, clock(), json.dumps(e))
+def word_trust(voice, run):
+    # the voice's record on the words this claim touches: confirmed and false over those gates, and the trust they give
+    c = f = n = 0
+    for g in set(x for x in content_gates(run) if not is_value(x)):
+        hg = cx_get("vgate", voice, g)
+        if hg: e = json.loads(hg[3]); c += e.get("confirmed", 0); f += e.get("false", 0); n += 1
+    return {"gates": n, "confirmed": c, "false": f, "trust": round(c / (c + f), 2) if (c + f) else None}
+def project_trust(voice, name):
+    had = cx_get("voice", voice, 0)
+    if not had: return None
+    bp = (json.loads(had[3]).get("by_project") or {}).get(name)
+    if not bp: return None
+    t = bp["confirmed"] + bp["false"]
+    return {"claims": bp["claims"], "confirmed": bp["confirmed"], "false": bp["false"], "trust": round(bp["confirmed"] / t, 2) if t else None}
 def voices():
     out = []
     for (vn,) in q("SELECT name FROM main.cx WHERE kind = 'voice' AND name >= '' AND n = 0"):
@@ -799,9 +824,11 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     try: iv = json.loads(irow[0][0]) if irow else {}
     except (ValueError, TypeError): iv = {}
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "voice": iv.get("voice", "hand"), "guess": bool(iv.get("guess"))}))
-    tally_voice(iv.get("voice", "hand"), kind, by, bool(iv.get("guess")))
+    tally_voice(iv.get("voice", "hand"), kind, by, bool(iv.get("guess")), name, run)
     geo = cells["geometry"]
-    print("  voice: %s%s" % (iv.get("voice", "hand"), " (a labeled guess)" if iv.get("guess") else ""))
+    vc = iv.get("voice", "hand"); pt = project_trust(vc, name); wt = word_trust(vc, run)
+    rec = "held before" if cells.get("same_as") or cells.get("echo") else ("supersedes run %s" % cells["supersedes_run"]) if cells.get("supersedes_run") else "new to the project record"
+    print("  voice: %s%s | belief row: 1 the project record: %s; 2 the words: %s on %d gates (%d confirmed, %d false); 3 the sources: %d confirm, %d disagree, agreement %d of %d | this voice on %s: %s" % (vc, " (a labeled guess)" if iv.get("guess") else "", rec, ("trust %.2f" % wt["trust"]) if wt["trust"] is not None else "no record", wt["gates"], wt["confirmed"], wt["false"], len((cells.get("sources") or {}).get("confirm", [])), len((cells.get("sources") or {}).get("disagree", [])), len((cells.get("pair_ground") or {}).get("agree", [])), (cells.get("pair_ground") or {}).get("sources", 0), name, ("trust %.2f over %d claims" % (pt["trust"], pt["claims"])) if pt and pt["trust"] is not None else "no record yet"))
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
     pg = cells.get("pair_ground") or {}
     if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s | agreement %d of %d sources%s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-", len(pg.get("agree", [])), pg.get("sources", 0), (" (" + ", ".join(pg["agree"][:4]) + ")") if pg.get("agree") else ""))
@@ -1237,7 +1264,7 @@ def v_status(name=None):
             d = json.loads(c[3]); caps.append("%s %s (%s, %d sentences, %d new%s)" % (nm, time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0))), d.get("event", "stop"), d.get("sentences", 0), d.get("new", 0), ", final message in" if d.get("final") else ""))
     print("captures: " + ("; ".join(caps) if caps else "none yet") + " | a stale time here is a failed or missing capture (C20)")
     vs = voices()
-    if vs: print("voices: " + "; ".join("%s claims %d, confirmed %d, false %d, guesses %d, trust %s" % (vn, d["claims"], d["confirmed"], d["false"], d["guesses"], ("%.2f" % t) if t is not None else "none yet") for (vn, d, t) in vs) + " | proven by receipt or shape only; a labeled guess is not counted (C25)")
+    if vs: print("voices: " + "; ".join("%s claims %d, confirmed %d, false %d, guesses %d, trust %s%s" % (vn, d["claims"], d["confirmed"], d["false"], d["guesses"], ("%.2f" % t) if t is not None else "none yet", (" [" + " ".join("%s %s" % (pj, ("%.2f" % (b["confirmed"] / (b["confirmed"] + b["false"]))) if (b["confirmed"] + b["false"]) else "-") for pj, b in sorted(d.get("by_project", {}).items())) + "]") if d.get("by_project") else "") for (vn, d, t) in vs) + " | proven by receipt, shape or sources only; a labeled guess is not counted; per project in brackets, per word on the verdict line (C25, C31)")
     names = [name] if name else sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0")))
     for nm in names:
         pr = cx_get("project", nm, 0)
