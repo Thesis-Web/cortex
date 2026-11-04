@@ -85,6 +85,7 @@ typedef struct Prof { char *text; i64 ns, n; struct Prof *next; } Prof;
 static Prof *pbucket[NB]; static int nprof;
 static void prof_add(const char *sql0, i64 ns){ static char key[400]; size_t n = 0; for(const char *s = sql0; *s && n < sizeof key - 2; s++){ if(*s >= '0' && *s <= '9'){ if(n && key[n-1] == '#') continue; key[n++] = '#'; } else key[n++] = *s; } key[n] = 0; const char *sql = key; unsigned h = hsh(sql); Prof *p; for(p = pbucket[h]; p; p = p->next) if(strcmp(p->text, sql) == 0){ p->ns += ns; p->n++; return; } p = malloc(sizeof(Prof)); p->text = strdup(sql); p->ns = ns; p->n = 1; p->next = pbucket[h]; pbucket[h] = p; nprof++; }
 char *mother_paste(const char *sql){ i64 t0 = now_ns(); char *r = run_text(sql, 0, 0); prof_add(sql, now_ns() - t0); return r; }
+static void mergeFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv);
 static void motherFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){ const char *sql = (const char*)sqlite3_value_text(argv[0]); if(!sql){ sqlite3_result_text(ctx, "error: nothing to run", -1, SQLITE_STATIC); return; } i64 t0 = now_ns(); char *r = run_text(sql, argc - 1, argv + 1); prof_add(sql, now_ns() - t0); sqlite3_result_text(ctx, r, -1, SQLITE_TRANSIENT); free(r); }
 int mother_open(Brain *main, Brain *sixth, const char **sources, int nsources, const char *srcdir){
   /* the brain's own tables (rel, asked, spawned ...) are stored beside it; the neurons' tables are the regions */
@@ -96,6 +97,7 @@ int mother_open(Brain *main, Brain *sixth, const char **sources, int nsources, c
   if(fs) sqlite3_exec(DB, "PRAGMA sixth.journal_mode = OFF; PRAGMA sixth.synchronous = OFF; PRAGMA sixth.cache_size = -60000", 0, 0, 0);
   for(int i = 0; i < nsources; i++){ char *q = sqlite3_mprintf("ATTACH '%q/%q.db' AS %w", srcdir, sources[i], sources[i]); char *e = 0; if(sqlite3_exec(DB, q, 0, 0, &e) != SQLITE_OK){ fprintf(stderr, "attach %s: %s\n", sources[i], e); sqlite3_free(e); } sqlite3_free(q); q = sqlite3_mprintf("PRAGMA %w.journal_mode = OFF; PRAGMA %w.synchronous = OFF", sources[i], sources[i]); sqlite3_exec(DB, q, 0, 0, 0); sqlite3_free(q); }   /* a source is read; only its mailbox is written: no journal and no flush to disk on every ask */
   sqlite3_create_function_v2(DB, "mother", -1, SQLITE_UTF8, 0, motherFunc, 0, 0, 0);
+  sqlite3_create_function_v2(DB, "merge", 2, SQLITE_UTF8, 0, mergeFunc, 0, 0, 0);   /* C28: merge(h, t), the hand laid neuron h into the neuron t of its word, on the main brain */
   nkvt_register(DB, main, sixth);
   for(int i = 0; i < nsources && i < 64; i++){ char *q = sqlite3_mprintf("SELECT gate FROM %w.me", sources[i]); sqlite3_stmt *st = 0; if(sqlite3_prepare_v2(DB, q, -1, &st, 0) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW){ SRC_GATE[NSRC_MAP] = sqlite3_column_int(st, 0); SRC_NAME[NSRC_MAP] = sources[i]; NSRC_MAP++; } if(st) sqlite3_finalize(st); sqlite3_free(q); }
   return 0;
@@ -119,7 +121,7 @@ static void out_rows(Brain *b, i64 since, SB *o, int *first){
     const char *cname = (w->cell > 0 && w->cell <= b->label.n) ? b->label.sym[w->cell] : "?";
     SB v = {0};
     int is_ptr = (w->cell == REPLY || w->cell == DEF || w->cell == SAY || w->cell == REMEMBER); const char *wv = val_text(b, &w->v);
-    if(is_ptr && wv && atoll(wv) > 0){ i64 rr = atoll(wv); Run *x = run_of(b, rr); sb_fmt(&v, "run %lld from %s: ", (long long)rr, (x && x->arrival <= b->label.n) ? b->label.sym[x->arrival] : "?"); decode_run(b, rr, &v, 160); }
+    if(is_ptr && wv && atoll(wv) > 0){ i64 rr = atoll(wv); Run *x = run_of(b, rr); sb_fmt(&v, "run %lld from %s: ", (long long)rr, (x && x->arrival <= b->label.n) ? b->label.sym[x->arrival] : "?"); decode_run(b, rr, &v, 1 << 30); }   /* C27: the output is never cut (the owner, 11-04: why would we do that) */
     else if((strcmp(cname, "known") == 0 || strcmp(cname, "unknown") == 0) && wv){ const char *p = wv; int any = 0; while(*p){ while(*p == ' ') p++; if(!*p) break; int g = atoi(p); while(*p && *p != ' ') p++; if(any) sb_str(&v, " "); any = 1; sb_str(&v, (g > 0 && g <= b->label.n) ? b->label.sym[g] : "?"); } if(!any) sb_str(&v, "(none)"); }
     else sb_str(&v, wv ? wv : "");
     sb_str(o, "["); sb_json(o, b->name); sb_fmt(o, ",%lld,", (long long)w->run); sb_json(o, cname); sb_str(o, ","); sb_json(o, v.s ? v.s : ""); sb_str(o, "]"); free(v.s);
@@ -131,6 +133,14 @@ static void pump_all(int batch){ pump_batch(&MAINB, batch); pump_batch(&SIXTHB, 
 static double now_s(void){ struct timeval tv; gettimeofday(&tv, 0); return tv.tv_sec + tv.tv_usec / 1e6; }
 
 int sheet_open_pub(Brain *b, i64 run);
+static void mergeFunc(sqlite3_context *ctx, int argc, sqlite3_value **argv){ char out[512]; int h = sqlite3_value_int(argv[0]), t = sqlite3_value_int(argv[1]); nk_merge(&MAINB, h, t, out, sizeof out); sqlite3_result_text(ctx, out, -1, SQLITE_TRANSIENT); }
+/* C27 back population (the owner, 11-04: yes to the back population of splits): every held definition row re-read from its source and every symbol given a gate under the encoder as it stands */
+static void do_relabel(Brain *b, SB *o){
+  double t0 = now_s(); int n0 = b->label.n; i64 points = 0, rows = 0, texts = 0, missing = 0, born = 0;
+  for(int g = 1; g <= n0; g++){ Neuron *n = neuron_of(b, g); if(!n || !n->nnode) continue; points++;
+    for(int i = 0; i < n->nnode; i++){ Run *r = run_of(b, n->node[i].run); rows++; if(!r || !r->src || !r->srcgate){ missing++; continue; } const char *t = nk_source_text(r->srcgate, r->src); if(!t){ missing++; continue; } texts++; born += nk_learn_text(b, t); } }
+  sb_fmt(o, "{\"points\":%lld,\"node_rows\":%lld,\"texts\":%lld,\"missing\":%lld,\"labels_before\":%d,\"labels_after\":%d,\"born\":%lld,\"seconds\":%.1f}", (long long)points, (long long)rows, (long long)texts, (long long)missing, n0, b->label.n, (long long)born, now_s() - t0);
+}
 static void do_type(Brain *b, const char *text, SB *o){
   i64 runs0 = b->nruns, hops0 = MAINB.hops_done + SIXTHB.hops_done, gates0 = MAINB.label.n, ref0 = MAINB.refused_n + SIXTHB.refused_n, outm = MAINB.nout, outs = SIXTHB.nout;
   double t0 = now_s();
@@ -208,7 +218,7 @@ static void do_run(Brain *b, i64 id, SB *o){
     /* the cells that name a run: me, above, reply, def, say, remember, shape (the call); what names a gate or a number and is left as it is */
     int runcell = (c->cell == ME || c->cell == ABOVE || c->cell == REPLY || c->cell == DEF || c->cell == SAY || c->cell == REMEMBER || c->cell == SHAPE);
     i64 rv = (cv && runcell) ? atoll(cv) : 0; Run *x = rv > 0 ? run_of(b, rv) : 0;
-    if(x && strspn(cv, "0123456789") == strlen(cv)){ sb_fmt(o, "{\"run\":%lld,\"arrival\":%d,\"text\":", (long long)rv, x->arrival); sb_text_of(b, rv, o, 300); sb_str(o, "}"); }
+    if(x && strspn(cv, "0123456789") == strlen(cv)){ sb_fmt(o, "{\"run\":%lld,\"arrival\":%d,\"text\":", (long long)rv, x->arrival); sb_text_of(b, rv, o, 1 << 30); sb_str(o, "}"); }   /* C27: a say, def or reply cell read back whole */
     else if(cv && (c->cell == label_gate(b, "known") || c->cell == label_gate(b, "unknown"))){ /* a list of gates: read back as symbols, the first sixty */ SB t = {0}; const char *q = cv; int nw = 0, total = 0; while(*q){ while(*q == ' ') q++; if(!*q) break; int g = atoi(q); while(*q && *q != ' ') q++; total++; if(nw < 60 && g > 0 && g <= b->label.n){ if(nw) sb_str(&t, " "); sb_str(&t, b->label.sym[g]); nw++; } } if(total > nw) sb_fmt(&t, " … %d in all", total); sb_fmt(o, "{\"words\":%d,\"text\":", total); sb_json(o, t.s ? t.s : ""); sb_str(o, "}"); free(t.s); }
     else sb_str(o, "null");
     sb_str(o, "]"); }
@@ -375,7 +385,10 @@ static void handle(const char *req, SB *o){
   if(strcmp(req, "repair") == 0){ do_repair(&MAINB, o); return; }
   if(strncmp(req, "rels", 4) == 0){ int n = atoi(req + 4); do_rels(&MAINB, n > 0 ? n : 20000, o); return; }
   if(strcmp(req, "hop") == 0){ sb_str(o, "["); do_hop(&MAINB, o); sb_str(o, ","); do_hop(&SIXTHB, o); sb_str(o, "]"); return; }
+  if(strncmp(req, "restep ", 7) == 0){ /* restep CLOCK GATE,GATE,...: the places as they stood at that clock, the beginning input replayed forward over the timeline; restep base writes the beginning input again */ char t[65536]; i64 clk = strncmp(req + 7, "base", 4) == 0 ? -1 : atoll(req + 7); const char *p = strchr(req + 7, ' '); int gates[512], ng = 0; while(p && *p && ng < 512){ while(*p == ' ' || *p == ',') p++; if(!*p) break; gates[ng++] = atoi(p); while(*p && *p != ',' && *p != ' ') p++; } nk_xyz_restep(&MAINB, clk, gates, ng, t, sizeof t); sb_str(o, t); return; }
+  if(strncmp(req, "moved ", 6) == 0){ char t[1 << 20]; nk_xyz_moved(&MAINB, atoll(req + 6), 20000, t, sizeof t); sb_str(o, t); return; }   /* the points moved since a clock, with their places now */
   if(strncmp(req, "settle", 6) == 0){ char t[512]; nk_xyz_settle(&MAINB, atoi(req + 6) > 0 ? atoi(req + 6) : 1, t, sizeof t); sb_str(o, t); return; }   /* the places back-populated: one step of every point that holds a definition or a place, per pass */
+  if(strcmp(req, "relabel") == 0){ do_relabel(&MAINB, o); return; }   /* C27 back population */
   if(strcmp(req, "memory") == 0){ sb_str(o, "["); do_memory(&MAINB, o); sb_str(o, ","); do_memory(&SIXTHB, o); sb_str(o, "]"); return; }
   if(strncmp(req, "profile", 7) == 0){ do_profile(o, atoi(req + 7) > 0 ? atoi(req + 7) : 15); return; }
   if(strcmp(req, "scans") == 0){ char t[4096]; nkvt_scans(t, sizeof t); sb_str(o, "["); sb_str(o, t); sb_str(o, "]"); return; }
@@ -406,6 +419,7 @@ int main(int argc, char **argv){
   const char **srcs = argc > 4 ? (const char**)argv + 4 : defaults; int nsrc = argc > 4 ? argc - 4 : 9; SRCDIR = argv[3]; SRCS = srcs; NSRCS = nsrc;
   if(mother_open(&MAINB, &SIXTHB, srcs, nsrc, argv[3]) != 0){ fprintf(stderr, "mother could not open\n"); return 1; }
   nk_count_rows(&MAINB); nk_count_rows(&SIXTHB);
+  { const char *mp = getenv("NK_MAP"); if(mp && *mp){ char px[4096]; snprintf(px, sizeof px, "%s.xyz", mp); nk_xyz_base(&MAINB, px); } }   /* the beginning input of the history of places, written at the first start after the recording began */
   nk_map_ready();
   int s = socket(AF_INET, SOCK_STREAM, 0); int one = 1; setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
   struct sockaddr_in a = {0}; a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);

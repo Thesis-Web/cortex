@@ -163,13 +163,14 @@
         <label class="chk"><input type="checkbox" id="ghostlabels"> name your map's words (the dim points)</label>
         <label class="chk"><input type="checkbox" id="spacept"> draw the space neuron (one point, one shard; it sits at origin with no line)</label>
         <label class="chk"><input type="checkbox" id="runspace"> run lines pass through the space neuron (off: the space is skipped in the drawing of a run)</label>
-        <label class="chk"><input type="checkbox" id="memall"> memory nodes of every run (on: thousands of small green points; off: only the memory nodes of the line chosen)</label>
+        <label class="chk"><input type="checkbox" id="brainxyz" checked> the brain's places (a point sits where the brain holds it, times the spacing, and glides when the brain moves it: the shape is the brain's pulls per shard, not the page's springs; off: the page's own springs, one shape for every run)<br><input type="checkbox" id="memall"> memory nodes of every run (on: thousands of small green points; off: only the memory nodes of the line chosen)</label>
         <div class="row"><label for="spacing" class="note">spacing, the drawing only</label><input type="range" id="spacing" min="1" max="100" step="1" value="21" aria-label="spacing"><span class="n" id="spv">&times;21</span></div>
         <label class="chk"><input type="checkbox" id="axes" checked> x, y and z axes over the graph, a tick every 10</label>
         <div class="row"><button id="fitall" type="button">fit all in view</button></div>
         <div class="row"><label for="gap" class="note">space between points, in the drawing's units</label><input type="range" id="gap" min="0" max="500" step="0.5" value="15" aria-label="space between points"><span class="n" id="gapv">15</span></div>
         <p class="note">No two points come closer than this; a pair that does is moved apart, half each, and the lines pull the rest into place. Spacing multiplies every drawn position outward from origin; names and dots keep their size. Drag to turn, scroll to zoom.</p>
         <div class="row"><label for="runmode" class="note">runs drawn</label><select id="runmode"><option value="cur" selected>this run only</option><option value="line">every run of this line, faint</option><option value="none">none</option></select></div>
+        <div id="actions" class="note" style="margin:3px 0 4px 0; line-height:1.6"></div>
       </section>
       <section>
         <h2>Kinds of line: on, off, pull, direction</h2>
@@ -392,7 +393,9 @@
 
   // ---- the door: the page served by serve6.py talks to the same origin; opened as a file it talks to localhost:8056
   var API = /^https?:$/.test(location.protocol) ? '' : 'http://localhost:8056';
+  var FETCHN = 0;   // tries/43: every request this page makes, counted (the check: none in thirty seconds of silence)
   function api(path, body) {
+    FETCHN++;
     var opt = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
     return fetch(API + path, opt).then(function (r) { return r.json().then(function (j) { if (!r.ok) { var e = new Error(j.error || ('HTTP ' + r.status)); e.busy = j.busy; throw e; } return j; }); });
   }
@@ -421,37 +424,132 @@
   var SHEET = {}, TEXT = {};   // run -> sheet rows; run -> its line read back through the encoder
   // the history: every receipt row of the brain, in the order the brain wrote them (17.3 replayed its event log; v6 replays the receipt table)
   var HIST = [], RUNHOPS = {}, FIRSTG = {}, FIRSTS = {}, RUNT0 = {}, RUNT1 = {}, TK = -1, HISTLAST = 0;
+  var WAVE = [], WAVEN = 0;   // tries/41: the wave (the clock tick of the line) each receipt belongs to
   var CUR = { root: null, run: null };
-  function loadBundle() {
-    return Promise.all([
-      q('SELECT gate, symbol FROM main.label ORDER BY gate'),
-      api('/api/graph?schema=main'),
-      q('SELECT id, arrival, parent, root, kind, cell, about, at FROM main.run ORDER BY id'),
-      q("SELECT 'main', id, run FROM main.input WHERE run IS NOT NULL UNION ALL SELECT 'sixth', id, run FROM sixth.input WHERE run IS NOT NULL ORDER BY 1, 2"),
-      q('SELECT id, run, cell, value FROM main.out_user ORDER BY id'),
-      q("SELECT (SELECT count(*) FROM main.label), (SELECT count(*) FROM main.neuron WHERE born = 1), 0, (SELECT n FROM main.shards), (SELECT count(*) FROM main.run), (SELECT count(*) FROM main.run_receipt), (SELECT count(*) FROM main.run_sheet), (SELECT count(*) FROM main.run_memory), (SELECT count(*) FROM main.timeline), (SELECT count(*) FROM main.refused), (SELECT count(*) FROM main.hop), (SELECT count(*) FROM main.run_sheet WHERE state = 0), (SELECT count(*) FROM main.run WHERE id NOT IN (SELECT run FROM main.run_memory)), (SELECT count(*) FROM main.rel), (SELECT count(*) FROM sixth.label), (SELECT count(*) FROM sixth.run), (SELECT count(*) FROM sixth.run_memory), (SELECT count(*) FROM sixth.refused), (SELECT count(*) FROM main.run WHERE kind = 3 AND arrival BETWEEN 7 AND 14)"),
-      q('SELECT r.about, s.gate, min(r.id) FROM main.run r JOIN main.seq s ON s.run = r.id JOIN main.label l ON l.gate = s.gate WHERE r.kind = 3 AND r.arrival BETWEEN 7 AND 14 AND r.about IS NOT NULL AND l.symbol GLOB \'[A-Za-z]*\' GROUP BY r.about, s.gate'),
-      q('SELECT arrival, about, min(id) FROM main.run WHERE kind = 3 AND about IS NOT NULL AND arrival BETWEEN 7 AND 15 GROUP BY arrival, about'),
-      q('SELECT run, count(*) FROM main.run_receipt GROUP BY run'),
-      MAPL ? Promise.resolve(null) : q("SELECT word, text FROM map.corpus"),
-      q('SELECT id, run, gate, shard FROM main.run_receipt WHERE id > ? ORDER BY id', [HISTLAST]),
-      q('SELECT gate, x, y, z, moved FROM main.xyz').catch(function () { return []; }),   // the places the brain holds (none before the xyz table is laid)
-      q('SELECT p.kind, f.pull, f.rest, f.dx, f.dy, f.dz, f.mode FROM main.pull p JOIN main.formula f ON f.id = p.formula').catch(function () { return []; })   // the formulas: each kind's pull, rest and direction, the brain's rows
-    ]).then(absorb);
+  // ---- tries/41: the page loads what it shows. Keyed reads only; the bundle keeps absorb()'s shape.
+  var LIGHT = true, NK = false, LOADED = {}, LASTRUNSEEN = 0, LASTTL = 0, ROOTS = {}, HAVE = {};
+  function isNK() { NK = !!(INFO && INFO.version === 'nk'); return NK; }
+  function chunks(list, n) { var out = []; for (var i = 0; i < list.length; i += n) out.push(list.slice(i, i + n)); return out; }
+  function marks(n) { var a = []; for (var i = 0; i < n; i++) a.push('?'); return a.join(','); }
+  function qIn(sql, list, more, size) {   // sql with one %IN%; list split into chunks; rows concatenated; a refused read is an empty answer
+    list = list.filter(function (x) { return x !== null && x !== undefined; }); if (!list.length) return Promise.resolve([]);
+    return Promise.all(chunks(list, size || 400).map(function (c) { return q(sql.replace('%IN%', marks(c.length)), c.concat(more || [])).catch(function () { return []; }); })).then(function (parts) { return [].concat.apply([], parts); });
   }
+  function qUnionTables(gates, body) {   // the hub's table per gate: one statement per 90 gates, UNION ALL; a missing table empties that chunk
+    gates = gates.filter(function (g) { return g > 0; }); if (!gates.length) return Promise.resolve([]);
+    return Promise.all(chunks(gates, 90).map(function (c) { var sql = c.map(function (g) { return body.replace(/%G%/g, String(g)); }).join(' UNION ALL '); return q(sql).catch(function () { return Promise.all(c.map(function (g) { return q(body.replace(/%G%/g, String(g))).catch(function () { return []; }); })).then(function (p) { return [].concat.apply([], p); }); }); })).then(function (parts) { return [].concat.apply([], parts); });
+  }
+  function dnaOf(gates) {   // rows [gate, shard, before, trigger, call, spawn, times]
+    if (isNK()) return qIn('SELECT gate, shard, before, trigger, call, spawn, times FROM main.dna WHERE gate IN (%IN%)', gates);
+    return qUnionTables(gates, 'SELECT %G% AS gate, shard, before, trigger, call, spawn, times FROM main."%G%"');
+  }
+  function nodesOf(gates) {   // rows [gate, source, run]
+    if (isNK()) return qIn('SELECT gate, source, run FROM main.node WHERE gate IN (%IN%)', gates);
+    return qUnionTables(gates, 'SELECT %G% AS gate, source, run FROM main."%G%.node"');
+  }
+  function gatesOfRows(rows, cols) { var s = {}; rows.forEach(function (r) { cols.forEach(function (c) { if (r[c] !== null && r[c] !== undefined && r[c] > 0) s[r[c]] = 1; }); }); return Object.keys(s).map(Number); }
+  function loadBundle() {
+    var core = []; for (var i = 1; i <= CORE; i++) core.push(i);
+    var histQ = isNK() ? q('SELECT id, run, gate, shard FROM main.run_receipt WHERE id > ? ORDER BY id', [HISTLAST])
+      : q('SELECT max(id) FROM main.run_receipt').then(function (r) { var top = r[0] ? r[0][0] : 0; return q('SELECT id, run, gate, shard FROM main.run_receipt WHERE id > ? ORDER BY id', [Math.max(HISTLAST, top - 5000)]); })   // the hub: the newest 5,000 of the brain's own runs
+        .then(function (rc) {   // and the typed lines: the newest 300 inputs, their trees by root, their receipts by run (the hub's receipt_run index)
+          return q("SELECT run FROM main.input WHERE run IS NOT NULL ORDER BY id DESC LIMIT 40").catch(function () { return []; }).then(function (ins) {
+            var lineRuns = ins.map(function (r) { return r[0]; }).filter(function (v) { return v && !RUNHOPS[v]; });
+            return qIn('SELECT r.id FROM main.run r WHERE r.root IN (%IN%)', lineRuns, [], 60).then(function (kids) {
+              var want = lineRuns.concat(kids.map(function (k) { return k[0]; })).filter(function (v, i, a) { return a.indexOf(v) === i && !RUNHOPS[v]; });
+              return qIn('SELECT id, run, pos, gate, shard FROM main.run_receipt WHERE run IN (%IN%)', want, [], 200).then(function (rows) {
+                rows.sort(function (a, b) { return a[1] - b[1] || a[2] - b[2]; }); var seen = {}; rc.forEach(function (x) { seen[x[0]] = 1; });
+                rows.forEach(function (s) { if (!seen[s[0]] && !HAVE[s[0]]) { seen[s[0]] = 1; HAVE[s[0]] = 1; var row = [s[0], s[1], s[3], s[4]]; row.sub = true; rc.push(row); } });
+                return rc;
+              });
+            });
+          });
+        });
+    return histQ.then(function (rc) {
+      var runs = gatesOfRows(rc, [1]), gates = gatesOfRows(rc, [2]).concat(core);
+      HIST.forEach(function (h) { if (!(h[1] in RUNS)) runs.push(h[1]); });   // runs seen before: kept in the table
+      var runIds = Object.keys(RUNS).map(Number).concat(runs); runIds = runIds.filter(function (v, i, a) { return a.indexOf(v) === i; });
+      return qIn('SELECT r.id, r.arrival, r.parent, r.root, r.kind, r.cell, r.about, r.at FROM main.run r WHERE r.id IN (%IN%)', runIds).then(function (rr) {
+        var roots = gatesOfRows(rr, [3]).concat(rr.filter(function (r) { return r[3] === null; }).map(function (r) { return r[0]; }));
+        roots = roots.filter(function (v, i, a) { return a.indexOf(v) === i; }); ROOTS = {}; roots.forEach(function (r) { ROOTS[r] = 1; });
+        var newest = roots.slice(-6), after = []; newest.forEach(function (r) { for (var i = 1; i <= 400; i++) after.push(r + i); });   // a line's sub-runs follow its id
+        var treeQ = isNK() ? qIn('SELECT r.id, r.arrival, r.parent, r.root, r.kind, r.cell, r.about, r.at FROM main.run r WHERE r.id IN (%IN%)', after, [], 400).then(function (rows) { return rows.filter(function (r) { return r[3] !== null && ROOTS[r[3]]; }); })
+                            : qIn('SELECT r.id, r.arrival, r.parent, r.root, r.kind, r.cell, r.about, r.at FROM main.run r WHERE r.root IN (%IN%)', roots.slice(-40), [], 60);
+        return treeQ.then(function (tree) {
+          var seen = {}; var allRuns = rr.concat(tree).filter(function (r) { if (seen[r[0]]) return false; seen[r[0]] = 1; return true; });
+          // the receipts of the newest lines' sub-runs, by run (the waves need every run of a line); a row already held is not taken twice
+          var subRuns = allRuns.filter(function (r) { return r[3] !== null && newest.indexOf(r[3]) >= 0 && !RUNHOPS[r[0]]; }).map(function (r) { return r[0]; }).filter(function (v) { return rc.every(function (x) { return x[1] !== v; }); });
+          return qIn('SELECT id, run, pos, gate, shard FROM main.run_receipt WHERE run IN (%IN%)', subRuns, [], 200).then(function (sub) {
+          sub.sort(function (a, b) { return a[1] - b[1] || a[2] - b[2]; }); sub.forEach(function (s) { if (!HAVE[s[0]]) { HAVE[s[0]] = 1; var row = [s[0], s[1], s[3], s[4]]; row.sub = true; rc.push(row); } });
+          gates = gates.concat(gatesOfRows(sub, [3]));
+          var moreGates = gatesOfRows(allRuns, [1, 5, 6]); gates = gates.concat(moreGates).filter(function (v, i, a) { return a.indexOf(v) === i; });
+          var runList = allRuns.map(function (r) { return r[0]; });
+          return Promise.all([
+            qIn('SELECT l.gate, l.symbol FROM main.label l WHERE l.gate IN (%IN%)', gates, [], 500),
+            dnaOf(gates),
+            nodesOf(gates),
+            qIn('SELECT gate, kind, other, run FROM main.rel WHERE gate IN (%IN%)', gates, [], 300),
+            qIn('SELECT gate, kind, other, run FROM main.rel WHERE other IN (%IN%)', gates, [], 300),
+            qIn('SELECT run, gate FROM main.seq WHERE run IN (%IN%) AND pos = 1', runList),
+            isNK() ? q("SELECT 'main', id, run FROM main.input WHERE run IS NOT NULL UNION ALL SELECT 'sixth', id, run FROM sixth.input WHERE run IS NOT NULL ORDER BY 1, 2").catch(function () { return []; })
+                   : q("SELECT 'main', id, run FROM main.input WHERE run IS NOT NULL ORDER BY id DESC LIMIT 300").then(function (r) { return r.reverse(); }).catch(function () { return []; }),
+            q('SELECT id, run, cell, value FROM main.out_user ORDER BY id DESC LIMIT 400').then(function (r) { return r.reverse(); }).catch(function () { return []; }),
+            isNK() ? q("SELECT (SELECT count(*) FROM main.label), (SELECT count(*) FROM main.sqlite_master WHERE type = 'table'), (SELECT count(*) FROM main.sqlite_master WHERE type = 'trigger'), (SELECT n FROM main.shards), (SELECT count(*) FROM main.run), (SELECT count(*) FROM main.run_receipt), (SELECT count(*) FROM main.run_sheet), (SELECT count(*) FROM main.run_memory), (SELECT count(*) FROM main.timeline), (SELECT count(*) FROM main.refused), (SELECT count(*) FROM main.hop), (SELECT count(*) FROM main.run_sheet WHERE state = 0), (SELECT count(*) FROM main.run WHERE id NOT IN (SELECT run FROM main.run_memory)), (SELECT count(*) FROM main.rel), (SELECT count(*) FROM sixth.label), (SELECT count(*) FROM sixth.run), (SELECT count(*) FROM sixth.run_memory), (SELECT count(*) FROM sixth.refused), (SELECT count(*) FROM main.run WHERE kind = 3 AND arrival BETWEEN 7 AND 14)").catch(function () { return [[0]]; })
+                   : Promise.all([q('SELECT max(gate) FROM main.label'), q('SELECT n FROM main.shards'), q('SELECT max(id) FROM main.run'), q('SELECT max(id) FROM main.run_receipt'), q('SELECT max(id) FROM main.timeline'), q('SELECT count(*) FROM main.refused'), q('SELECT count(*) FROM main.hop'), q('SELECT max(gate) FROM sixth.label'), q('SELECT max(id) FROM sixth.run'), q('SELECT count(*) FROM sixth.refused')].map(function (p) { return p.then(function (r) { return r[0] ? r[0][0] : 0; }).catch(function () { return 0; }); })).then(function (v) { return [[v[0], 0, 0, v[1], v[2], v[3], 0, 0, v[4], v[5], v[6], 0, 0, COUNTS.rel || 0, v[7], v[8], 0, v[9], 0]]; }),
+            MAPL ? Promise.resolve(null) : q("SELECT word, text FROM map.corpus").catch(function () { return []; }),
+            qIn('SELECT x.gate, x.x, x.y, x.z, x.moved FROM main.xyz x WHERE x.gate IN (%IN%)', gates, [], 500),
+            q('SELECT p.kind, f.pull, f.rest, f.dx, f.dy, f.dz, f.mode FROM main.pull p JOIN main.formula f ON f.id = p.formula').catch(function () { return []; })
+          ]).then(function (P) {
+            // the 'definition' and 'answered' lines: from the node rows of the loaded gates (source, run) and the first symbols of those runs
+            var nodeRows = P[2], defRuns = nodeRows.map(function (r) { return r[2]; }).filter(function (v, i, a) { return a.indexOf(v) === i; }).slice(0, 1200);
+            return qIn('SELECT run, gate FROM main.seq WHERE run IN (%IN%)', defRuns, [], 200).then(function (sq) {
+              var runAbout = {}; nodeRows.forEach(function (r) { runAbout[r[2]] = r[0]; });
+              var defw = {}, seenDW = {}; sq.forEach(function (s) { var ab = runAbout[s[0]]; if (ab === undefined) return; var sym = LAB[s[1]]; var k = ab + ':' + s[1]; if (seenDW[k]) return; seenDW[k] = 1; (defw[ab] = defw[ab] || []).push([s[1], s[0]]); });
+              var R6 = []; Object.keys(defw).forEach(function (ab) { defw[ab].forEach(function (p) { R6.push([+ab, p[0], p[1]]); }); });
+              var ansSeen = {}, R7 = []; nodeRows.forEach(function (r) { var k = r[1] + ':' + r[0]; if (ansSeen[k]) return; ansSeen[k] = 1; R7.push([r[1], r[0], r[2]]); });
+              var nodes = {}; nodeRows.forEach(function (r) { nodes[r[0]] = (nodes[r[0]] || 0) + 1; });
+              var relSeen = {}, rel = []; P[3].concat(P[4]).forEach(function (r) { var k = r[0] + ':' + r[1] + ':' + r[2] + ':' + r[3]; if (relSeen[k]) return; relSeen[k] = 1; rel.push(r); });
+              var first = {}; P[5].forEach(function (r) { first[r[0]] = r[1]; });
+              var hop = {}; rc.forEach(function (r) { hop[r[1]] = (hop[r[1]] || 0) + 1; }); var R8 = Object.keys(hop).map(function (k) { return [+k, hop[k]]; });
+              var graph = { dna: P[1], nodes: nodes, rel: rel, mem: MEMN || {}, first: first, clock: null };
+              gates.forEach(function (g) { LOADED[g] = 1; });
+              return absorb([P[0], graph, allRuns, P[6], P[7], P[8], R6, R7, R8, P[9], rc, P[10], P[11]]);
+            });
+          });
+          });
+        });
+      });
+    });
+  }
+  // a gate the page has not loaded (chosen, clicked, or in a run just chosen): its label, DNA rows, node count, rel rows and place, by key
+  function loadGates(gates) {
+    gates = gates.filter(function (g) { return g > 0 && !LOADED[g]; }).filter(function (v, i, a) { return a.indexOf(v) === i; }); if (!gates.length) return Promise.resolve();
+    return Promise.all([qIn('SELECT l.gate, l.symbol FROM main.label l WHERE l.gate IN (%IN%)', gates, [], 500), dnaOf(gates), nodesOf(gates), qIn('SELECT gate, kind, other, run FROM main.rel WHERE gate IN (%IN%)', gates, [], 300), qIn('SELECT gate, kind, other, run FROM main.rel WHERE other IN (%IN%)', gates, [], 300), qIn('SELECT x.gate, x.x, x.y, x.z, x.moved FROM main.xyz x WHERE x.gate IN (%IN%)', gates, [], 500)]).then(function (P) {
+      P[0].forEach(function (r) { if (LAB[r[0]] === undefined) { LAB[r[0]] = r[1]; SYM[r[1]] = r[0]; LABLIST.push(r[0]); } });
+      P[1].forEach(function (d) { DNA.push(d); (DNABY[d[0]] = DNABY[d[0]] || []).push(d); SHARDROW[d[1]] = d; });
+      P[2].forEach(function (r) { NODES[r[0]] = (NODES[r[0]] || 0) + 1; });
+      P[3].concat(P[4]).forEach(function (r) { REL.push(r); (RELBY[r[0]] = RELBY[r[0]] || []).push(r); (RELBY[r[2]] = RELBY[r[2]] || []).push(r); });
+      P[5].forEach(function (r) { XYZ[r[0]] = r; });
+      gates.forEach(function (g) { LOADED[g] = 1; }); hold(gates);   // tries/43: the door is told what this tab holds
+    });
+  }
+  function gatesOfRun(root) { var s = {}; HIST.forEach(function (h) { var R = RUNS[h[1]]; if (h[1] === root || (R && R.root === root)) s[h[2]] = 1; }); return Object.keys(s).map(Number); }
   function absorb(R) {
     LAB = {}; SYM = {}; LABLIST = R[0].map(function (r) { LAB[r[0]] = r[1]; SYM[r[1]] = r[0]; return r[0]; });
     var g = R[1]; DNA = g.dna; NODES = g.nodes || {}; REL = g.rel || []; MEMN = g.mem || {}; FIRST = g.first || {};
-    XYZ = {}; (R[11] || []).forEach(function (r) { XYZ[r[0]] = r; }); applyFormulas(R[12] || []);   // the brain's places and formulas (2026-11-02)
+    XYZ = {}; (R[11] || []).forEach(function (r) { XYZ[r[0]] = r; }); applyFormulas(R[12] || []); if (!XYZCLOCK && g.clock) XYZCLOCK = g.clock;   // the brain's places and formulas (2026-11-02)
     DNABY = {}; SHARDROW = {}; DNA.forEach(function (d) { (DNABY[d[0]] = DNABY[d[0]] || []).push(d); SHARDROW[d[1]] = d; }); Object.keys(DNABY).forEach(function (k) { DNABY[k].sort(function (a, b) { return a[1] - b[1]; }); });
     RELBY = {}; REL.forEach(function (r) { (RELBY[r[0]] = RELBY[r[0]] || []).push(r); (RELBY[r[2]] = RELBY[r[2]] || []).push(r); });
-    RUNS = {}; CHILDREN = {}; RUNLIST = R[2].map(function (r) { var x = { id: r[0], arrival: r[1], parent: r[2], root: r[3], kind: r[4], cell: r[5], about: r[6], at: r[7] }; RUNS[r[0]] = x; if (r[2] !== null) (CHILDREN[r[2]] = CHILDREN[r[2]] || []).push(r[0]); return x; });
+    ACT = {}; RUNS = {}; CHILDREN = {}; RUNLIST = R[2].map(function (r) { var x = { id: r[0], arrival: r[1], parent: r[2], root: r[3], kind: r[4], cell: r[5], about: r[6], at: r[7] }; RUNS[r[0]] = x; if (r[2] !== null) (CHILDREN[r[2]] = CHILDREN[r[2]] || []).push(r[0]); return x; });
     INPUTS = R[3].map(function (r) { return { schema: r[0], id: r[1], run: r[2] }; });
     OUTBY = {}; R[4].forEach(function (r) { (OUTBY[r[1]] = OUTBY[r[1]] || []).push({ id: r[0], cell: r[2], value: r[3] }); });
     var c = R[5][0]; COUNTS = { label: c[0], tables: c[1], triggers: c[2], shards: c[3], run: c[4], receipts: c[5], sheet: c[6], memory: c[7], timeline: c[8], refused: c[9], hop: c[10], empty: c[11], unended: c[12], rel: c[13], s_label: c[14], s_run: c[15], s_memory: c[16], s_refused: c[17], returns: c[18] };
     DEFW = {}; R[6].forEach(function (r) { (DEFW[r[0]] = DEFW[r[0]] || []).push([r[1], r[2]]); });
     ANSW = R[7];
-    R[10].forEach(function (r) { var i = HIST.length; HIST.push(r); HISTLAST = r[0]; (RUNHOPS[r[1]] = RUNHOPS[r[1]] || []).push(i); if (FIRSTG[r[2]] === undefined) FIRSTG[r[2]] = i; if (FIRSTS[r[3]] === undefined) FIRSTS[r[3]] = i; if (RUNT0[r[1]] === undefined) RUNT0[r[1]] = i; RUNT1[r[1]] = i; });
+    // tries/41: the receipts of one line in waves: its runs ordered by start clock, one hit of each run alive per wave (the owner: one hop is the next hop of the main run and of every parallel run)
+    var byRoot = {}, rootOrder = []; R[10].forEach(function (r) { var Rr = RUNS[r[1]], root = Rr ? (Rr.root === null ? r[1] : Rr.root) : r[1]; if (!byRoot[root]) { byRoot[root] = {}; rootOrder.push(root); } (byRoot[root][r[1]] = byRoot[root][r[1]] || []).push(r); });
+    var ordered = []; rootOrder.forEach(function (root) { var runs = Object.keys(byRoot[root]).map(Number).sort(function (x, y) { var ax = RUNS[x] ? RUNS[x].at : x, ay = RUNS[y] ? RUNS[y].at : y; return ax - ay || x - y; }); var cur = runs.map(function () { return 0; }), left = 0; runs.forEach(function (rn) { left += byRoot[root][rn].length; }); var wave = 0; while (left > 0) { for (var k = 0; k < runs.length; k++) { var rows = byRoot[root][runs[k]]; if (cur[k] < rows.length) { var row = rows[cur[k]++]; row.wave = WAVEN + wave; ordered.push(row); left--; } } wave++; } WAVEN += wave; });
+    ordered.forEach(function (r) { var i = HIST.length; HIST.push(r); WAVE[i] = r.wave; if (!r.sub) HISTLAST = Math.max(HISTLAST, r[0]); (RUNHOPS[r[1]] = RUNHOPS[r[1]] || []).push(i); if (FIRSTG[r[2]] === undefined) FIRSTG[r[2]] = i; if (FIRSTS[r[3]] === undefined) FIRSTS[r[3]] = i; if (RUNT0[r[1]] === undefined) RUNT0[r[1]] = i; RUNT1[r[1]] = i; });
     RELSTATIC = []; RELWIN = []; RELCACHE = { key: null, agg: null }; REL.forEach(function (r) { if (!r[3] || RUNT0[r[3]] === undefined) RELSTATIC.push(r); else RELWIN.push(r); });   // laid before this history's window, or inside it
     HOPCOUNT = {}; R[8].forEach(function (r) { HOPCOUNT[r[0]] = r[1]; });
     DEFSEEN = {}; Object.keys(DEFW).forEach(function (g) { var f = FIRSTG[g]; if (f === undefined) return; DEFW[g].forEach(function (x) { if (DEFSEEN[x[0]] === undefined || DEFSEEN[x[0]] > f) DEFSEEN[x[0]] = f; }); });   // a word of a point's definition is present from the hit that reached the point (the kernel pulls returns to the sheet; they are not walked)
@@ -492,7 +590,7 @@
       // a new point has no place until its lines give it one: it waits at origin and is placed beside its neighbours once the lines are known
       var fixed = k === String(G.heard), p = new THREE.Vector3(0, 0, 0);
       n = NODE[k] = { key: k, pos: p, fixed: fixed, unplaced: !fixed, ghost: k.charAt(0) === 'g', mem: k.charAt(0) === 'm' };
-      var bx = (!fixed && !n.ghost && !n.mem) ? XYZ[+k] : null; if (bx) { n.pos.set(bx[1], bx[2], bx[3]); n.unplaced = false; }   // the brain's own place for the point, when it holds one: the drawing starts there
+      if (brainOn() && !fixed && !n.ghost && !n.mem) brainPos(k, n);
       if (hasGL) {
         var col = colorOf(k), r = sizeOf(k);
         n.mesh = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: n.ghost ? .4 : .92 })); n.mesh.scale.setScalar(r); n.mesh.position.copy(n.pos); n.mesh.userData = { base: r, key: k }; dotGroup.add(n.mesh);
@@ -518,7 +616,45 @@
   function kindRow(k, w, title) { return '<input type="checkbox" data-rel="' + esc(k) + '" checked aria-label="' + esc(k) + ' on or off"><span class="sw" style="background:' + hexOf(k) + '"></span><span title="' + esc(title || '') + '">' + esc(k) + '</span><input type="range" min="0" max="1" step="0.05" value="' + w + '" data-relw="' + esc(k) + '" aria-label="' + esc(k) + ' pull"><span class="n" id="rc-' + esc(k).replace(/[^a-z0-9]/gi, '_') + '">0</span><select class="dir" data-reldir="' + esc(k) + '" aria-label="' + esc(k) + ' direction">' + DIRS.map(function (d) { return '<option value="' + d[0] + '"' + ((DEFAULT_DIR[k] || '') === d[0] ? ' selected' : '') + '>' + d[1] + '</option>'; }).join('') + '</select>'; }
   function addKind(k, w, title) { if (RELSET[k]) return; RELSET[k] = { on: true, w: w, dir: DEFAULT_DIR[k] || '' }; $('reltypes').insertAdjacentHTML('beforeend', kindRow(k, w, title)); }
   // the brain's formulas (pull, rest, direction per kind: its formula and pull rows) become the kinds' defaults, once per load; a slider or drop-down moved after that rules the drawing
-  var XYZ = {}, FORMULA_APPLIED = false;
+  var XYZ = {}, FORMULA_APPLIED = false, XYZCLOCK = 0, BRAINXYZ = true;
+  function brainOn() { var el = document.getElementById('brainxyz'); return el ? el.checked : false; }
+  function brainPos(k, n) { var b = XYZ[+k]; if (!b) return false; n.pos.set(b[1] * SP, b[2] * SP, b[3] * SP); n.unplaced = false; return true; }
+  // which points the brain moved since the last ask: the kernel's door answers /api/moved; the hub's door answers the table by its clock column
+  // tries/43: the door tells the page. No timer, no sweep (the owner, 13:30): one open connection per tab; the door writes a move (with the
+  // point's place) or a run's end the moment the brain laid its receipt. A door without the stream is said so under the readout, and nothing
+  // asks on a clock. The hub's door filters moves to the gates this tab holds (/api/hold); the kernel's door sends the moves since its clock.
+  var TAB = Math.random().toString(36).slice(2, 10), STREAM = { state: 'not started', told: 0, moves: 0, ends: 0, passes: 0, es: null };
+  function streamNote() {
+    var el = $('stream');
+    if (!el) { el = document.createElement('div'); el.id = 'stream'; el.style.cssText = 'font-size:11px;opacity:.75;margin-top:2px'; var r = $('readout'); if (r && r.parentNode) r.parentNode.insertBefore(el, r.nextSibling); else document.body.appendChild(el); }
+    el.textContent = 'stream ' + STREAM.state + (STREAM.moves || STREAM.ends || STREAM.passes ? ' · told ' + STREAM.moves + ' moves, ' + STREAM.ends + ' run ends' + (STREAM.passes ? ', ' + STREAM.passes + ' passes' : '') : '');
+  }
+  function hold(gates) { if (!gates || !gates.length) return Promise.resolve(); return api('/api/hold', { tab: TAB, add: gates }).catch(function () {}); }
+  function onMoves(moves) { moves.forEach(function (m) { XYZ[m[0]] = [m[0], m[1], m[2], m[3], 0]; var n = NODE[String(m[0])]; if (n && n.mesh && n.mesh.visible) n.glide = new THREE.Vector3(m[1] * SP, m[2] * SP, m[3] * SP); }); STREAM.moves += moves.length; }
+  function onPass() {   // a settle pass moved every placed point: the held gates' places are read again by key, never the brain whole
+    var held = Object.keys(LOADED).map(Number); STREAM.passes++; if (!held.length) return;
+    qIn('SELECT x.gate, x.x, x.y, x.z, x.moved FROM main.xyz x WHERE x.gate IN (%IN%)', held, [], 500).then(function (rows) { rows.forEach(function (r) { XYZ[r[0]] = r; }); Object.keys(NODE).forEach(function (k) { var n = NODE[k], b = XYZ[+k]; if (n.mesh && n.mesh.visible && b) n.glide = new THREE.Vector3(b[1] * SP, b[2] * SP, b[3] * SP); }); }).catch(function () {});
+  }
+  function stream() {
+    if (!window.EventSource) { STREAM.state = 'none: this browser has no event stream'; streamNote(); return; }
+    var es = new EventSource(API + '/api/stream?tab=' + TAB); STREAM.es = es; STREAM.state = 'opening'; streamNote();
+    es.onopen = function () { STREAM.state = 'live'; streamNote(); hold(Object.keys(LOADED).map(Number)); };
+    es.onmessage = function (ev) {
+      var j; try { j = JSON.parse(ev.data); } catch (e) { return; }
+      if (j.hello) { STREAM.state = 'live'; streamNote(); return; }
+      if (j.id) STREAM.told = j.id;
+      if (j.clock) XYZCLOCK = j.clock;
+      if (j.passes) onPass();
+      if (j.moves && j.moves.length) onMoves(j.moves);
+      var ids = [];
+      if (j.ends) j.ends.forEach(function (e) { ids.push(e[0]); });
+      if (j.runs && j.runs_before && j.runs > j.runs_before) for (var i = j.runs_before + 1; i <= j.runs && ids.length < 2000; i++) ids.push(i);
+      if (ids.length) { STREAM.ends += ids.length; watch(ids); }
+      streamNote();
+    };
+    es.onerror = function () { STREAM.state = es.readyState === 2 ? 'none: the door has no stream yet (the door needs its restart); nothing is asked on a clock' : 'reconnecting'; streamNote(); };
+  }
+  stream();
   function applyFormulas(rows) {
     if (FORMULA_APPLIED || !rows.length) return; FORMULA_APPLIED = true;
     rows.forEach(function (r) { var s = LAB[r[0]]; if (s === undefined) return; var k = REL_OF[s] || s; if (!RELSET[k]) addKind(k, r[1], 'a rel row: the kind word ' + s);
@@ -534,6 +670,7 @@
     $('axes').addEventListener('change', function () { drawAxes(true); });
     $('gap').addEventListener('input', function () { GAP = parseFloat($('gap').value); $('gapv').textContent = GAP; reshape(); });
     $('fitall').addEventListener('click', function () { userZoomed = false; fitLeft = 120; });
+    $('brainxyz').addEventListener('change', function () { if (brainOn()) { Object.keys(NODE).forEach(function (k) { var n = NODE[k]; if (n.mesh && !n.fixed && !n.ghost && !n.mem) brainPos(k, n); }); } render(TK, true); reshape(); });
     ['mapall', 'ghostlabels', 'spacept', 'runspace', 'memall', 'runmode'].forEach(function (id) { $(id).addEventListener('change', function () { var go = function () { render(TK, true); if (id !== 'runmode' && id !== 'runspace') reshape(); }; if (id === 'memall') refreshMem(go); else go(); }); });
   })();
   var SPRINGS = [], ALLLINES = [], MEMROWS = [], RELSTATIC = [], RELWIN = [], RELCACHE = { key: null, agg: null };
@@ -575,6 +712,8 @@
   var STEP = 0, LASTMOVE = 0;
   var _F = null, _D = null, _M = null, _FL = null, _apartMs = 0;
   function settle(steps) {
+    var brainLive = brainOn();   // tries/42: the brain's places seed the points and its moves glide them; the springs run on regardless, so the lines' tension is live and a kind toggled off lets the points re-settle
+    if (brainLive) { Object.keys(NODE).forEach(function (k) { var n = NODE[k]; if (n.glide) { n.pos.lerp(n.glide, 0.25); if (n.pos.distanceTo(n.glide) < 0.05) { n.pos.copy(n.glide); n.glide = null; } } else if (n.unplaced && !n.mem && !n.ghost && brainPos(k, n)) {} }); placeNew(); _apartMs = 0; return; }   // tries/42 (10b): no page springs here: they made every run the same ball (the owner, 03:55); the shape is the brain's
     // springs only: no push between points, no pull toward any shell (owner, 2026-10-23). heard alone is fixed.
     // the same sums in three scratch vectors: a new vector per term over 365,737 springs took 58 s for 30 steps (2026-11-01)
     if (!_F) { _F = new THREE.Vector3(); _D = new THREE.Vector3(); _M = new THREE.Vector3(); }
@@ -601,7 +740,7 @@
       var fl = _FL.subarray(0, 2 * n); for (i = 0; i < n; i++) { sp = SPRINGS[i]; fl[2 * i] = sp.a.f.length(); fl[2 * i + 1] = sp.b.f.length(); } fl.sort();
       var p95 = fl.length ? fl[Math.floor(fl.length * .95)] : 0, sc = p95 > 4 ? 4 / p95 : 1;
       var mv = 0; for (i = 0; i < n; i++) { sp = SPRINGS[i]; for (var w = 0; w < 2; w++) { var nd = w ? sp.b : sp.a; if (nd.fixed || nd.moved === STEP) continue; nd.moved = STEP; _M.copy(nd.f).multiplyScalar(sc); var ml = _M.length(); if (ml > 6) { _M.setLength(6); ml = 6; } nd.pos.add(_M); if (ml > mv) mv = ml; } } LASTMOVE = mv;
-      var _ta = performance.now(); if (GAP > 0) for (var cp = 0; cp < PASSES; cp++) spaceApart(); _apartMs += performance.now() - _ta;
+      var _ta = performance.now(); if (GAP > 0 && !brainLive) for (var cp = 0; cp < PASSES; cp++) spaceApart(); _apartMs += performance.now() - _ta;   // tries/42: no space-apart pass in the brain's-places mode (quadratic over the seeded cloud)
     }
   }
   var GAP = 15, ACROSS = .25, PASSES = 3;
@@ -634,15 +773,64 @@
 
   // ---- the view at a hit of the history (17.3's viewAt, from the receipt table): what the brain held then, and the hop being stepped
   function route(idx) { var out = [], skipSpace = !$('runspace').checked; idx.forEach(function (i) { var g = HIST[i][2]; if (skipSpace && g === G.space) return; var k = String(g); if (k !== out[out.length - 1]) out.push(k); }); return out; }
+  // tries/44: the kind of action at a hop (the owner, 16:40: "colors... when writing memories, reading/fetching data, adjusting state and
+  // time, or building new formulas, applying new found meanings"). The statement mother is handed is the symbols between two BUILD gates of
+  // the main run, or the whole text of a called or spawned run; its symbols say what it does. The write target names the kind first (a
+  // memory written from a source read is a memory), then a bare read, then any other write. The typed line's own symbols stay white; a
+  // branch run whose statement reads as none stays orange.
+  var ACT_COL = { memory: 0x7ed07e, read: 0x6fa8dc, state: 0xffc98a, formula: 0x9b7bd4, meaning: 0x4fb7a8, sixth: 0xe09ab8, birth: 0xa9c3dc, write: 0xe8e2a0, line: 0xf2efe6, branch: 0xf28c4b };
+  var ACT_NAME = { memory: 'writing a memory', read: 'reading a source', state: 'state and time', formula: 'binding a formula', meaning: 'applying a meaning', sixth: 'asking the sixth', birth: 'a birth', write: 'another write', line: 'the line itself', branch: 'a called or spawned run, no statement read' };
+  var ACT_ORDER = ['memory', 'read', 'state', 'formula', 'meaning', 'sixth', 'birth', 'write', 'line', 'branch'];
+  function actionOf(words) {   // the write target names the kind (INSERT ... INTO x, UPDATE x, DELETE FROM x); a statement with no target that reads is a read
+    var w = []; words.forEach(function (s) { s = String(s).toLowerCase(); if (s.trim() !== '' && s !== '"' && s !== "'") w.push(s); });
+    var target = null, schema = null;
+    for (var i = 0; i < w.length - 1; i++) {
+      if (w[i] === 'into' || w[i] === 'update' || (w[i] === 'from' && i > 0 && w[i - 1] === 'delete')) {
+        target = w[i + 1]; if ((target === 'main' || target === 'sixth') && i + 3 < w.length && w[i + 2] === '.') { schema = target; target = w[i + 3]; } break;
+      }
+    }
+    if (schema === 'sixth' || target === 'sixth') return 'sixth';
+    if (target) {
+      if (/^(run_memory|memory|remember)$/.test(target)) return 'memory';
+      if (/^(third|told)$/.test(target)) return 'sixth';
+      if (/^(run_sheet|clock|timeline|sheet|state)$/.test(target)) return 'state';
+      if (/^(formula|pull|xyz|xyz_step|xyzforce|xyzbatch|dna|hop)$/.test(target) || /^\d+$/.test(target)) return 'formula';
+      if (/^(rel|belief|tried|relmap|catalog|meaning)$/.test(target)) return 'meaning';
+      if (/^(label|newgate|born)$/.test(target)) return 'birth';
+      return 'write';
+    }
+    if (w.indexOf('select') >= 0) return 'read';
+    return null;
+  }
+  var ACT = {};   // hop index in HIST -> kind; emptied when the history is read again
+  function actsOfRun(rid) {
+    var hs = RUNHOPS[rid] || []; if (!hs.length || ACT[hs[0]] !== undefined) return;
+    var R = RUNS[rid], branch = R && R.kind !== 0, lab = function (i) { return LAB[HIST[i][2]] || ''; };
+    if (branch) { var isStmt = false; for (var f = 0; f < 2 && f < hs.length; f++) { var first = String(lab(hs[f])).toUpperCase(); if (first === 'BUILD' || /^(INSERT|UPDATE|DELETE|SELECT|CREATE|WITH|REPLACE)$/.test(first)) isStmt = true; } var kind = (isStmt && actionOf(hs.map(lab))) || 'branch'; hs.forEach(function (i) { ACT[i] = kind; }); return; }   // tries/45: a return is not a statement; hop 0 of a called run is its arrival gate, so the statement word is looked for in the first two hops
+    hs.forEach(function (i) { ACT[i] = 'line'; }); var open = -1;
+    for (var k = 0; k < hs.length; k++) { if (HIST[hs[k]][2] !== G.BUILD) continue; if (open < 0) { open = k; continue; } var span = hs.slice(open, k + 1), kind2 = actionOf(span.map(lab)) || 'write'; span.forEach(function (i) { ACT[i] = kind2; }); open = -1; }
+  }
+  function actCounts(rid, upto) { var o = {}; (RUNHOPS[rid] || []).forEach(function (i) { if (upto !== undefined && i > upto) return; var a = ACT[i] || 'line'; o[a] = (o[a] || 0) + 1; }); return o; }
+  function hexAct(a) { return '#' + ('000000' + (ACT_COL[a] || 0x9aa3ad).toString(16)).slice(-6); }
+  function renderActions(rid, upto) {
+    var el = $('actions'); if (!el) return;
+    if (rid === null || rid === undefined) { el.innerHTML = ''; return; }
+    actsOfRun(rid); var c = actCounts(rid, upto), h = '';
+    ACT_ORDER.forEach(function (a) { if (!c[a]) return; h += '<span style="white-space:nowrap"><span style="color:' + hexAct(a) + '">&#9632;</span> ' + ACT_NAME[a] + ' <span class="n">' + c[a] + '</span></span> &nbsp; '; });
+    el.innerHTML = h || '<span class="f">no hop yet</span>';
+  }
+  function routeI(idx) { var out = [], skipSpace = !$('runspace').checked; idx.forEach(function (i) { var g = HIST[i][2]; if (skipSpace && g === G.space) return; var k = String(g); if (!out.length || k !== out[out.length - 1].k) out.push({ k: k, i: i }); }); return out; }
   var relSegs = {}, runPaths = [], flashPts = [], flashPts2 = [];
   function hopIndex(tk) { var h = HIST[tk]; if (!h) return -1; var hs = RUNHOPS[h[1]] || []; for (var i = 0; i < hs.length; i++) if (hs[i] === tk) return i; return -1; }
   function hopText(tk) {
     var h = HIST[tk]; if (!h) return '';
+    actsOfRun(h[1]);   // tries/44
     var hs = RUNHOPS[h[1]] || [], i = hopIndex(tk), row = SHARDROW[h[3]];
     var s = 'hit ' + tk + ' of ' + (HIST.length - 1) + ' · run ' + h[1] + ', hop ' + i + ' of ' + (hs.length - 1) + ' · ' + nameOf(h[2]) + ' (gate ' + h[2] + ') · shard ' + h[3];
     if (row) s += ' · before ' + (row[2] === null ? '∅' : nameOf(row[2])) + ', trigger ' + (row[3] === null ? (i >= hs.length - 1 ? '∅ (the run ends here)' : '∅ (row 0: excited, not arrived at along the line)') : nameOf(row[3])) + (row[4] !== null ? ' · calls run ' + row[4] : '') + (row[5] !== null ? ' · spawns run ' + row[5] : '') + ' · times ' + row[6];
     else s += ' · (that shard is not in any DNA table now)';
     if (h[2] === G.BUILD) s += ' · a BUILD gate';
+    if (ACT[tk]) s += ' · ' + ACT_NAME[ACT[tk]];   // tries/44: the kind of action at this hop
     return s;
   }
   function memRowsWanted() {
@@ -670,22 +858,24 @@
       Object.keys(NODE).forEach(function (k) { if ((k.charAt(0) === 'm' && !memSeen[k]) || (k.charAt(0) === 'g' && !ghostSeen[k])) hideNode(k); });
       var _t1 = performance.now(); var lines = buildSprings(atTk); var _t2 = performance.now(); scheduleComposition(lines);
       if (!keep) settle(30); var _t3 = performance.now();
-      var segs = {}; SPRINGS.forEach(function (sp) { if (!segs[sp.kind]) segs[sp.kind] = { pts: [], color: REL_COL[sp.kind] || 0x9aa3ad, opacity: sp.kind === 'memory' ? .1 : .22 }; segs[sp.kind].pts.push(sp.a.pos, sp.b.pos); });
+      var segs = {}; SPRINGS.forEach(function (sp) { if (!segs[sp.kind]) segs[sp.kind] = { pts: [], color: REL_COL[sp.kind] || 0x9aa3ad, opacity: sp.kind === 'memory' ? .05 : .1 }; segs[sp.kind].pts.push(sp.a.pos, sp.b.pos); });
       relSegs = segs; TIMES = { present: Math.round(_t1 - _t0), springs: Math.round(_t2 - _t1), settle: Math.round(_t3 - _t2), segs: Math.round(performance.now() - _t3), apart: Math.round(_apartMs), nsprings: SPRINGS.length, nlines: lines.length, npoints: Object.keys(NODE).length };
       runPaths = []; var mode = $('runmode').value;
       if (mode !== 'none' && h) {
         var seen = {};
-        var addPath = function (rid, upto) { var hs = RUNHOPS[rid] || [], idx = []; for (var i = 0; i < hs.length && hs[i] <= upto; i++) idx.push(hs[i]); var ks = route(idx).filter(function (k) { return NODE[k] && NODE[k].mesh.visible; }); if (ks.length < 2) return; runPaths.push({ rid: rid, nodes: ks.map(function (k) { return NODE[k]; }), branch: RUNS[rid] && RUNS[rid].kind !== 0, cur: rid === runNow }); seen[rid] = 1; };
+        var addPath = function (rid, upto) { var hs = RUNHOPS[rid] || [], idx = []; for (var i = 0; i < hs.length && hs[i] <= upto; i++) idx.push(hs[i]); actsOfRun(rid); var kis = routeI(idx).filter(function (p) { return NODE[p.k] && NODE[p.k].mesh.visible; }); if (kis.length < 2) return; runPaths.push({ rid: rid, nodes: kis.map(function (p) { return NODE[p.k]; }), acts: kis.map(function (p) { return ACT[p.i] || 'line'; }), branch: RUNS[rid] && RUNS[rid].kind !== 0, cur: rid === runNow }); seen[rid] = 1; };   // tries/44: each hop's kind rides along
         addPath(runNow, tk);
         if (mode === 'line' && CUR.root !== null) runsOfRoot(CUR.root).forEach(function (r) { if (!seen[r.id] && RUNT0[r.id] !== undefined && RUNT0[r.id] <= tk) addPath(r.id, tk); });
       }
+      renderActions(runNow, tk);   // tries/44: the kinds of action in the run shown, counted up to this tick
       Object.keys(NODE).forEach(function (k) { if (NODE[k].mesh) NODE[k].mesh.userData.hot = false; });
       flashPts = []; flashPts2 = [];
       if (h && NODE[String(h[2])] && NODE[String(h[2])].mesh.visible) { var hn = NODE[String(h[2])]; hn.mesh.userData.hot = true; var row = SHARDROW[h[3]]; if (row) { if (row[3] !== null && NODE[String(row[3])] && NODE[String(row[3])].mesh.visible) flashPts.push([hn, NODE[String(row[3])]]); [row[4], row[5]].forEach(function (rr) { if (rr !== null && FIRST[rr] !== undefined && NODE[String(FIRST[rr])] && NODE[String(FIRST[rr])].mesh.visible) flashPts2.push([hn, NODE[String(FIRST[rr])]]); }); } }
       if (SELG !== null && NODE[String(SELG)] && NODE[String(SELG)].mesh.visible) NODE[String(SELG)].mesh.userData.hot = true;
     }
     var hs = h ? (RUNHOPS[h[1]] || []) : [], hi = h ? hopIndex(tk) : -1;
-    $('readout').textContent = h ? 'hop ' + hi + ' of ' + (hs.length - 1) + ' in run ' + h[1] : 'hop 0 of 0';
+    var alive = 0; if (h && WAVE[tk] !== undefined) { var wseen = {}; for (var wi = tk; wi >= 0 && WAVE[wi] === WAVE[tk]; wi--) wseen[HIST[wi][1]] = 1; alive = Object.keys(wseen).length; }
+    $('readout').textContent = h ? 'hop ' + hi + ' of ' + (hs.length - 1) + ' in run ' + h[1] + (alive > 1 ? ' · ' + alive + ' runs alive this hop' : '') : 'hop 0 of 0';
     $('time').max = Math.max(0, hs.length - 1); $('time').value = Math.max(0, hi);
     $('hist').max = Math.max(0, HIST.length - 1); $('hist').value = Math.max(0, tk);
     $('histout').textContent = HIST.length ? 'hit ' + Math.max(0, tk) + ' of ' + (HIST.length - 1) + (tk < 0 ? ': before the first line, the hand-laid core alone' : tk === HIST.length - 1 ? ': the brain as it stands now' : '') : 'hit 0 of 0';
@@ -715,7 +905,7 @@
     if (!hasGL) return;
     var rs = {}; Object.keys(relSegs).forEach(function (k) { rs[k] = { pts: relSegs[k].pts.map(function (p) { return p.clone().multiplyScalar(SP); }), color: relSegs[k].color, opacity: relSegs[k].opacity }; }); drawLines(relGroup, rs);
     while (runGroup.children.length) { var c = runGroup.children.pop(); c.geometry.dispose(); c.material.dispose(); }
-    runPaths.forEach(function (rp) { var line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(rp.nodes.map(function (n) { return n.pos.clone().multiplyScalar(SP).add(unit('j' + rp.rid).multiplyScalar(1.2)); })), new THREE.LineBasicMaterial({ color: rp.branch ? 0xf28c4b : 0xf2efe6, transparent: true, opacity: rp.cur ? 1 : .3 })); line.userData.run = rp.rid; runGroup.add(line); });
+    runPaths.forEach(function (rp) { var geo = new THREE.BufferGeometry().setFromPoints(rp.nodes.map(function (n) { return n.pos.clone().multiplyScalar(SP).add(unit('j' + rp.rid).multiplyScalar(1.2)); })); var cols = []; rp.nodes.forEach(function (n, j) { var c = new THREE.Color(ACT_COL[(rp.acts && rp.acts[j]) || (rp.branch ? 'branch' : 'line')]); cols.push(c.r, c.g, c.b); }); geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3)); var line = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: rp.cur ? 1 : .3 })); line.userData.run = rp.rid; runGroup.add(line); });   /* tries/44: each hop's vertex carries the colour of its kind of action */
     var fp = []; flashPts.forEach(function (p) { fp.push(p[0].pos.clone().multiplyScalar(SP), p[1].pos.clone().multiplyScalar(SP)); }); flashGeo.dispose(); flashGeo = new THREE.BufferGeometry().setFromPoints(fp); flash.geometry = flashGeo; flash.visible = fp.length > 0;
     var fp2 = []; flashPts2.forEach(function (p) { fp2.push(p[0].pos.clone().multiplyScalar(SP), p[1].pos.clone().multiplyScalar(SP)); }); flashGeo2.dispose(); flashGeo2 = new THREE.BufferGeometry().setFromPoints(fp2); flash2.geometry = flashGeo2; flash2.visible = fp2.length > 0;
   }
@@ -735,7 +925,7 @@
   function chooseRun(id, hop, then) {
     var R = RUNS[id]; if (!R) return; var hs = RUNHOPS[id] || [];
     CUR.run = id; CUR.root = R.root === null ? id : R.root;
-    refreshMem(function () { renderTree(); renderRun(); render(hs.length ? hs[Math.min(hs.length - 1, hop || 0)] : TK, true); if (then) then(); });
+    loadGates(gatesOfRun(CUR.root)).catch(function () {}).then(function () { refreshMem(function () { renderTree(); renderRun(); render(hs.length ? hs[Math.min(hs.length - 1, hop || 0)] : TK, true); if (then) then(); }); });
   }
   function renderTree() {
     var el = $('tree'); if (CUR.root === null) { el.innerHTML = '<div><span class="note">No line chosen.</span></div>'; $('treesum').textContent = ''; return; }
@@ -898,12 +1088,14 @@
   function advance(k) {
     if (TK >= HIST.length - 1) { setPlay(false); return; }
     var nt = Math.min(HIST.length - 1, TK + k);
+    if (k === 1 && WAVE[TK + 1] !== undefined) { nt = TK + 1; while (nt + 1 < HIST.length && WAVE[nt + 1] === WAVE[TK + 1]) nt++; }   // tries/41: one hop = every run alive at this clock, one hit each
     if (!$('followrun').checked && CUR.run !== null) { var hs = RUNHOPS[CUR.run] || [], last = hs.length ? hs[hs.length - 1] : TK; if (TK >= last) { setPlay(false); return; } nt = Math.min(nt, last); }
     render(nt, true);
   }
 
   // ---- selected: a gate read in full from the brain's tables
   function showNode(g) {
+    if (!LOADED[g]) { loadGates([g]).catch(function () {}).then(function () { if (LAB[g] !== undefined) showNode(g); }); return; }
     if (LAB[g] === undefined) return; SELG = g; var role = roleOf(g);
     var h = '<b>' + esc(nameOf(g)) + '</b><span class="m">gate ' + g + ' · ' + esc(ROLETEXT[role] || role) + (hasCall(g) ? ' · a shard of it calls or spawns a run' : '') + '</span>';
     var lineBy = {}; ALLLINES.forEach(function (l) { if (l[0] === String(g) || l[1] === String(g)) lineBy[l[2]] = (lineBy[l[2]] || 0) + 1; });
@@ -1036,11 +1228,27 @@
     });
   }
   open(0);
+  // tries/41: the stream. Every 2 s: the door's counters (not a read of the brain); when runs ended since the last look, the ones by id
+  // (keyed) tell whether a new typed line ended or a run under a line the page shows; then the light bundle is read again and drawn.
+  // tries/43: a run's end arrives on the stream; the runs are read by id (keyed) and, when a typed line ended or a run under a line shown
+  // ended, the light bundle is read again and drawn. No timer: ids that arrive while the page is busy wait for the next event.
+  var WATCHING = false, WATCHPEND = [];
+  function runsById(ids) { return qIn('SELECT r.id, r.arrival, r.parent, r.root, r.kind FROM main.run r WHERE r.id IN (%IN%)', ids, [], 400); }
+  function watch(ids) {
+    if (ids && ids.length) WATCHPEND = WATCHPEND.concat(ids);
+    if (!ready || busy || WATCHING || !WATCHPEND.length) return; WATCHING = true;
+    var take = WATCHPEND.splice(0, 2000);
+    runsById(take).then(function (rows) {
+      var want = rows.some(function (r) { return (r[4] === 0 && r[1] === G.heard) || (r[3] !== null && ROOTS[r[3]]) || ROOTS[r[0]]; });
+      if (!want || playing) return;
+      return loadBundle().then(function () { renderAll(); renderOut(); refreshMem(function () { render(TK, true); }); });
+    }).catch(function () {}).then(function () { WATCHING = false; if (WATCHPEND.length) watch(); });
+  }
 
   // ---- camera, pointer, frame (17.3's)
   var theta = 0, phi = 1.45, dist = 160, tgt = hasGL ? new THREE.Vector3(0, 0, 0) : null;
   function updateCam() { camera.position.set(tgt.x + dist * Math.sin(phi) * Math.sin(theta), tgt.y + dist * Math.cos(phi), tgt.z + dist * Math.sin(phi) * Math.cos(theta)); camera.lookAt(tgt); }
-  window.__poc = { times: function () { return TIMES; }, ready: function () { return ready; }, busy: function () { return busy; }, counts: function () { return COUNTS; }, gates: function () { return LABLIST.length; }, dna: function () { return DNA.length; }, springs: function () { return SPRINGS.length; }, nodes: function () { return Object.keys(NODE).filter(function (k) { return NODE[k].mesh && NODE[k].mesh.visible; }).length; },
+  window.__poc = { xyzHeld: function () { return Object.keys(XYZ).length; }, memNodes: function () { return Object.keys(NODE).filter(function (k) { return k.charAt(0) === 'm' && NODE[k].mesh && NODE[k].mesh.visible; }).length; }, relLines: function () { var n = 0; Object.keys(relSegs).forEach(function (k) { n += relSegs[k].pts.length / 2; }); return n; }, acts: function () { return CUR.run !== null ? actCounts(CUR.run, TK) : {}; }, actOf: function (i) { return ACT[i]; }, legend: function () { return ($('actions') || {}).textContent; }, paths: function () { return runPaths.map(function (rp) { var o = {}; (rp.acts || []).forEach(function (a) { o[a] = (o[a] || 0) + 1; }); return { run: rp.rid, vertices: rp.nodes.length, kinds: o, cur: rp.cur }; }); }, stream: function () { return STREAM.state; }, told: function () { return STREAM.told; }, fetches: function () { return FETCHN; }, streamCounts: function () { return { moves: STREAM.moves, ends: STREAM.ends, passes: STREAM.passes }; }, tab: function () { return TAB; }, light: true, hist: function () { return HIST.length; }, waves: function () { return WAVEN; }, loaded: function () { return Object.keys(LOADED).length; }, times: function () { return TIMES; }, ready: function () { return ready; }, busy: function () { return busy; }, counts: function () { return COUNTS; }, gates: function () { return LABLIST.length; }, dna: function () { return DNA.length; }, springs: function () { return SPRINGS.length; }, nodes: function () { return Object.keys(NODE).filter(function (k) { return NODE[k].mesh && NODE[k].mesh.visible; }).length; },
     kinds: function () { var o = {}; SPRINGS.forEach(function (sp) { o[sp.kind] = (o[sp.kind] || 0) + 1; }); return o; },
     positions: function () { var o = {}; Object.keys(NODE).forEach(function (k) { if (NODE[k].mesh && NODE[k].mesh.visible) o[k] = [NODE[k].pos.x, NODE[k].pos.y, NODE[k].pos.z]; }); return o; },
     cur: function () { return { root: CUR.root, run: CUR.run, hops: CUR.run !== null ? (RUNHOPS[CUR.run] || []).length : 0, tk: TK, hits: HIST.length }; }, chooseRun: chooseRun, showNode: showNode, send: send, render: render, last: function () { return LAST; }, shown: function () { return SHOWN.length; }, lines: function () { return LINESF.length; },

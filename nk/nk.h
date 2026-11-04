@@ -105,7 +105,7 @@ uint64_t seqhash(const int *seq, int n);
 Shard *shard_by_id(Brain *b, int gate, i64 id);
 Shard *hop_shard(Brain *b); i64 hop_id(Brain *b); i64 nk_shard_rows(Brain *b); void nk_count_rows(Brain *b);
 /* the place of a point and the pull of its relationships (nkxyz.c) */
-int nk_xyz_open(const char *path); void nk_xyz_land(Brain *b, int gate, i64 shard, int before, int next, i64 run); void nk_xyz_settle(Brain *b, int passes, char *out, size_t cap); int nk_xyz_get(int gate, double *x, double *y, double *z, i64 *shard, int *before, int *next, i64 *at, i64 *run, int *moved); int nk_xyz_set(Brain *b, int gate, double x, double y, double z); void nk_xyz_sync(void);
+int nk_xyz_open(const char *path); void nk_xyz_land(Brain *b, int gate, i64 shard, int before, int next, i64 run, int pos); void nk_xyz_settle(Brain *b, int passes, char *out, size_t cap); void nk_xyz_restep(Brain *b, i64 clock, const int *gates, int ngates, char *out, size_t cap); void nk_xyz_moved(Brain *b, i64 clock, int limit, char *out, size_t cap); void nk_xyz_base(Brain *b, const char *path); int nk_xyz_get(int gate, double *x, double *y, double *z, i64 *shard, int *before, int *next, i64 *at, i64 *run, int *moved); int nk_xyz_set(Brain *b, int gate, double x, double y, double z); void nk_xyz_sync(void);
 i64    now_ns(void);
 int    label_gate(Brain *b, const char *sym);           /* 0 when the symbol has no gate */
 int    label_new(Brain *b, const char *sym);            /* the next gate, born into the encoder (no neuron region yet) */
@@ -119,7 +119,9 @@ void   cell_set(Brain *b, i64 run, int cell, int state, const char *value);   /*
 const char *cell_get(Brain *b, i64 run, int cell);                            /* state 1 and value not null, else NULL */
 void   line_in(Brain *b, int which, const char *text);     /* which: 0 input (heard), 1 third */
 void   secondary_in(Brain *b, i64 run, int cell, int gate, int about, const char *text, i64 src);
-const int *nk_seq(Brain *b, i64 run, int *n);               /* a run's symbols: held, or a replay's source, or re-cut from the source row */
+const int *nk_seq(Brain *b, i64 run, int *n);
+int nk_learn_text(Brain *b, const char *s);                     /* C27 back population: every symbol of a text given a gate under the encoder as it stands (label_new); the count born */
+int nk_merge(Brain *b, int h, int t, char *out, size_t cap);    /* C28 (the owner, 11-04 05:00): the hand laid neuron h merges into the neuron t of its word: shards (ids kept), node rows, memories, about, hits, arrived; the symbol of h names t */               /* a run's symbols: held, or a replay's source, or re-cut from the source row */
 int    nk_receipts(Brain *b, i64 run, Rc **out, int *kept);   /* a run's receipts: held, or re-hopped from its symbols (kept = 0) */
 const char *nk_source_text(int gate, i64 src);              /* nkio: the text of a source row (the source named by its gate) */
 void   replay_push(Brain *b, i64 parent, i64 source, int kind);          /* from a formula: made from the receipt being pasted */

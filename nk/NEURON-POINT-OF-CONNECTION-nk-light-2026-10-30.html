@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Point Of Connection nk light</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: graph modifiers in a left rail, the stage in the middle, typing and run details in a right rail. Each rail scrolls on its own. On a phone: stage, then the run rail, then the graph rail. */
+  :root {
+    --bg: #f5f3ee; --fg: #1e1c18; --muted: #6b655a; --line: #d9d3c7; --panel: #ebe7de; --panel2: #e2ddd1;
+    --accent: #1f7a4d; --warn: #b23a3a; --stage: #0c0e12; --stage-fg: #f2efe6;
+    --told: #9aa3ad; --taught: #d9a441; --learned: #6ea8fe; --automated: #5fcf92; --absent: #b23a3a; --derived: #f2a65a;
+    --display: "IBM Plex Serif", Georgia, serif; --body: "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif; --mono: "IBM Plex Mono", Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #1b1a17; --fg: #ece8df; --muted: #a39d90; --line: #3a372f; --panel: #26241f; --panel2: #2f2c26; --accent: #5fcf92; --warn: #e07a7a; color-scheme: dark; } }
+  :root[data-theme="dark"] { --bg: #1b1a17; --fg: #ece8df; --muted: #a39d90; --line: #3a372f; --panel: #26241f; --panel2: #2f2c26; --accent: #5fcf92; --warn: #e07a7a; color-scheme: dark; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 14.5px; line-height: 1.5; }
+  .app { height: 100%; display: grid; grid-template-columns: 290px minmax(0, 1fr) 410px; grid-template-rows: auto minmax(0, 1fr); }
+  header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; border-bottom: 1px solid var(--line);
+    padding-block: 8px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  h1 { font-family: var(--display); font-weight: 600; font-size: 1.25rem; margin: 0; }
+  header p { margin: 0; color: var(--muted); max-width: 110ch; font-size: .9rem; }
+  header a { color: var(--accent); }
+  .stage { position: relative; background: var(--stage); min-width: 0; min-height: 0; }
+  .stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .hud { position: absolute; left: 12px; bottom: 12px; right: 12px; color: var(--stage-fg); font-family: var(--mono); font-size: 12.5px; opacity: .94; pointer-events: none; display: flex; flex-direction: column; gap: 3px; max-width: 76ch; }
+  .hud b { font-weight: 500; }
+  .hud .ev { font-family: var(--body); font-size: 13.5px; background: rgba(12,14,18,.75); padding: 6px 8px; border-radius: 4px; }
+  .axis { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; justify-content: space-between; color: #8b929c; font-family: var(--mono); font-size: 11.5px; pointer-events: none; }
+  .err { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: var(--stage-fg); padding: 24px; text-align: center; }
+  aside { background: var(--panel); min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; }
+  aside.left { border-right: 1px solid var(--line); }
+  aside.right { border-left: 1px solid var(--line); }
+  .inner { padding-block: 12px 40px; padding-left: max(14px, env(safe-area-inset-left, 0px)); padding-right: 14px; display: flex; flex-direction: column; gap: 16px; }
+  aside.right .inner { padding-left: 14px; padding-right: max(14px, env(safe-area-inset-right, 0px)); }
+  h2 { font-family: var(--mono); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; font-weight: 500; }
+  section { display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  input[type=text] { font: inherit; font-family: var(--mono); font-size: .86rem; flex: 1 1 14em; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--fg); }
+  button, select { font: inherit; font-family: var(--mono); font-size: .76rem; padding: 5px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel2); color: var(--fg); cursor: pointer; text-align: left; }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  label.chk { display: flex; gap: 8px; align-items: center; font-size: .84rem; }
+  input[type=range] { width: 100%; min-width: 0; accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  .rels { display: grid; grid-template-columns: auto 10px minmax(0, 1fr) 62px auto; gap: 3px 6px; align-items: center; font-size: .74rem; font-family: var(--mono); }
+  .rels .sw { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .rels input[type=range] { margin: 0; }
+  .rels .n { color: var(--muted); text-align: right; white-space: nowrap; }
+  .cells { width: 100%; border-collapse: collapse; font-size: .74rem; font-family: var(--mono); }
+  .cells td, .cells th { padding: 3px 5px; border-bottom: 1px solid rgba(127,127,127,.22); vertical-align: top; text-align: left; word-break: break-word; }
+  .cells .e { color: var(--warn); } .cells .f { color: var(--muted); } .cells .ok { color: var(--accent); }
+  .readout { font-family: var(--mono); font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .now { background: var(--panel2); border-left: 3px solid var(--accent); border-radius: 0 5px 5px 0; padding: 8px 10px; font-size: .88rem; display: flex; flex-direction: column; gap: 4px; }
+  .now .k { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+  .log { max-height: 250px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); font-size: .78rem; }
+  .log div { padding: 4px 8px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; grid-template-columns: 3.2em 5.6em 1fr; gap: 8px; }
+  .log div:last-child { border-bottom: 0; }
+  .log div.cur { background: var(--panel2); }
+  .log .t, .log .k { font-family: var(--mono); color: var(--muted); }
+  .log .gap, .log .waiting { color: var(--warn); } .log .taught, .log .learned, .log .automated, .log .derived, .log .check { color: var(--accent); }
+  .busy { font-family: var(--mono); font-size: .8rem; color: var(--warn); }
+  pre.code { font-family: var(--mono); font-size: .7rem; background: var(--panel2); border-radius: 5px; padding: 8px; overflow-x: auto; white-space: pre; max-height: 360px; }
+  .gaps { display: flex; flex-direction: column; gap: 6px; font-size: .84rem; }
+  .gap { border-left: 3px solid var(--warn); padding: 5px 9px; background: var(--panel2); border-radius: 0 5px 5px 0; }
+  .gap .who { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+  .counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .stat { background: var(--panel2); border-radius: 5px; padding: 6px 9px; display: flex; flex-direction: column; min-width: 0; }
+  .stat b { font-family: var(--mono); font-size: 1rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: .7rem; color: var(--muted); }
+  .ledger { display: grid; grid-template-columns: 6.5em 1fr 3.5em; gap: 3px 8px; align-items: center; font-family: var(--mono); font-size: .74rem; }
+  .ledger .bar { height: 9px; background: var(--panel2); border-radius: 2px; overflow: hidden; } .ledger .bar i { display: block; height: 100%; background: var(--accent); width: 0; }
+  .ledger .n { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  table { border-collapse: collapse; width: 100%; font-size: .78rem; }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  .tw { overflow-x: auto; }
+  .badge { font-family: var(--mono); font-size: .68rem; padding: 1px 6px; border-radius: 3px; color: #111; white-space: nowrap; }
+  .b-told { background: var(--told); } .b-taught { background: var(--taught); } .b-learned { background: var(--learned); } .b-automated { background: var(--automated); } .b-absent { background: var(--absent); color: #fff; } .b-derived { background: var(--derived); }
+  .meter { height: 10px; background: var(--panel2); border-radius: 3px; overflow: hidden; display: flex; }
+  .meter i { display: block; height: 100%; }
+  .sel { background: var(--panel2); border-radius: 5px; padding: 9px 11px; font-size: .84rem; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .sel .mono { font-family: var(--mono); font-size: .74rem; word-break: break-word; } .sel .m { color: var(--muted); }
+  ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 5px; font-size: .84rem; }
+  p { margin: 0; } .note { font-size: .8rem; color: var(--muted); }
+  .q { font-family: var(--mono); font-size: .76rem; background: var(--panel2); border-radius: 4px; padding: 6px 8px; word-break: break-word; }
+  @media (max-width: 1180px) { .app { grid-template-columns: 250px minmax(0, 1fr) 350px; } }
+  @media (max-width: 900px) {
+    html, body { height: auto; }
+    .app { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 62vh auto auto; }
+    .stage { grid-row: 2; min-height: 62vh; }
+    aside.right { grid-row: 3; border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+    aside.left { grid-row: 4; border-right: 0; border-top: 1px solid var(--line); overflow: visible; }
+  }
+  .tabs { position: sticky; top: 0; z-index: 2; display: flex; gap: 4px; padding: 8px 14px 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .tabs button { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: -1px; }
+  .tabs button[aria-selected="true"] { background: var(--bg); color: var(--accent); border-bottom-color: var(--bg); }
+  .inner[hidden] { display: none; }
+  .mkinds { display: grid; grid-template-columns: auto 10px minmax(0, 1fr) auto; gap: 6px 7px; align-items: center; font-size: .8rem; }
+  .mkinds .sw { width: 10px; height: 10px; border-radius: 2px; } .mkinds .n { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; } .mkinds .m, .maxes .m, #mlast .m, #msum .m { color: var(--muted); font-size: .74rem; }
+  .maxes { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 8px; align-items: center; font-size: .8rem; } .maxes select { min-width: 0; max-width: 100%; }
+  .mlist { font-family: var(--mono); font-size: .72rem; max-height: 220px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); }
+  .mlist div { padding: 3px 7px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 2.2em minmax(0, 1fr) auto; gap: 6px; cursor: pointer; } .mlist div.last { background: var(--panel2); } .mlist .m { color: var(--muted); }
+  #mlast, #msum { font-size: .8rem; line-height: 1.45; overflow-wrap: anywhere; }
+  #panelm select { max-width: 100%; min-width: 0; }
+  .rels { grid-template-columns: auto 10px minmax(0, 1fr) 48px auto 70px; }
+  .rels select.dir { font-size: .64rem; padding: 0 1px; max-width: 70px; }
+  .atlasbtn { position: absolute; top: 10px; right: 10px; z-index: 3; font-family: var(--mono); font-size: .8rem; padding: 6px 12px; border-radius: 5px; border: 1px solid #4a4f58; background: rgba(12,14,18,.85); color: var(--stage-fg); cursor: pointer; }
+  .atlas { position: absolute; inset: 0; z-index: 4; background: var(--bg); color: var(--fg); display: flex; flex-direction: column; min-width: 0; }
+  .atlas[hidden] { display: none; }
+  .atop { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .atop input[type=text] { flex: 1 1 10em; max-width: 18em; }
+  .asum { padding: 6px 10px; font-size: .8rem; line-height: 1.45; border-bottom: 1px solid var(--line); }
+  .atlas .m { color: var(--muted); } .atlas .no { color: var(--warn); }
+  .atw { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  .atlas table { border-collapse: collapse; font-family: var(--mono); font-size: .72rem; width: max-content; min-width: 100%; }
+  .atlas th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 5px 7px; border-bottom: 1px solid var(--line); white-space: nowrap; z-index: 1; }
+  .atlas td { padding: 4px 7px; border-bottom: 1px solid var(--line); vertical-align: top; max-width: 34ch; overflow-wrap: anywhere; }
+  .atlas td.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .atlas tr.arow { cursor: pointer; } .atlas tr.arow:hover td { background: var(--panel); }
+  .atlas tr.det td { background: var(--panel); white-space: pre-wrap; max-width: none; }
+
+/* the light page (2026-10-30): the same look; every read by key, one run at a time, nothing whole */
+#nk { display: grid; grid-template-columns: 300px 1fr 360px; grid-template-rows: auto 1fr; height: 100vh; gap: 0; }
+#nk > header { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 18px; padding: 10px 16px; border-bottom: 1px solid var(--line, #22262d); }
+#nk > header h1 { font-size: 1.05rem; margin: 0; }
+#nk .col { overflow: auto; padding: 12px 14px; border-right: 1px solid var(--line, #22262d); }
+#nk .col.right { border-right: 0; border-left: 1px solid var(--line, #22262d); }
+#nk #stagewrap { position: relative; min-width: 0; min-height: 0; }
+#nk #c { width: 100%; height: 100%; display: block; }
+#nk .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 12px; }
+#nk .tile { padding: 6px 8px; border: 1px solid var(--line, #22262d); border-radius: 6px; }
+#nk .tile b { display: block; font-family: var(--mono); font-size: 1.05rem; font-weight: 500; }
+#nk .tile span { font-size: .7rem; color: var(--muted, #8b95a2); }
+#nk .lines div { padding: 4px 6px; border-radius: 4px; cursor: pointer; font-family: var(--mono); font-size: .72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#nk .lines div:hover { background: rgba(255,255,255,.05); }
+#nk .lines div.cur { background: rgba(242,140,75,.15); }
+#nk .lines div .who { color: var(--muted, #8b95a2); margin-right: 6px; }
+#nk #prompt { display: flex; gap: 6px; margin: 6px 0; }
+#nk #prompt input[type=text] { flex: 1; font-family: var(--mono); font-size: .8rem; padding: 6px 8px; background: #11141a; color: inherit; border: 1px solid var(--line, #22262d); border-radius: 6px; }
+#nk #prompt select, #nk #prompt button { font-family: var(--mono); font-size: .75rem; padding: 6px 8px; background: #11141a; color: inherit; border: 1px solid var(--line, #22262d); border-radius: 6px; cursor: pointer; }
+#nk #overlay { position: absolute; left: 12px; right: 12px; bottom: 10px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+#nk #overlay > * { pointer-events: auto; }
+#nk #readout { font-family: var(--mono); font-size: .72rem; color: #cfd6de; background: rgba(12,14,18,.75); padding: 6px 10px; border-radius: 6px; }
+#nk #controls { display: flex; align-items: center; gap: 10px; background: rgba(12,14,18,.75); padding: 6px 10px; border-radius: 6px; font-size: .72rem; }
+#nk #controls input[type=range] { flex: 1; }
+#nk #controls button { font-family: var(--mono); font-size: .72rem; padding: 3px 8px; background: #11141a; color: inherit; border: 1px solid var(--line, #22262d); border-radius: 5px; cursor: pointer; }
+#nk #busy { position: absolute; left: 12px; top: 10px; font-family: var(--mono); font-size: .72rem; color: #cfd6de; background: rgba(12,14,18,.75); padding: 6px 10px; border-radius: 6px; max-width: 70%; }
+#nk table.t { width: 100%; border-collapse: collapse; font-size: .72rem; }
+#nk table.t td, #nk table.t th { padding: 3px 5px; border-bottom: 1px solid rgba(255,255,255,.06); vertical-align: top; text-align: left; }
+#nk table.t td.m { font-family: var(--mono); white-space: nowrap; }
+#nk .tree div { font-family: var(--mono); font-size: .7rem; padding: 2px 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#nk .tree div:hover { background: rgba(255,255,255,.05); }
+#nk .back div { font-family: var(--mono); font-size: .7rem; padding: 2px 4px; }
+#nk h2 { margin: 12px 0 6px; }
+#nk .small { font-size: .7rem; color: var(--muted, #8b95a2); }
+#nk .card { font-size: .74rem; }
+#nk .card .w { font-family: var(--mono); font-size: 1rem; }
+</style>
+</head>
+<body>
+<div id="nk">
+  <header>
+    <h1>Point Of Connection nk <span class="small">light</span></h1>
+    <div id="hud" class="small">opening the door…</div>
+    <div class="small" style="margin-left:auto"><a href="/full" style="color:inherit">the whole-brain page</a></div>
+  </header>
+  <div class="col left">
+    <div class="tiles" id="tiles"></div>
+    <h2>Type</h2>
+    <div id="prompt"><select id="who"><option value="main">user</option><option value="sixth">6&gt;</option></select><input type="text" id="line" placeholder="a line for the brain" autocomplete="off"><button id="go">type</button></div>
+    <p class="note small">A typed line is one row in the brain's input; the brain lays the rest. The page then reads that run alone.</p>
+    <h2>The newest lines</h2>
+    <div class="lines" id="newest"></div>
+    <h2>Lines the sixth sent</h2>
+    <div class="lines" id="told"></div>
+  </div>
+  <div id="stagewrap">
+    <canvas id="c"></canvas>
+    <div id="busy">opening…</div>
+    <div id="overlay">
+      <div id="readout">no run yet</div>
+      <div id="controls"><label style="white-space:nowrap"><input type="checkbox" id="follow" checked> follow the brain</label>
+        <button id="play">play</button><button id="stepb">‹</button><button id="stepf">›</button>
+        <input type="range" id="time" min="0" max="0" value="0" aria-label="hop within the run">
+        <span id="tv" style="font-family:var(--mono)">0 / 0</span>
+        <label>speed <select id="speed"><option>2</option><option selected>8</option><option>30</option><option>120</option></select></label>
+        <label>space between <input type="range" id="gap" min="0" max="500" step="0.5" value="15" style="width:120px"> <span id="gapv">15</span></label>
+        <label>spacing <input type="range" id="spacing" min="1" max="100" step="1" value="21" style="width:100px"> <span id="spv">×21</span></label>
+      </div>
+    </div>
+  </div>
+  <div class="col right">
+    <h2>The run</h2>
+    <div id="runhead" class="small">no run chosen</div>
+    <h2>Its data sheet</h2>
+    <table class="t" id="cells"><tbody></tbody></table>
+    <h2>Step back</h2>
+    <div class="back" id="back"></div>
+    <h2>The runs under it</h2>
+    <div class="tree" id="tree"></div>
+    <h2>The neuron</h2>
+    <div class="card" id="card">click a point</div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtN(n) { return (n == null ? '' : n).toLocaleString('en-US'); }
+  function api(path, body) { return fetch(path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}).then(function (r) { return r.json(); }); }
+
+  // ---- what the page holds: one run and the part of the graph it touched; the brain's counters
+  var STATS = null, RUN = null, SCHEMA = 'main', TK = 0, playing = false, ready = false;
+  var GATES = {}, NAMES = {};
+  function nameOf(g) { if (GATES[g]) return GATES[g].s; if (NAMES[g]) return NAMES[g]; return g ? '#' + g : '∅'; }
+  function sym(g) { var s = nameOf(g); return s === ' ' ? '␣' : s; }
+
+  // ---- the stage: 17.3's drawing (springs only, one fixed point, a space between points), on the points of one run
+  var renderer, scene, camera, hasGL = true;
+  try { if (!window.THREE) throw 0; renderer = new THREE.WebGLRenderer({ canvas: $('c'), antialias: true }); } catch (e) { hasGL = false; }
+  if (hasGL) { renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); scene = new THREE.Scene(); scene.background = new THREE.Color(0x0c0e12); camera = new THREE.PerspectiveCamera(40, 1, 1, 400000); }
+  function hash(s) { var h = 2166136261; for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  function unit(seed) { var a = (hash('a' + seed) / 4294967296) * 2 * Math.PI, z = (hash('z' + seed) / 4294967296) * 2 - 1, r = Math.sqrt(1 - z * z); return new THREE.Vector3(r * Math.cos(a), r * Math.sin(a), z); }
+  var dotGeo = hasGL ? new THREE.SphereGeometry(1, 10, 10) : null, dotGroup, labelGroup, lineGroup, runGroup, flash;
+  if (hasGL) { dotGroup = new THREE.Group(); labelGroup = new THREE.Group(); lineGroup = new THREE.Group(); runGroup = new THREE.Group(); [lineGroup, runGroup, dotGroup, labelGroup].forEach(function (g) { scene.add(g); }); flash = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 12), new THREE.MeshBasicMaterial({ color: 0xffd36b, transparent: true, opacity: .55 })); flash.visible = false; scene.add(flash); }
+  var NODE = {}, SPRINGS = [], GAP = 15, SP = 21, FIXED = null;
+  var COLORS = { memory: 0x5fcf92, 'dna before': 0x6f8fb8, 'dna trigger': 0xb8a06f, like: 0x7ed07e, opposite: 0xd07e7e, other: 0x5a6270 };
+  function makeLabel(text, color, px) { var c = document.createElement('canvas'), ctx = c.getContext('2d'); ctx.font = '500 26px "IBM Plex Mono", Consolas, monospace'; var w = Math.ceil(ctx.measureText(text).width) + 14; c.width = w; c.height = 36; ctx.font = '500 26px "IBM Plex Mono", Consolas, monospace'; ctx.fillStyle = color; ctx.textBaseline = 'middle'; ctx.fillText(text, 7, 18); var tex = new THREE.CanvasTexture(c); tex.minFilter = THREE.LinearFilter; var sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, sizeAttenuation: false })); sp.userData = { px: px, aspect: w / 36 }; return sp; }
+  function sizeLabel(sp) { var y = sp.userData.px * 2.2 / ((renderer && renderer.domElement.clientHeight) || 800); sp.scale.set(y * sp.userData.aspect, y, 1); }
+  function colorOf(g, touched) { if (g === 1) return 0xfff1a8; if (g >= 7 && g <= 15) return 0x8fd3c1; if (g >= 2 && g <= 6) return 0xffffff; var G = GATES[g]; if (G && G.shards.some(function (s) { return s[3] || s[4]; })) return 0xf28c4b; return (G && G.nodes) ? 0x6ea8fe : (touched ? 0xbfc6cf : 0x5f6874); }
+  function clearStage() { if (!hasGL) return; [dotGroup, labelGroup, lineGroup, runGroup].forEach(function (g) { while (g.children.length) { var c = g.children.pop(); if (c.geometry) c.geometry.dispose(); if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } } }); NODE = {}; SPRINGS = []; flash.visible = false; }
+  function ensureNode(g, touched) {
+    var k = String(g), n = NODE[k]; if (n) return n;
+    var fixed = g === FIXED; n = NODE[k] = { key: k, g: g, pos: new THREE.Vector3(0, 0, 0), fixed: fixed, unplaced: !fixed, touched: !!touched, f: new THREE.Vector3() };
+    if (hasGL) { var col = colorOf(g, touched), r = g === 1 ? 2.4 : (g >= 7 && g <= 15) ? 2.0 : touched ? 1.2 : .7; n.mesh = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: touched ? .95 : .45 })); n.mesh.scale.setScalar(r); n.mesh.userData = { g: g, base: r }; dotGroup.add(n.mesh); n.label = makeLabel(sym(g), '#' + ('000000' + col.toString(16)).slice(-6), touched ? 12 : 9); labelGroup.add(n.label); }
+    return n;
+  }
+  function ensureMem(id, gates) {
+    if (!hasGL) return; var k = 'm:' + id, n = NODE[k]; if (n) return n;
+    n = NODE[k] = { key: k, g: gates[0], pos: new THREE.Vector3(0, 0, 0), fixed: false, unplaced: true, touched: false, mem: true, f: new THREE.Vector3() };
+    n.mesh = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color: 0x5fcf92, transparent: true, opacity: .95 })); n.mesh.scale.setScalar(.8); n.mesh.userData = { g: gates[0], base: .8 }; dotGroup.add(n.mesh);
+    n.label = makeLabel(' ', '#5fcf92', 9); labelGroup.add(n.label);
+    gates.forEach(function (g) { if (NODE[String(g)]) addSpring(k, g, 'memory', .6); }); return n;
+  }
+  function addSpring(a, b, kind, w) { if (a === b) return; var na = NODE[String(a)], nb = NODE[String(b)]; if (!na || !nb) return; SPRINGS.push({ a: na, b: nb, kind: kind, k: w || 1, rest: kind.indexOf('dna') === 0 ? 30 : 45 }); }
+  function placeNew() {
+    var nb = {}; SPRINGS.forEach(function (sp) { (nb[sp.a.key] = nb[sp.a.key] || []).push(sp.b); (nb[sp.b.key] = nb[sp.b.key] || []).push(sp.a); });
+    for (var pass = 0; pass < 4; pass++) Object.keys(NODE).forEach(function (k) {
+      var n = NODE[k]; if (!n.unplaced) return; var placed = (nb[k] || []).filter(function (m) { return !m.unplaced; }); if (!placed.length && pass < 3) return;
+      var c = new THREE.Vector3(); placed.forEach(function (m) { c.add(m.pos); }); if (placed.length) c.multiplyScalar(1 / placed.length);
+      n.pos.copy(c.add(unit('u' + k).multiplyScalar(placed.length ? 6 : 2))); n.unplaced = false;
+    });
+  }
+  var STEP = 0;
+  function settle(steps) {
+    // springs only: no push between points but the space between, no pull toward any shell; one point fixed
+    for (var s = 0; s < steps; s++) {
+      STEP++;
+      SPRINGS.forEach(function (sp) { sp.a.f.set(0, 0, 0); sp.b.f.set(0, 0, 0); });
+      SPRINGS.forEach(function (sp) { var d = sp.b.pos.clone().sub(sp.a.pos), L = d.length() || .01, f = d.multiplyScalar(sp.k * (L - sp.rest) / L * .04); if (!sp.a.fixed) sp.a.f.add(f); if (!sp.b.fixed) sp.b.f.sub(f); });
+      var fl = []; SPRINGS.forEach(function (sp) { fl.push(sp.a.f.length(), sp.b.f.length()); }); fl.sort(function (a, b) { return a - b; });
+      var p95 = fl.length ? fl[Math.floor(fl.length * .95)] : 0, sc = p95 > 4 ? 4 / p95 : 1;
+      SPRINGS.forEach(function (sp) { [sp.a, sp.b].forEach(function (n) { if (n.fixed || n.moved === STEP) return; n.moved = STEP; var s2 = n.f.clone().multiplyScalar(sc); if (s2.length() > 6) s2.setLength(6); n.pos.add(s2); }); });
+      if (GAP > 0) for (var cp = 0; cp < 3; cp++) spaceApart();
+    }
+  }
+  function spaceApart() {
+    var pts = Object.keys(NODE).map(function (k) { return NODE[k]; }), cell = {}, g = GAP;
+    pts.forEach(function (n) { var k = Math.floor(n.pos.x / g) + ',' + Math.floor(n.pos.y / g) + ',' + Math.floor(n.pos.z / g); (cell[k] = cell[k] || []).push(n); });
+    pts.forEach(function (n) {
+      var cx = Math.floor(n.pos.x / g), cy = Math.floor(n.pos.y / g), cz = Math.floor(n.pos.z / g);
+      for (var i = -1; i <= 1; i++) for (var j = -1; j <= 1; j++) for (var k = -1; k <= 1; k++) (cell[(cx + i) + ',' + (cy + j) + ',' + (cz + k)] || []).forEach(function (o) {
+        if (o === n || n.fixed || o.fixed) return; var d = n.pos.clone().sub(o.pos), L = d.length(); if (L >= g) return;
+        if (L < 1e-6) { d = unit('s' + n.key + '|' + o.key); L = 1e-6; } var push = d.normalize().multiplyScalar((g - L) / 2); n.pos.add(push); o.pos.sub(push);
+      });
+    });
+  }
+  function drawLines() {
+    if (!hasGL) return; while (lineGroup.children.length) { var c = lineGroup.children.pop(); c.geometry.dispose(); c.material.dispose(); }
+    var segs = {}; SPRINGS.forEach(function (sp) { (segs[sp.kind] = segs[sp.kind] || []).push(sp); });
+    Object.keys(segs).forEach(function (kind) { var pts = []; segs[kind].forEach(function (sp) { pts.push(sp.a.pos.x * SP, sp.a.pos.y * SP, sp.a.pos.z * SP, sp.b.pos.x * SP, sp.b.pos.y * SP, sp.b.pos.z * SP); }); var geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); lineGroup.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: COLORS[kind] || COLORS.other, transparent: true, opacity: kind.indexOf('dna') === 0 ? .35 : .6 }))); });
+  }
+  function drawRunLine() {
+    if (!hasGL || !RUN) return; while (runGroup.children.length) { var c = runGroup.children.pop(); c.geometry.dispose(); c.material.dispose(); }
+    var pts = []; var last = null; for (var i = 0; i < TK && i < RUN.hops.length; i++) { var n = NODE[String(RUN.hops[i][2])]; if (!n) continue; if (last) pts.push(last.pos.x * SP, last.pos.y * SP, last.pos.z * SP, n.pos.x * SP, n.pos.y * SP, n.pos.z * SP); last = n; }
+    if (pts.length) { var geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); runGroup.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xffd36b, transparent: true, opacity: .8 }))); }
+    var cur = TK > 0 && TK <= RUN.hops.length ? NODE[String(RUN.hops[TK - 1][2])] : null;
+    if (cur) { flash.visible = true; flash.position.set(cur.pos.x * SP, cur.pos.y * SP, cur.pos.z * SP); } else flash.visible = false;
+  }
+  function frame() {
+    if (hasGL) { var ds = dist / 260; Object.keys(NODE).forEach(function (k) { var n = NODE[k]; n.mesh.position.set(n.pos.x * SP, n.pos.y * SP, n.pos.z * SP); n.mesh.scale.setScalar(n.mesh.userData.base * ds); n.label.position.set(n.pos.x * SP, n.pos.y * SP + n.mesh.userData.base * ds * 1.6, n.pos.z * SP); n.label.visible = n.touched || dist < 600; sizeLabel(n.label); }); flash.scale.setScalar(3.2 * ds); drawLines(); drawRunLine(); updateCam(); renderer.render(scene, camera); }
+  }
+  // ---- the camera: the origin held, orbit by drag, zoom by wheel
+  var theta = .6, phi = 1.25, dist = 320, FIT = true;
+  function fit() { var r = 1; Object.keys(NODE).forEach(function (k) { var n = NODE[k]; var d = n.pos.length() * SP; if (d > r) r = d; }); dist = Math.min(20000, Math.max(40, r * 1.9)); }
+  function updateCam() { if (!hasGL) return; var w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight; if (renderer.domElement.width !== w * renderer.getPixelRatio() || renderer.domElement.height !== h * renderer.getPixelRatio()) { renderer.setSize(w, h, false); } camera.aspect = w / h; camera.updateProjectionMatrix(); camera.position.set(dist * Math.sin(phi) * Math.sin(theta), dist * Math.cos(phi), dist * Math.sin(phi) * Math.cos(theta)); camera.lookAt(0, 0, 0); }
+  (function () { var c = $('c'), drag = null; c.addEventListener('pointerdown', function (e) { drag = [e.clientX, e.clientY]; c.setPointerCapture(e.pointerId); }); c.addEventListener('pointermove', function (e) { if (!drag) return; theta -= (e.clientX - drag[0]) * .006; phi = Math.min(3.0, Math.max(.15, phi - (e.clientY - drag[1]) * .006)); drag = [e.clientX, e.clientY]; }); c.addEventListener('pointerup', function (e) { if (drag && Math.abs(e.clientX - drag[0]) < 2) pick(e); drag = null; }); c.addEventListener('wheel', function (e) { e.preventDefault(); FIT = false; dist = Math.min(20000, Math.max(20, dist * (e.deltaY > 0 ? 1.12 : .89))); }, { passive: false }); })();
+  var ray = hasGL ? new THREE.Raycaster() : null;
+  function pick(e) { if (!hasGL) return; var r = renderer.domElement.getBoundingClientRect(), m = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1); ray.setFromCamera(m, camera); ray.params.Points = {}; var hits = ray.intersectObjects(dotGroup.children, false); if (hits.length) showNeuron(hits[0].object.userData.g); }
+  var animLeft = 0, lastT = 0;
+  function loop(t) { requestAnimationFrame(loop); if (animLeft > 0) { settle(2); animLeft--; if (FIT) fit(); } if (playing && t - lastT > 1000 / (+$('speed').value)) { lastT = t; if (TK < (RUN ? RUN.hops.length : 0)) { TK++; setTime(); } else playing = false, $('play').textContent = 'play'; } frame(); }
+  requestAnimationFrame(loop);
+
+  // ---- a run: read by key, drawn whole
+  function loadRun(schema, id, cb, merge) {
+    $('busy').textContent = 'reading run ' + id + '…'; $('busy').style.display = '';
+    api('/api/run?schema=' + schema + '&id=' + id).then(function (r) {
+      if (r.error) { $('busy').textContent = r.error; return; }
+      if (!merge && ready) { FOLLOW = false; }   /* a line the owner clicked holds the stage; the first load does not stop the following */
+      var over = merge && Object.keys(NODE).length > 1400;
+      if (merge && !over && Object.keys(GATES).length) { Object.keys(r.gates).forEach(function (g) { GATES[g] = r.gates[g]; }); Object.keys(r.names).forEach(function (g) { NAMES[g] = r.names[g]; }); RUN = r; SCHEMA = schema; TK = r.hops.length; }
+      else { RUN = r; SCHEMA = schema; GATES = r.gates; NAMES = r.names; TK = r.hops.length; clearStage(); }
+      var touched = {}; r.hops.forEach(function (h) { touched[h[2]] = 1; });
+      if (!merge || over || FIXED === null) FIXED = touched[1] ? 1 : (r.hops.length ? r.hops[0][2] : (r.line && r.line[0]) || null);
+      Object.keys(r.gates).forEach(function (g) { ensureNode(+g, true); var n = NODE[g]; n.touched = true; if (hasGL) { n.mesh.material.color.setHex(colorOf(+g, true)); n.mesh.material.opacity = .95; } });
+      Object.keys(r.gates).forEach(function (g) { r.gates[g].shards.forEach(function (s) { if (s[1]) { ensureNode(s[1], false); addSpring(s[1], +g, 'dna before', 1 + Math.log(s[5] || 1)); } if (s[2]) { ensureNode(s[2], false); addSpring(+g, s[2], 'dna trigger', 1 + Math.log(s[5] || 1)); } }); GATES[g].rel.forEach(function (rr) { var kind = nameOf(rr[0]); ensureNode(rr[1], false); addSpring(+g, rr[1], kind === 'like' || kind === 'opposite' ? kind : 'other', .6); }); });
+      if (r.line && r.line.length) { ensureMem(r.run.id, r.line.filter(function (g) { return NODE[String(g)]; }).concat(r.mem_gate && NODE[String(r.mem_gate)] ? [r.mem_gate] : [])); }
+      placeNew(); settle(merge ? 12 : 60); animLeft = merge ? 16 : 40; FIT = true; fit();
+      $('time').max = r.hops.length; setTime();
+      renderRun(); renderNewest(); ready = true; $('follow').checked = FOLLOW;
+      var hopsNote = r.hops_sent < r.tree_hops ? ' (the first ' + fmtN(r.hops_sent) + ' of ' + fmtN(r.tree_hops) + ' hops drawn)' : '';
+      $('busy').textContent = 'run ' + id + ': ' + fmtN(r.tree_runs) + ' runs, ' + fmtN(r.tree_hops) + ' hops, ' + fmtN(Object.keys(GATES).length) + ' points touched, ' + fmtN(SPRINGS.length) + ' lines' + hopsNote;
+      if (cb) cb(r);
+    }).catch(function (e) { $('busy').textContent = 'the door did not answer: ' + e.message; });
+  }
+  function setTime() { $('time').value = TK; $('tv').textContent = TK + ' / ' + (RUN ? RUN.hops.length : 0); var h = RUN && TK > 0 ? RUN.hops[TK - 1] : null; if (!h) { $('readout').textContent = RUN ? 'before the first hop of run ' + RUN.run.id : 'no run yet'; return; } var G = GATES[h[2]], sh = G ? G.shards.filter(function (s) { return s[0] === h[3]; })[0] : null; $('readout').textContent = 'hop ' + TK + ' of ' + RUN.hops.length + ' · run ' + h[0] + ' pos ' + h[1] + ' · ' + sym(h[2]) + ' (gate ' + h[2] + ') · shard ' + h[3] + (sh ? ' · before ' + sym(sh[1]) + ', trigger ' + sym(sh[2]) + (sh[3] ? ', calls run ' + sh[3] : '') + (sh[4] ? ', spawns run ' + sh[4] : '') + ' · times ' + sh[5] : '') + (h[4] ? ' · via born' : '') + ' · receipt ' + h[5]; }
+  $('time').addEventListener('input', function () { TK = +this.value; setTime(); });
+  $('play').addEventListener('click', function () { if (!RUN) return; if (!playing && TK >= RUN.hops.length) TK = 0; playing = !playing; this.textContent = playing ? 'pause' : 'play'; });
+  $('stepf').addEventListener('click', function () { if (RUN && TK < RUN.hops.length) { TK++; setTime(); } });
+  $('stepb').addEventListener('click', function () { if (RUN && TK > 0) { TK--; setTime(); } });
+  $('follow').addEventListener('change', function () { FOLLOW = this.checked; });
+  $('gap').addEventListener('input', function () { GAP = +this.value; $('gapv').textContent = GAP; animLeft = 40; FIT = true; });
+  $('spacing').addEventListener('input', function () { SP = +this.value; $('spv').textContent = '×' + SP; if (FIT) fit(); });
+
+  function renderRun() {
+    var r = RUN.run; $('runhead').innerHTML = '<div><b>run ' + r.id + '</b> · arrived from ' + esc(sym(r.arrival)) + (r.parent ? ' · under run ' + r.parent : ' · a root') + (r.cell ? ' · for cell ' + esc(sym(r.cell)) : '') + (r.about ? ' · about ' + esc(sym(r.about)) : '') + ' · ' + fmtN(r.hops) + ' hops' + (r.ended ? ' · ended' : ' · no end yet') + (r.complete ? ' · complete' : '') + '</div><div class="small" style="margin-top:4px;word-break:break-word">' + esc(r.text) + '</div>';
+    var tb = $('cells').tBodies[0]; tb.innerHTML = '';
+    RUN.cells.forEach(function (c) { var tr = document.createElement('tr'); var v = c[3] && c[3].run ? ('run ' + c[3].run + ' from ' + sym(c[3].arrival) + ': ' + c[3].text) : c[3] && c[3].words != null ? (c[3].words + ' symbols: ' + c[3].text) : (c[2] == null ? '(empty)' : (String(c[2]).length > 240 ? String(c[2]).slice(0, 240) + '…' : c[2])); tr.innerHTML = '<td class="m">' + esc(sym(c[0])) + '</td><td>' + (c[1] ? '' : '<span class="small">open · </span>') + esc(v) + '</td>'; if (c[3] && c[3].run) { tr.style.cursor = 'pointer'; tr.addEventListener('click', function () { loadRun(SCHEMA, c[3].run); }); } tb.appendChild(tr); });
+    var bk = $('back'); bk.innerHTML = ''; RUN.back.forEach(function (b) { var d = document.createElement('div'); d.innerHTML = (b.depth ? '↑ ' : '• ') + 'run ' + b.run + ' from ' + esc(sym(b.arrival)) + (b.cell ? ' into ' + esc(sym(b.cell)) : '') + (b.hit ? ' · made at run ' + b.hit.run + ' pos ' + b.hit.pos + ' on ' + esc(sym(b.hit.gate)) + ' shard ' + b.hit.shard : ' · a line at a prompt') + ' · ' + esc(b.text); d.style.cursor = 'pointer'; d.addEventListener('click', function () { loadRun(SCHEMA, b.run); }); bk.appendChild(d); });
+    var tr = $('tree'); tr.innerHTML = ''; RUN.tree.forEach(function (t) { var d = document.createElement('div'); d.textContent = (t.id === RUN.run.id ? '• ' : '  ') + 'run ' + t.id + ' ' + sym(t.arrival) + (t.cell ? ' → ' + sym(t.cell) : '') + ' · ' + t.hops + ' hops · ' + t.text; d.addEventListener('click', function () { loadRun(SCHEMA, t.id); }); tr.appendChild(d); });
+  }
+  function shardRows(rows) { var h = '<table class="t"><tr><th>shard</th><th>before</th><th>trigger</th><th>call</th><th>spawn</th><th>times</th></tr>'; rows.forEach(function (s) { h += '<tr><td class="m">' + s[0] + '</td><td class="m">' + esc(sym(s[1])) + '</td><td class="m">' + esc(sym(s[2])) + '</td><td class="m">' + (s[3] || '') + '</td><td class="m">' + (s[4] || '') + '</td><td class="m">' + s[5] + '</td></tr>'; }); return h + '</table>'; }
+  function showNeuron(g) {
+    var G = GATES[g]; var h = '<div class="w">' + esc(sym(g)) + '</div><div class="small">gate ' + g + (G ? ' · ' + G.nodes + ' definition rows · ' + G.mem + ' memories · ' + G.nshards + ' DNA rows, ' + G.shards.length + ' of them hit by this run · ' + G.rel.length + ' relationship rows shown' : ' · not touched by this run') + '</div>';
+    if (G) { h += shardRows(G.shards); if (G.rel.length) h += '<div class="small" style="margin-top:6px">' + G.rel.map(function (r) { return esc(sym(r[0])) + ' ' + esc(sym(r[1])); }).join(' · ') + '</div>'; if (G.nshards > G.shards.length) h += '<div style="margin-top:6px"><button id="allsh" class="small">read all ' + G.nshards + ' DNA rows of ' + esc(sym(g)) + '</button></div>'; }
+    $('card').innerHTML = h;
+    var b = $('allsh'); if (b) b.addEventListener('click', function () {
+      b.textContent = 'reading…';
+      api('/api/q', { sql: 'SELECT shard, before, trigger, call, spawn, times FROM ' + SCHEMA + '.dna WHERE gate = ' + g + ' ORDER BY shard' }).then(function (r) {
+        var rows = r.rows || [], need = {}; rows.forEach(function (s) { [s[1], s[2]].forEach(function (x) { if (x && !GATES[x] && !NAMES[x]) need[x] = 1; }); });
+        var ids = Object.keys(need); var p = ids.length ? api('/api/q', { sql: 'SELECT gate, symbol FROM ' + SCHEMA + '.label WHERE gate IN (' + ids.join(',') + ')' }) : Promise.resolve({ rows: [] });
+        p.then(function (l) { (l.rows || []).forEach(function (x) { NAMES[x[0]] = x[1]; }); var box = document.createElement('div'); box.innerHTML = '<div class="small" style="margin-top:8px">every DNA row of ' + esc(sym(g)) + ' (read by its gate)</div>' + shardRows(rows); $('card').appendChild(box); b.remove(); });
+      });
+    });
+  }
+  // ---- the newest lines, the counters, the prompt
+  var NEWEST = null;
+  function renderNewest() {
+    if (!NEWEST) return; var box = $('newest'); box.innerHTML = ''; NEWEST.lines.forEach(function (l) { var d = document.createElement('div'); d.className = RUN && RUN.run.id === l.run ? 'cur' : ''; d.innerHTML = '<span class="who">' + l.run + '</span>' + esc(l.text) + (l.ended ? '' : ' <span class="small">…</span>'); d.title = l.text; d.addEventListener('click', function () { loadRun('main', l.run); }); box.appendChild(d); });
+    var t = $('told'); t.innerHTML = ''; NEWEST.told.forEach(function (l) { var d = document.createElement('div'); d.className = RUN && RUN.run.id === l.run ? 'cur' : ''; d.innerHTML = '<span class="who">' + l.run + '</span>' + esc(l.text); d.addEventListener('click', function () { loadRun('main', l.run); }); t.appendChild(d); });
+  }
+  function tiles() { var m = STATS.main, s = STATS.sixth; var T = [['points defined', fmtN(m.defined)], ['runs', fmtN(m.runs)], ['hops (receipts)', fmtN(m.receipts)], ['gates (points)', fmtN(m.gates)], ['DNA rows (shards)', fmtN(m.shards)], ['a hop, since start', m.hops_run ? m.hop_us.toFixed(2) + ' µs' : '–'], ['a paste to mother', m.pastes ? (m.paste_us / 1000).toFixed(1) + ' ms' : '–'], ['hops pending', fmtN(m.pending)], ['the sixth', fmtN(s.runs) + ' runs']]; $('tiles').innerHTML = T.map(function (t) { return '<div class="tile"><b>' + t[1] + '</b><span>' + t[0] + '</span></div>'; }).join(''); $('hud').textContent = fmtN(m.gates) + ' gates · ' + fmtN(m.shards) + ' shards · ' + fmtN(m.runs) + ' runs · ' + fmtN(m.receipts) + ' hops · nothing read whole'; }
+  function refresh(cb) { Promise.all([api('/api/stats'), api('/api/newest?schema=main&n=30')]).then(function (a) { STATS = a[0]; NEWEST = a[1]; tiles(); renderNewest(); if (cb) cb(); }); }
+  function typeLine() { var v = $('line').value.trim(); if (!v) return; var who = $('who').value; if (v.indexOf('6> ') === 0) { who = 'sixth'; v = v.slice(3); } $('line').value = ''; $('busy').textContent = 'the brain is running "' + v.slice(0, 60) + '"…'; api('/api/type', { line: v, prompt: who }).then(function (j) { var r = j.result; if (!r || j.error) { $('busy').textContent = 'the line stopped: ' + (j.error || 'no result'); return; } refresh(function () { loadRun(r.schema, r.run, function () { $('busy').textContent = 'the line ran in ' + r.seconds.toFixed(3) + ' s: ' + fmtN(r.runs) + ' runs, ' + fmtN(r.hits) + ' hits, ' + r.born + ' born. ' + fmtN(STATS.main.gates) + ' gates now.'; TK = 0; setTime(); playing = true; $('play').textContent = 'pause'; }); }); }); }
+  $('go').addEventListener('click', typeLine); $('line').addEventListener('keydown', function (e) { if (e.key === 'Enter') typeLine(); });
+  refresh(function () { var l = NEWEST.lines[0]; if (l) loadRun('main', l.run); else { ready = true; $('busy').textContent = 'the brain is open; type a line.'; } });
+  setInterval(function () { if (!playing) api('/api/stats').then(function (s) { STATS = s; tiles(); }); }, 3000);
+  var FOLLOW = true, following = false, lastFollow = 0;
+  function followTick() {
+    if (!FOLLOW || playing || following || !ready) return; following = true;
+    api('/api/newest?schema=main&n=6').then(function (N) {
+      NEWEST = N; renderNewest();
+      var l = (N.told || []).filter(function (x) { return x.ended && /^define/.test(x.text); })[0] || N.lines[0];
+      if (!l || l.run === lastFollow) { following = false; return; }
+      lastFollow = l.run; loadRun('main', l.run, function () { following = false; }, true);
+      setTimeout(function () { following = false; }, 4000);
+    }).catch(function () { following = false; });
+  }
+  setInterval(followTick, 1500);
+  setInterval(function () {
+    var grey = Object.keys(NODE).filter(function (k) { var n = NODE[k]; return !n.mem && !(GATES[k] && GATES[k].nodes); }).slice(0, 500); if (!grey.length) return;
+    api('/api/q', { sql: 'SELECT gate, nodes FROM ' + SCHEMA + '.neuron WHERE gate IN (' + grey.join(',') + ')' }).then(function (r) { (r.rows || []).forEach(function (x) { if (x[1] > 0) { GATES[x[0]] = GATES[x[0]] || { s: nameOf(x[0]), shards: [], rel: [] }; GATES[x[0]].nodes = x[1]; var n = NODE[String(x[0])]; if (n && hasGL) n.mesh.material.color.setHex(0x6ea8fe); } }); });
+  }, 4000);
+  window.__nk = { ready: function () { return ready; }, run: function () { return RUN && RUN.run.id; }, hops: function () { return RUN ? RUN.hops.length : 0; }, points: function () { return Object.keys(NODE).length; }, springs: function () { return SPRINGS.length; }, tk: function () { return TK; }, load: function (id) { loadRun('main', id); }, send: function (line, who) { $('line').value = line; $('who').value = who || 'main'; typeLine(); } };
+})();
+</script>
+</body>
+</html>

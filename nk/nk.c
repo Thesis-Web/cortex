@@ -109,8 +109,19 @@ static void replay(Brain *b, i64 parent, i64 source, int kind, i64 from_run, int
 static void dedupe_check(Brain *b, i64 run);
 
 /* ---------------- the cut (the encoder) ---------------- */
-static int is_letter(unsigned char c){ return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; }
+static int is_letter(unsigned char c){ return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; }   /* C27 (the owner, 11-04 04:30): a word is one symbol in any script; a byte of a non-ascii letter no longer ends it */
 static int u8len(unsigned char c){ if(c < 0x80) return 1; if((c >> 5) == 6) return 2; if((c >> 4) == 14) return 3; if((c >> 3) == 30) return 4; return 1; }
+/* C27 (the owner, 11-04 04:30): a word is one symbol in any script. A character of another script continues the word; the punctuation of other
+   scripts does not: U+0080-00BF (the Latin-1 symbols: middle dot, guillemets, degree) and U+2000-206F (quotes, dashes, the hyphenation point,
+   the ellipsis). Returns the byte length of the letter at s, 0 when s does not begin a letter. */
+static int letter_len(const unsigned char *s, size_t rem){
+  if(!rem) return 0; unsigned char c = s[0];
+  if(c < 0x80) return is_letter(c) ? 1 : 0;
+  int n = u8len(c); if((size_t)n > rem) return 0;
+  if(c == 0xC2) return 0;                                              /* U+0080-00BF */
+  if(c == 0xE2 && n == 3 && (s[1] == 0x80 || s[1] == 0x81)) return 0;   /* U+2000-207F: general punctuation, super/subscripts kept out of a word? no: U+2070-207F are superscripts; keep them */
+  return n;
+}
 /* GROW above for seq uses nseq as cap guard; give seq its own growth */
 static void seq_push(Run *r, int g){ if(r->nseq % 8 == 0){ r->seq = realloc(r->seq, (r->nseq + 8) * sizeof(int)); } r->seq[r->nseq++] = g; }
 
@@ -118,7 +129,7 @@ static void cut2(Brain *b, i64 run, const char *text){
   Run *r = run_of(b, run); size_t i = 0, L = strlen(text); char buf[4096];
   while(i < L){
     size_t j = i;
-    if(is_letter((unsigned char)text[i])){ while(j < L && is_letter((unsigned char)text[j])) j++; }
+    if(letter_len((const unsigned char*)text + i, L - i)){ int k; while(j < L && (k = letter_len((const unsigned char*)text + j, L - j))) j += k; }
     else j = i + u8len((unsigned char)text[i]);
     if(j > L) j = L;
     size_t n = j - i; if(n >= sizeof buf) n = sizeof buf - 1;
@@ -142,7 +153,7 @@ void val_set(Brain *b, Val *v, const char *s){
     free(g);
   }
   int cap = 16, n = 0; int *g = malloc(sizeof(int) * cap); size_t i = 0; char buf[4096];
-  while(i < L){ size_t j = i; if(is_letter((unsigned char)s[i])){ while(j < L && j - i < sizeof buf - 1 && is_letter((unsigned char)s[j])) j++; } else j = i + u8len((unsigned char)s[i]); if(j > L) j = L;
+  while(i < L){ size_t j = i; if(letter_len((const unsigned char*)s + i, L - i)){ int k; while(j < L && j - i < sizeof buf - 8 && (k = letter_len((const unsigned char*)s + j, L - j))) j += k; } else j = i + u8len((unsigned char)s[i]); if(j > L) j = L;
     size_t m = j - i; memcpy(buf, s + i, m); buf[m] = 0; int gt = label_gate(b, buf); if(!gt) gt = label_new(b, buf);
     if(n == cap){ cap *= 2; g = realloc(g, sizeof(int) * cap); } g[n++] = gt; i = j; }
   v->kind = 3; v->n = n; v->u.g = g;
@@ -221,7 +232,7 @@ static void land(Brain *b, i64 run, int pos, int gate, int before, int next, int
   Shard *s = shard_find(b, gate, kb, kx);
   if(!s) s = hop_shard(b);   /* no function row of its own for this before and next: the hop, one shard for every point; nothing is laid for a pass */
   s->times++;
-  if(!(pos == 0 || via == 1 || gate == SPACE)) nk_xyz_land(b, gate, s->id, kb, kx, run);   /* the place: a shard used on the point with another before or next than its last use moves it by its relationships (nkxyz.c) */
+  if(!(pos == 0 || via == 1 || gate == SPACE)) nk_xyz_land(b, gate, s->id, kb, kx, run, pos);   /* the place: a shard used on the point with another before or next than its last use moves it by its relationships (nkxyz.c) */
   int had = 0; if(next){ Neuron *nn = neuron_of(b, next); had = (nn && nn->born) ? 1 : 0; }
   hit(b, run, pos, gate, before, next, via, had, s);
 }
@@ -243,6 +254,12 @@ static void build_gate(Brain *b, i64 run, int pos, int ord){
     if(r->build_pos < 0) r->build_pos = pos;
     else {
       int from = r->build_pos; r->build_pos = -1;
+      /* C28 (the owner, 11-04 05:00): a hand laid symbol in this span, an uppercase word whose lowercase twin is a defined point, merges into the twin */
+      for(int p = from + 1; p < pos; p++){ int g = r->seq[p - 1]; if(g <= 0 || g > b->label.n) continue; const char *s = b->label.sym[g]; size_t L = strlen(s); if(L < 2) continue;
+        int up = 1; for(size_t i = 0; i < L; i++) if(s[i] < 'A' || s[i] > 'Z'){ up = 0; break; } if(!up) continue;
+        char lo[256]; if(L >= sizeof lo) continue; for(size_t i = 0; i <= L; i++) lo[i] = s[i] >= 'A' && s[i] <= 'Z' ? s[i] + 32 : s[i];
+        int t = label_gate(b, lo); if(!t || t == g) continue; Neuron *tn = neuron_of(b, t); if(!tn || !tn->nnode) continue;
+        char out[512]; nk_merge(b, g, t, out, sizeof out); }
       char *text = decode_span(b, run, from, pos);
       i64 save_run = b->cur_run; int save_ord = b->cur_ord; b->cur_run = run; b->cur_ord = ord;
       i64 t0 = now_ns(); char *ans = mother_paste(text); free(text); b->paste_ns += now_ns() - t0; b->pastes++;
@@ -324,7 +341,7 @@ void pump_batch(Brain *b, int n){
 static int *SEQBUF; static int SEQCAP;
 static void cut_into(Brain *b, const char *text, int **out, int *n){
   size_t i = 0, L = strlen(text); char buf[4096]; *n = 0;
-  while(i < L){ size_t j = i; if(is_letter((unsigned char)text[i])){ while(j < L && is_letter((unsigned char)text[j])) j++; } else j = i + u8len((unsigned char)text[i]); if(j > L) j = L;
+  while(i < L){ size_t j = i; if(letter_len((const unsigned char*)text + i, L - i)){ int k; while(j < L && (k = letter_len((const unsigned char*)text + j, L - j))) j += k; } else j = i + u8len((unsigned char)text[i]); if(j > L) j = L;
     size_t m = j - i; if(m >= sizeof buf) m = sizeof buf - 1; memcpy(buf, text + i, m); buf[m] = 0;
     if(*n >= SEQCAP){ SEQCAP = SEQCAP ? SEQCAP * 2 : 4096; SEQBUF = realloc(SEQBUF, SEQCAP * sizeof(int)); } SEQBUF[(*n)++] = label_gate(b, buf); i = j; }
   *out = SEQBUF;
@@ -336,6 +353,37 @@ const int *nk_seq(Brain *b, i64 run, int *n){
   if(r->replay_src && r->replay_src != run) return nk_seq(b, r->replay_src, n);
   if(r->src && r->srcgate){ const char *t = nk_source_text(r->srcgate, r->src); if(t){ int *s; cut_into(b, t, &s, n); return s; } }
   *n = 0; return 0;
+}
+
+/* C27 (the owner, 11-04 04:30): a return is re-cut from its source row at every read (nk_seq); after the encoder changed, a symbol never seen
+   whole has no gate and reads as 0. The back population gives every symbol of the held rows a gate under the encoder as it stands. */
+int nk_learn_text(Brain *b, const char *s){
+  size_t i = 0, L = strlen(s); char buf[4096]; int born = 0;
+  while(i < L){ size_t j = i; if(letter_len((const unsigned char*)s + i, L - i)){ int k; while(j < L && j - i < sizeof buf - 8 && (k = letter_len((const unsigned char*)s + j, L - j))) j += k; } else j = i + u8len((unsigned char)s[i]); if(j > L) j = L;
+    size_t m = j - i; memcpy(buf, s + i, m); buf[m] = 0; if(!label_gate(b, buf)){ label_new(b, buf); born++; } i = j; }
+  return born;
+}
+/* C28 (the owner, 11-04 05:00): "the hand laid neurons dna tables and memories should merge with the correct neuron for that word ... the dna
+   table of the real gate just adds the dna table of the hand laid, since the rows are numbered in sequence you don't even have to change the
+   dna shard numbers ... the memory tables attached or pointed to that shard should just follow". The symbol of h names t from now on; gate h
+   keeps its text so the rows already laid still read; a shard of h whose key (before, trigger) t already holds stays with t's own. */
+int nk_merge(Brain *b, int h, int t, char *out, size_t cap){
+  if(h <= 0 || t <= 0 || h == t || h > b->label.n || t > b->label.n){ snprintf(out, cap, "error: gates %d and %d", h, t); return -1; }
+  Neuron *H = neuron_of(b, h), *T = neuron_of(b, t); if(!H || !T){ snprintf(out, cap, "error: no neuron for %d or %d", h, t); return -1; }
+  if(!T->born) T->born = 1;
+  int moved = 0, kept = 0;
+  for(int i = 0; i < H->nsh; i++){ Shard *s = &H->sh[i]; if(hmap_get(&T->h, s->before, s->trigger)){ kept++; continue; }
+    GROW(T->sh, T->nsh, T->csh, Shard); T->sh[T->nsh++] = *s; hmap_put(&T->h, s->before, s->trigger, T->nsh); hmap_put(&b->shid, t, s->id, T->nsh); moved++; }
+  int nodes = H->nnode, mems = H->nmem, about = H->nabout, hits = H->nhits, arrived = H->narrived;
+  for(int i = 0; i < H->nnode; i++){ GROW(T->node, T->nnode, T->cnode, NodeRow); T->node[T->nnode++] = H->node[i]; }
+  for(int i = 0; i < H->nmem; i++){ GROW(T->mem_runs, T->nmem, T->cmem, i64); T->mem_runs[T->nmem++] = H->mem_runs[i]; }
+  for(int i = 0; i < H->nabout; i++){ GROW(T->about_runs, T->nabout, T->cabout, i64); T->about_runs[T->nabout++] = H->about_runs[i]; }
+  for(int i = 0; i < H->nhits; i++){ GROW(T->hits, T->nhits, T->chits, i64); T->hits[T->nhits++] = H->hits[i]; }
+  for(int i = 0; i < H->narrived; i++){ GROW(T->arrived, T->narrived, T->carrived, i64); T->arrived[T->narrived++] = H->arrived[i]; }
+  H->nsh = 0; H->nnode = 0; H->nmem = 0; H->nabout = 0; H->nhits = 0; H->narrived = 0; H->born = 0;
+  hmap_put(&b->label.h, (i64)strhash(b->label.sym[h]), 1, t);
+  snprintf(out, cap, "merged %s %d into %s %d: shards %d moved, %d kept by the twin, node rows %d, memories %d, about %d, hits %d, arrived %d", b->label.sym[h], h, b->label.sym[t], t, moved, kept, nodes, mems, about, hits, arrived);
+  return 0;
 }
 static Rc *RCBUF; static int RCCAP;
 int nk_receipts(Brain *b, i64 run, Rc **out, int *kept){

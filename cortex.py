@@ -1816,6 +1816,12 @@ def v_status(name=None):
     ensure_cx(); st = ask("stats")["main"]
     r = judge_route()
     print("brain: gates %d runs %d hops %d refused %d clock %d | judge: receipt, shape, learned v%s, then %s | index rows %d" % (st["gates"], st["runs"], st["hops"], st["refused"], clock(), (weights() or {}).get("v", 0), ("jev via " + jev_route()["via"]) if r == "jev" else ("claude:%s (subscription)" % JUDGE_MODEL if r == "claude" else "none"), q("SELECT count(*) FROM main.cx WHERE kind = 'checkpoint' AND name = ? AND n >= 0", name or "")[0][0] if name else -1))
+    # C48 (the owner, 11-04: the neuron kernel is far more advanced now ... updating it into the system): which kernel answers this port,
+    # told by the door verbs the cascade kernel added (moved, restep, relabel answer; the g35 kernel of 11-02 says unknown request)
+    try:
+        mv = ask("moved %d" % clock()); newk = "moved" in mv
+    except Exception: mv = {}; newk = False
+    print("kernel: port %d, %s | stats: defined %d shards %d stubs %d" % (PORT, ("the cascade kernel of hp (g37 + 11-03/11-04: the door answers moved, restep, relabel; places history, %d moved since the clock, %d passes)" % (len(mv.get("moved", [])), mv.get("passes", 0))) if newk else "the g35 kernel of 11-02 (the door does not answer moved)", st.get("defined", -1), st.get("shards", -1), st.get("stubs", -1)))
     fr = cx_get("freeze", "handler", 0)
     if fr:
         try: now = hashlib.sha256(open(HANDLER, "rb").read()).hexdigest()
