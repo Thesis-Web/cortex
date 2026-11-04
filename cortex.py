@@ -442,6 +442,7 @@ def ground_str(g):
     if g.get("by_source") and len(g["by_source"]) > 1: items.append("(" + " ".join("%s %d" % kv for kv in sorted(g["by_source"].items(), key=lambda kv: -kv[1])[:4]) + ")")
     if g.get("none"): items.append("none: " + ",".join(g["none"]))
     if g.get("of"): items.append("agreement %d of %d" % (g.get("agree", 0), g["of"]))
+    if g.get("belief") is not None: items.append("belief %.2f" % g["belief"])
     return " ".join(items) or "no ground"
 def v_receipt(name, n, cmd):
     # the machine's own print, piped in (df -h / | cortex receipt audit 1 df -h /): typed as receipt lines and kept as the checkpoint's ground; a model's hand never retypes it
@@ -754,6 +755,31 @@ def tally_voice(voice, kind, by, guess, name=None, run=None):
         for g in set(x for x in content_gates(run) if not is_value(x)):
             hg = cx_get("vgate", voice, g); e = json.loads(hg[3]) if hg else {"confirmed": 0, "false": 0}
             e[oc] += 1; cx_put("vgate", voice, g, run, clock(), json.dumps(e))
+BANDS_DEFAULT = {"llm": [0.2, 0.8], "owner": [0.5, 0.8], "reference_alone": 0.6, "reference_agree": 1.0, "owner_and_source": 0.85, "llm_and_two_sources": 0.95, "llm_and_owner": 0.5,
+                 "note": "the owner, 2026-11-03 21:5x: llm ceiling 80 floor 20, turn dependent; owner ceiling .80 floor 50, informed guesses; reference 1.00 when true between sources, 60 alone; owner and source agree strong, llm and two sources very strong, llm and human without a source 50/50; the machine print is the ground"}
+def bands():
+    had = cx_get("bands", "judge", 0)
+    if had:
+        try: return json.loads(had[3])
+        except ValueError: pass
+    cx_put("bands", "judge", 0, 0, clock(), json.dumps(BANDS_DEFAULT)); return dict(BANDS_DEFAULT)
+def belief_of(voice, name, kind, by, sc):
+    # C32: the belief of a claim from who stands behind it: the machine's print, the sources agreeing, the owner, and the voice inside its band
+    B = bands(); band = "owner" if voice == "owner" else "llm"; lo, hi = B[band]
+    pt = project_trust(voice, name); had = cx_get("voice", voice, 0)
+    obs = pt["trust"] if pt and pt["trust"] is not None else None
+    if obs is None and had:
+        d = json.loads(had[3]); t = d["confirmed"] + d["false"]; obs = (d["confirmed"] / t) if t else None
+    banded = min(hi, max(lo, obs if obs is not None else (lo + hi) / 2))
+    owner_srcs = set(nm for (nm, b) in sources() if b == "owner")
+    conf = sc.get("confirm", []) if sc else []
+    ref_conf = [x for x in conf if x not in owner_srcs]; owner_conf = any(x in owner_srcs for x in conf) or band == "owner"
+    if by == "receipt" and kind in ("completes", "progresses", "supersedes"): return 1.0, "the machine's print"
+    if len(ref_conf) >= 2: return (B["reference_agree"] if band == "owner" else B["llm_and_two_sources"]), "two sources agree"
+    if len(ref_conf) == 1 and owner_conf: return B["owner_and_source"], "the owner and a source agree"
+    if len(ref_conf) == 1: return B["reference_alone"], "a reference alone"
+    if owner_conf and band == "llm": return B["llm_and_owner"], "llm and owner agree, no source"
+    return round(banded, 2), "the voice alone, inside its band %.2f to %.2f" % (lo, hi)
 def word_trust(voice, run):
     # the voice's record on the words this claim touches: confirmed and false over those gates, and the trust they give
     c = f = n = 0
@@ -808,6 +834,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     accepting = kind in ("completes", "progresses", "supersedes") and (name, n) not in NO_PARTS
     gr = dict(cells.get("ground") or {}); pg0 = cells.get("pair_ground") or {}
     if pg0.get("pairs"): gr["agree"] = len(pg0.get("agree", [])); gr["of"] = pg0.get("sources", 0)
+    bl0, br0 = belief_of(iv0.get("voice", "hand") if (iv0 := (lambda rr: (json.loads(rr[0][0]) if rr and rr[0][0].startswith("{") else {}))(q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run))) else "hand", name, kind, by, cells.get("sources") or {}); gr["belief"] = bl0
     part = add_part(name, n, run, text, p, judge, gr) if accepting else ("rejected" if retire_part(name, n, run, vrun, "rejected_by") else "")
     if kind == "supersedes" and cells.get("supersedes_run") and not part.startswith("refused") and retire_part(name, n, cells["supersedes_run"], run, "superseded_by"): part += " | retired the part of run %d" % cells["supersedes_run"]
     moved = ""
@@ -826,7 +853,8 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "voice": iv.get("voice", "hand"), "guess": bool(iv.get("guess"))}))
     tally_voice(iv.get("voice", "hand"), kind, by, bool(iv.get("guess")), name, run)
     geo = cells["geometry"]
-    vc = iv.get("voice", "hand"); pt = project_trust(vc, name); wt = word_trust(vc, run)
+    vc = iv.get("voice", "hand"); pt = project_trust(vc, name); wt = word_trust(vc, run); bl, brule = belief_of(vc, name, kind, by, cells.get("sources") or {})
+    print("  belief %.2f (%s)" % (bl, brule))
     rec = "held before" if cells.get("same_as") or cells.get("echo") else ("supersedes run %s" % cells["supersedes_run"]) if cells.get("supersedes_run") else "new to the project record"
     print("  voice: %s%s | belief row: 1 the project record: %s; 2 the words: %s on %d gates (%d confirmed, %d false); 3 the sources: %d confirm, %d disagree, agreement %d of %d | this voice on %s: %s" % (vc, " (a labeled guess)" if iv.get("guess") else "", rec, ("trust %.2f" % wt["trust"]) if wt["trust"] is not None else "no record", wt["gates"], wt["confirmed"], wt["false"], len((cells.get("sources") or {}).get("confirm", [])), len((cells.get("sources") or {}).get("disagree", [])), len((cells.get("pair_ground") or {}).get("agree", [])), (cells.get("pair_ground") or {}).get("sources", 0), name, ("trust %.2f over %d claims" % (pt["trust"], pt["claims"])) if pt and pt["trust"] is not None else "no record yet"))
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
@@ -1263,6 +1291,7 @@ def v_status(name=None):
         if c:
             d = json.loads(c[3]); caps.append("%s %s (%s, %d sentences, %d new%s)" % (nm, time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0))), d.get("event", "stop"), d.get("sentences", 0), d.get("new", 0), ", final message in" if d.get("final") else ""))
     print("captures: " + ("; ".join(caps) if caps else "none yet") + " | a stale time here is a failed or missing capture (C20)")
+    B = bands(); print("bands: llm %.2f to %.2f, owner %.2f to %.2f, a reference alone %.2f, two sources %.2f; owner and source %.2f, llm and two sources %.2f, llm and owner %.2f (the owner, 11-03 21:5x; cx bands/judge)" % (B["llm"][0], B["llm"][1], B["owner"][0], B["owner"][1], B["reference_alone"], B["reference_agree"], B["owner_and_source"], B["llm_and_two_sources"], B["llm_and_owner"]))
     vs = voices()
     if vs: print("voices: " + "; ".join("%s claims %d, confirmed %d, false %d, guesses %d, trust %s%s" % (vn, d["claims"], d["confirmed"], d["false"], d["guesses"], ("%.2f" % t) if t is not None else "none yet", (" [" + " ".join("%s %s" % (pj, ("%.2f" % (b["confirmed"] / (b["confirmed"] + b["false"]))) if (b["confirmed"] + b["false"]) else "-") for pj, b in sorted(d.get("by_project", {}).items())) + "]") if d.get("by_project") else "") for (vn, d, t) in vs) + " | proven by receipt, shape or sources only; a labeled guess is not counted; per project in brackets, per word on the verdict line (C25, C31)")
     names = [name] if name else sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0")))
