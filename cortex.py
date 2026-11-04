@@ -366,10 +366,11 @@ def numbers(text, clock=False):
     # the value tokens of a sentence (393g, 300, 9%); times and dates (13:19, 11-03) are not values unless the claim is about a clock (C34)
     t = text.lower()
     t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)   # 2,188 is one number
+    t = re.sub(r"\b(\d+)m(\d+(?:\.\d+)?)s\b", lambda m: "%s min %s s" % (m.group(1), m.group(2)), t)   # C35.4: the shell's time print 0m6.114s is 0 min and 6.114 s (the hp builder, 11-04 05:0x)
     t = re.sub(r"(?<![\w.])\d[\w.]*(?:-[\w.]+)+", lambda m: " " if re.search(r"[a-z]", m.group(0)) else m.group(0), t)   # C35.1: 48-2026-11-03-cortex-unattended is a name; 0.20-0.80 stays two values
     if not clock: t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", t)
     else: t = re.sub(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b", lambda m: " %s:%s " % (m.group(1), m.group(2)), t)
-    t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t)   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
+    t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t); t = re.sub(r"(?:^|[\s:;])\$ [^;`]*", " ", t)   # C44b: a quoted shell command ($ python3 sum.py 1 2 3) is a command, its digits are arguments   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
     return [y for y in (x.strip("'\"()[]{}").rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t)) if y and VALUE_TOKEN.match(y)]   # quotes and brackets around a number are punctuation
 NUM_CLOCK = re.compile(r"(?<![\w.])\d[\w.%:]*")
 VALUE_TOKEN = re.compile(r"^(\d+(\.\d+)?[a-z%]{0,3}|\d{1,2}:\d{2}(:\d{2})?)$")   # C35.1: a value is digits, a decimal, a short unit or a clock; 60e27de and 7c20c611 are names, not values
@@ -1296,15 +1297,16 @@ def v_reject(name, n, run):
             d.pop("superseded_by"); cx_put("part", name, k, d["run"], clock(), json.dumps(d)); print("part of run %d stands again in %s C%d (it was superseded by the rejected run)" % (d["run"], name, n))
 MODEL_BY_KIND = {"read": "haiku", "write": "sonnet", "design": "opus"}   # the router's model per step kind (handler C7); a judgment step goes to jev
 def worker(engine, model, prompt, cwd, act):
+    env = dict(os.environ); env["PATH"] = os.path.expanduser("~/.local/bin") + ":" + env.get("PATH", "")   # C44b: the worker pipes its prints with cortex receipt
     if engine == "claude":
         cmd = ["claude", "-p", "--model", model, "--output-format", "text"] + (["--dangerously-skip-permissions"] if act else [])
-        t0 = time.time(); p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=cwd, timeout=3600)
+        t0 = time.time(); p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=cwd, timeout=3600, env=env)
         return p.stdout, p.stderr, p.returncode, time.time() - t0
     if engine == "codex":
         last = os.path.join(cwd, ".codex-last-message.txt")
         if os.path.exists(last): os.remove(last)
         cmd = ["codex", "exec", "-C", cwd, "--output-last-message", last] + (["--model", model] if model and model != "default" else []) + (["--dangerously-bypass-approvals-and-sandbox"] if act else ["-s", "read-only"]) + ["-"]
-        t0 = time.time(); p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=cwd, timeout=3600)
+        t0 = time.time(); p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=cwd, timeout=3600, env=env)
         out = open(last).read() if os.path.exists(last) else p.stdout
         return out, p.stderr, p.returncode, time.time() - t0
     raise SystemExit("engine must be claude or codex")
@@ -1430,6 +1432,8 @@ def handback(name, n, text, res):
 def v_build(name, engine="claude", model=None, box_min=30, max_turns=12, act=True):
     # C44 (the owner, 11-04 05:0x: tell cortex to build it; it prescribes the work to the headless workers, checks the outputs, prescribes the next steps; a flaw it cannot settle is handed back and the build moves on)
     ensure_cx(); t0 = time.time(); turns, k, log = {}, 0, []
+    try: sys.stdout.reconfigure(line_buffering=True)   # the schedule lines reach the log as they happen (python -I ignores PYTHONUNBUFFERED)
+    except (AttributeError, ValueError): pass
     cwd = repo_of(name) or os.path.join(WORKDIR, name)
     print("build %s: box %d min, at most %d turns, worker %s, cwd %s" % (name, box_min, max_turns, engine, cwd))
     while time.time() - t0 < box_min * 60 and k < max_turns:
@@ -1438,11 +1442,11 @@ def v_build(name, engine="claude", model=None, box_min=30, max_turns=12, act=Tru
             alldone = all((cx_get("state", name, n0) or (0, 0, 0, "open"))[3] == "done" for (n0, r0, a0, t0_, x0) in cx_list("checkpoint", name))
             print("build %s: nothing unblocked: %s" % (name, "every checkpoint is done" if alldone else "the rest wait on the owner (cortex handbacks %s)" % name)); break
         turns[nxt] = turns.get(nxt, 0) + 1; k += 1
-        before = (cx_get("state", name, nxt) or (0, 0, 0, "open"))[3]; nparts = len(parts_of(name, nxt, 1000))
+        before = (cx_get("state", name, nxt) or (0, 0, 0, "open"))[3]; nparts = parts_cover(name, nxt)[3]
         try: res = v_turn(name, engine, model, act, nxt, cwd=cwd)
         except SystemExit as e: res = {"n": nxt, "engine": engine, "secs": 0.0, "kinds": [], "out": "", "needed": [], "flaws": ["the worker failed: %s" % e]}
         res = res or {}
-        after = (cx_get("state", name, nxt) or (0, 0, 0, "open"))[3]; moved = (after != before) or (len(parts_of(name, nxt, 1000)) > nparts)
+        after = (cx_get("state", name, nxt) or (0, 0, 0, "open"))[3]; moved = (after == "done") or (parts_cover(name, nxt)[3] > nparts)   # a model's part is not a move
         line = "turn %d C%d worker %s %.0f s prompt %d bytes verdicts %s moved %s%s%s" % (k, nxt, res.get("engine", engine), res.get("secs", 0.0), res.get("prompt_bytes", 0), ",".join(res.get("kinds") or []) or "none", ("yes, %s" % after) if moved else "no", (" needed: " + " ; ".join(res["needed"])[:100]) if res.get("needed") else "", (" flaw: " + " ; ".join(res["flaws"])[:100]) if res.get("flaws") else "")
         record("schedule", name, None, clean(line)); print("schedule: " + line); log.append(line)
         if res.get("flaws"): handback(name, nxt, "; ".join(res["flaws"]), res)
@@ -1546,7 +1550,8 @@ def v_capture(cwd=None, name=None):
         VOICE[0] = "owner"; own = v_ingest(name, "\n".join(owner_texts), quiet=True, repeat_to_kernel=False); VOICE[0] = "hub:" + ((hook.get("session_id") or "")[:8] or "unknown")
     last = "\n".join(texts_all); ing = v_ingest(name, last, quiet=True, repeat_to_kernel=False); new = [i for i in ing if not i["same_as"]] + [i for i in own if not i["same_as"]]
     print("capture %s: %d texts, %d sentences, %d new, %d repeats, %d bytes%s%s" % (name, len(texts_all), len(ing), len(new), len(ing) + len(own) - len(new), len(last.encode()), (", the turn's final message included (%d bytes)" % len(final_msg.encode())) if final_msg else "", (", the owner's voice: %d messages, %d sentences" % (len(owner_texts), len(own))) if owner_texts else ""))
-    cx_put("capture", name, 0, 0, clock(), json.dumps({"ts": int(time.time()), "texts": len(texts_all), "sentences": len(ing), "new": len(new), "event": hook.get("hook_event_name") or "stop", "session": (hook.get("session_id") or "")[:8], "final": bool(final_msg)}))
+    cap = {"ts": int(time.time()), "texts": len(texts_all), "sentences": len(ing), "new": len(new), "event": hook.get("hook_event_name") or "stop", "session": (hook.get("session_id") or "")[:8], "final": bool(final_msg)}
+    cx_put("capture", name, 0, 0, clock(), json.dumps(cap))
     nxt = next_checkpoint(name); newest = False
     if nxt is None:
         cps = cx_list("checkpoint", name, desc=True, limit=1)
@@ -1555,6 +1560,7 @@ def v_capture(cwd=None, name=None):
     try:
         cands = [i for i in new if candidate(name, nxt, i["text"])]   # C40: the rest are typed for the record, never judged, never asked
         kinds = judge_many(name, nxt, cands[-20:]); print("judged %d of %d new sentences against C%d%s (C40: candidates only; %d recorded, not judged): %s" % (len(cands[-20:]), len(new), nxt, " (every checkpoint done; the newest)" if newest else "", len(new) - len(cands), " ".join(kinds)))
+        cap["judged"] = len(cands[-20:]); cap["recorded"] = len(new) - len(cands); cx_put("capture", name, 0, 0, clock(), json.dumps(cap))
     except SystemExit as e: print("not judged: %s" % e)
 # ---- the owner's input output formula (2026-11-02): before/after + progression = diff output + before and after states + progression
 #      = expected completed output contract: satisfied parts and the remainder not satisfied. A snapshot per report; the next report diffs it. ----
@@ -1744,7 +1750,7 @@ def v_status(name=None):
     for (nm,) in q("SELECT name FROM main.cx WHERE kind = 'capture' AND name >= '' AND n = 0"):
         c = cx_get("capture", nm, 0)
         if c:
-            d = json.loads(c[3]); caps.append("%s %s (%s, %d sentences, %d new%s)" % (nm, time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0))), d.get("event", "stop"), d.get("sentences", 0), d.get("new", 0), ", final message in" if d.get("final") else ""))
+            d = json.loads(c[3]); caps.append("%s %s (%s, %d sentences, %d new%s%s)" % (nm, time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0))), d.get("event", "stop"), d.get("sentences", 0), d.get("new", 0), (", %d judged, %d recorded only" % (d["judged"], d.get("recorded", 0))) if "judged" in d else "", ", final message in" if d.get("final") else ""))
     print("captures: " + ("; ".join(caps) if caps else "none yet") + " | a stale time here is a failed or missing capture (C20)")
     B = bands(); print("bands: llm %.2f to %.2f, owner %.2f to %.2f, a reference alone %.2f, two sources %.2f; owner and source %.2f, llm and two sources %.2f, llm and owner %.2f (the owner, 11-03 21:5x; cx bands/judge)" % (B["llm"][0], B["llm"][1], B["owner"][0], B["owner"][1], B["reference_alone"], B["reference_agree"], B["owner_and_source"], B["llm_and_two_sources"], B["llm_and_owner"]))
     vs = voices()
