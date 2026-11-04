@@ -104,7 +104,7 @@ def is_noise(s):
     nonspace = [c for c in t if not c.isspace()]
     if not nonspace: return "empty"
     letters = sum(c.isalpha() for c in nonspace)
-    if letters / len(nonspace) < 0.6: return "symbols"
+    if letters / len(nonspace) < 0.6 and not (len(content_words(t)) >= 2 and re.search(r"\d", t) and letters / len(nonspace) >= 0.3): return "symbols"   # C10.3: a line mostly of numbers that names two words is an observation (the hp builder, 11-04)
     if len(content_words(t)) < 2: return "too-few-words"
     return None
 def wordset_key(s):
@@ -429,7 +429,16 @@ MEASURES_DEFAULT = {"clock": "date", "tonight": "date", "today": "date", "o'cloc
                     "disk": "df -h /", "avail": "df -h /", "filesystem": "df -h /", "df": "df -h /",
                     "load": "uptime", "uptime": "uptime",
                     "gates": "cortex status", "runs": "cortex status", "hops": "cortex status", "checkpoints": "cortex formula", "ingests": "cortex formula", "verdicts": "cortex formula", "voices": "cortex status", "trust": "cortex status"}
-def measures():
+MEASURES_PROJECT = {"neuron": {"runs": "api/info", "gates": "api/info", "hops": "api/info", "defined": "api/info", "refused": "api/info", "queued": "api/info", "points": "api/info", "checkpoints": "cortex formula", "ingests": "cortex formula", "verdicts": "cortex formula", "trust": "cortex status", "voices": "cortex status"}}
+def measures(name=None):
+    # C34.2 (the hp builder, 11-04 04:4x: the word runs in a neuron sentence made the judge ask for a cortex status print; the two vocabularies collide): a project's own measures first, kept as data
+    if name:
+        hadp = cx_get("measures", name, 0)
+        if hadp:
+            try: base = dict(measures()); base.update(json.loads(hadp[3])); return base
+            except ValueError: pass
+        elif name in MEASURES_PROJECT:
+            cx_put("measures", name, 0, 0, clock(), json.dumps(MEASURES_PROJECT[name])); base = dict(measures()); base.update(MEASURES_PROJECT[name]); return base
     had = cx_get("measures", "judge", 0)
     if had:
         try: return json.loads(had[3])
@@ -573,9 +582,9 @@ def rebuild_voices():
             d = json.loads(v); by = d.get("judge") if d.get("judge") in ("receipt", "shape", "sources") else "judgment"
             tally_voice(d.get("voice", "hand"), d.get("kind"), by, bool(d.get("guess")), nm, run); n += 1
     print("voices rebuilt from %d verdicts" % n)
-def measure_of(text):
+def measure_of(text, name=None):
     # C34: the words of a claim that name a measure, and the prints that settle them (the owner: if date and today had actions, meaning, this would be possible)
-    M = measures(); ws = set(re.findall(r"[a-z][a-z']+", text.lower())); hit = {}
+    M = measures(name); ws = set(re.findall(r"[a-z][a-z']+", text.lower())); hit = {}
     for w in ws:
         if w in M: hit.setdefault(M[w], []).append(w)
     return hit
@@ -584,7 +593,7 @@ def receipts_of(name, n):
     return json.loads(had[3]) if had else {}
 def ground_cells(name, n, run, text, new_syms):
     # per word gate: which ground holds it (receipt, owner, reference, the project's own memory, none); per number: did the machine print it
-    meas = measure_of(text); is_clock = "date" in meas
+    meas = measure_of(text, name); is_clock = "date" in meas
     cells = {"receipt_runs": 0, "receipt_cmds": [], "receipt_before_claim": False, "receipt_newest": "", "receipt_named": False, "numbers_in_ext": [], "numbers": numbers(text, clock=is_clock), "numbers_in": [], "numbers_out": [], "measures": meas, "measure_missing": [], "ground": {"receipt": 0, "owner": 0, "reference": 0, "memory": 0, "none": []}}
     rc = receipts_of(name, n); rnums, rnums_ext, rwords, older = set(), set(), set(), 0; ct = toks(text); ptext = {}; rnums_newer, ptext_newer = set(), {}
     at = run; had_row = cx_get("ingest", name, text_key(text))
@@ -942,7 +951,8 @@ def formula(cells, answers):
     if len(sc.get("disagree", [])) >= 3 and not sc.get("confirm") and not cells.get("designer"): return "hallucination", "sources"   # C37: never for the designer on their own design, that is a question   # C28 (the owner): a statement proven false by three or more sources
     rb = cells.get("receipt_before_claim")
     about = cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.5   # C22: the claim is about this print: names its command, cites its values, or states the expected
-    if rb and cells.get("numbers_out") and about: return "hallucination", "receipt"   # a value the machine never printed, said after the print, by a claim about that print (C35b: a number beside a missing measure's word was set aside as unchecked)
+    if rb and cells.get("numbers_out") and (cells.get("receipt_named") or cells.get("numbers_in_ext")): return "hallucination", "receipt"   # C35.3: convicted only against a print it names or cites
+    if rb and cells.get("numbers_out") and about: cells["print_missing"] = list(cells["numbers_out"]); return "unsettled", "sheet"   # C35.3: the expected shape with numbers no print holds: ask for the print, never convict   # a value the machine never printed, said after the print, by a claim about that print (C35b: a number beside a missing measure's word was set aside as unchecked)
     if cells.get("supersedes_run"): return "supersedes", ("receipt" if rb and cells.get("numbers_in") and not cells.get("numbers_out") else "shape")   # the same shape as an accepted part, only value or time gates out of line
     if cells.get("shape_gates", 0) >= 4 and cells["shape_shared_project"] == 0: return "drift", "shape"   # no word gate shared with the scope, checkpoint or expected
     if cells["words"] >= 4 and cells["shared_scope"] == 0 and cells["shared_checkpoint"] == 0 and cells["shared_expected"] == 0 and not cells["observed"]: return "drift", "sheet"
@@ -1106,6 +1116,9 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     print("  voice: %s%s | belief row: 1 the project record: %s; 2 the words: %s on %d gates (%d confirmed, %d false); 3 the sources: %d confirm, %d disagree, agreement %d of %d | this voice on %s: %s" % (vc, " (a labeled guess)" if iv.get("guess") else "", rec, ("trust %.2f" % wt["trust"]) if wt["trust"] is not None else "no record", wt["gates"], wt["confirmed"], wt["false"], len((cells.get("sources") or {}).get("confirm", [])), len((cells.get("sources") or {}).get("disagree", [])), len((cells.get("pair_ground") or {}).get("agree", [])), (cells.get("pair_ground") or {}).get("sources", 0), name, ("trust %.2f over %d claims" % (pt["trust"], pt["claims"])) if pt and pt["trust"] is not None else "no record yet"))
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
     if cells.get("numbers_in_newer") and kind in ("hallucination", "unsettled", "drift"): print("  a print newer than this claim holds %s: a later print never switches a verdict (C33b); pipe the print first, then make the claim again (re-ingest it) and judge the new run (C33c)" % ", ".join(cells["numbers_in_newer"]))
+    if cells.get("print_missing") and kind not in ("noise", "dupe") and (name, n) not in NO_PARTS:   # C35.3
+        print("  no print holds %s: pipe the print this claim is about, then type the claim again (C35.3)" % ", ".join(cells["print_missing"]))
+        ask_question(name, n, run, ["no print holds %s" % ", ".join(cells["print_missing"][:6])], vrun)
     if cells.get("measure_missing") and kind not in ("noise", "dupe") and (name, n) not in NO_PARTS:
         print("  no print to check this: it names %s, settled by %s; ask for that print (C34)" % (", ".join(w for m0 in cells["measure_missing"] for w in cells["measures"][m0]), ", ".join(cells["measure_missing"])))
         ask_question(name, n, run, ["no print of %s for a claim about %s" % (m0, ", ".join(cells["measures"][m0])) for m0 in cells["measure_missing"]], vrun)
