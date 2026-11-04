@@ -542,6 +542,8 @@ def ingest_text(value):
     try:
         d = json.loads(value); return d.get("t", ""), int(d.get("times", 1))
     except (ValueError, TypeError, AttributeError): return value, 1
+VOICE = ["hand"]   # who is speaking into the cortex: the hand (a builder's or the owner's ingest), or a session seen by the capture (hub:<session>)
+GUESS = re.compile(r"\b(i am guessing|i guess|my guess|a guess|guessing here|i think|maybe|perhaps|probably|not sure)\b")
 def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
     ensure_cx(); out = []; t0 = time.time()
     fates, counts = filter_lines(name, sentences(text))
@@ -570,7 +572,7 @@ def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
             if not quiet: print("dropped (restated%s): %s" % ((" run %d" % had[0]) if had else " in this batch", s[:80]))
             continue
         line = "cortex ingest %s : %s" % (name, s); r = typed(line); run = r["run"]; at = clock()
-        cx_put("ingest", name, k, run, at, json.dumps({"times": 1})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
+        cx_put("ingest", name, k, run, at, json.dumps({"times": 1, "voice": VOICE[0], "guess": bool(GUESS.search(s))})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
         out.append({"run": run, "clock": at, "born": r["born"], "seconds": r["seconds"], "same_as": 0, "again": 1, "text": s})
         if not quiet: print("ingest run %d clock %d born %d %.3fs: %s" % (run, at, r["born"], r["seconds"], s[:100]))
     print("filter: %d sentences, kept %d, dupe %d, restated %d, noise %d, %.0f ms" % (len(fates), counts["keep"], counts["dupe"], counts["restated"], counts["noise"], (time.time() - t0) * 1000))
@@ -644,6 +646,20 @@ def formula(cells, answers):
     if rb and cells.get("numbers_in") and not cells.get("numbers_out") and cells["ground"]["receipt"] >= 2 and (cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.3): return "progresses", "receipt"   # every value printed by the machine, by a claim about that print (C22: a cortex print of its own verdicts does not count)
     if answers: return decide(answers), "judgment"
     return "unsettled", "sheet"
+def tally_voice(voice, kind, by, guess):
+    # C25 (the owner, 11-03 17:0x): inputs are measured; a fact proven false lowers that voice's trust, a labeled guess does not; the count is a keyed row per voice
+    had = cx_get("voice", voice, 0); d = json.loads(had[3]) if had else {"claims": 0, "confirmed": 0, "false": 0, "guesses": 0, "first_ts": int(time.time())}
+    d["claims"] += 1
+    if guess: d["guesses"] += 1
+    elif kind in ("hallucination", "invention") and by in ("receipt", "shape"): d["false"] += 1   # proven by the machine's print or the brain's shape, never by a model's word
+    elif kind in ("completes", "progresses", "supersedes") and by in ("receipt", "shape"): d["confirmed"] += 1
+    d["last_ts"] = int(time.time()); cx_put("voice", voice, 0, 0, clock(), json.dumps(d))
+def voices():
+    out = []
+    for (vn,) in q("SELECT name FROM main.cx WHERE kind = 'voice' AND name >= '' AND n = 0"):
+        d = json.loads(cx_get("voice", vn, 0)[3]); tot = d["confirmed"] + d["false"]
+        out.append((vn, d, (d["confirmed"] / tot) if tot else None))
+    return out
 NO_PARTS = set()   # (name, n) pairs judged for the record only: no part added, no state moved (the capture against a done project's newest checkpoint)
 def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     ensure_cx()
@@ -689,7 +705,11 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
                 s2 = cx_get("state", name, n2)
                 if not s2 or s2[3] != "working": v_state(name, n2, "working")
             moved = " | C%d done by this verdict; next C%s" % (n, n2)
-    cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part}))
+    irow = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run); iv = {}
+    try: iv = json.loads(irow[0][0]) if irow else {}
+    except (ValueError, TypeError): iv = {}
+    cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "voice": iv.get("voice", "hand"), "guess": bool(iv.get("guess"))}))
+    tally_voice(iv.get("voice", "hand"), kind, by, bool(iv.get("guess")))
     geo = cells["geometry"]
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", (" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else ""))
     pg = cells.get("pair_ground") or {}
@@ -889,6 +909,7 @@ def v_capture(cwd=None, name=None):
     final_msg = (hook.get("last_assistant_message") or "").strip()
     if final_msg and (not texts_all or texts_all[-1].strip() != final_msg): texts_all.append(final_msg)
     cwd = cwd or hook.get("cwd")
+    VOICE[0] = "hub:" + ((hook.get("session_id") or "")[:8] or "unknown")   # C25: the voice of these sentences
     if not texts_all: print("capture: no assistant text in the tail"); return
     name = name or project_for_cwd(cwd)
     if not name: print("capture: cwd %s belongs to no cortex project; nothing ingested" % cwd); return
@@ -1098,6 +1119,8 @@ def v_status(name=None):
         if c:
             d = json.loads(c[3]); caps.append("%s %s (%s, %d sentences, %d new%s)" % (nm, time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0))), d.get("event", "stop"), d.get("sentences", 0), d.get("new", 0), ", final message in" if d.get("final") else ""))
     print("captures: " + ("; ".join(caps) if caps else "none yet") + " | a stale time here is a failed or missing capture (C20)")
+    vs = voices()
+    if vs: print("voices: " + "; ".join("%s claims %d, confirmed %d, false %d, guesses %d, trust %s" % (vn, d["claims"], d["confirmed"], d["false"], d["guesses"], ("%.2f" % t) if t is not None else "none yet") for (vn, d, t) in vs) + " | proven by receipt or shape only; a labeled guess is not counted (C25)")
     names = [name] if name else sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0")))
     for nm in names:
         pr = cx_get("project", nm, 0)
