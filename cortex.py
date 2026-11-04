@@ -294,7 +294,7 @@ def key_pairs(name, run):
 def pair_ground(name, run):
     # per pair of the claim: the sources and projects that hold it; the pairs held nowhere are where the run leaves known ground
     held, memory, none = {}, {}, []
-    srcn = [nm for (nm, band) in sources()]; pjs = [pj for pj in projects()]
+    srcn = [nm for (nm, band) in sources()]; routed = [nm for (nm, band) in routed_sources(name)]; pjs = [pj for pj in projects()]
     for (a, b) in pairs_of(run):
         k = pair_key(a, b)
         who = [nm for nm in srcn if cx_get("pair", nm, k)]
@@ -304,8 +304,8 @@ def pair_ground(name, run):
             if had and not (pj == name and json.loads(had[3]).get("first") == run): memory[pj] = memory.get(pj, 0) + 1
         if not who: none.append("%s %s" % (sym_of(a), sym_of(b)))   # held by no source; a project's own ingests are memory, a model's words, never ground
     np_ = len(pairs_of(run))
-    agree = sorted([nm for nm, c in held.items() if np_ and c * 2 >= np_])   # a source agrees with a claim when it holds at least half of its pairs (C24: the belief row weighs sources agreeing)
-    return {"pairs": np_, "held_by": held, "memory": memory, "none": none, "agree": agree, "sources": len(srcn)}
+    agree = sorted([nm for nm, c in held.items() if nm in routed and np_ and c * 2 >= np_])   # C36: agreement is counted over the routed sources   # a source agrees with a claim when it holds at least half of its pairs (C24: the belief row weighs sources agreeing)
+    return {"pairs": np_, "held_by": held, "memory": memory, "none": none, "agree": agree, "sources": len(routed), "routed": len(routed) < len(srcn)}
 def owner_conflict(run):
     # C26: the owner's lines that share this claim's pairs; one that differs only by a value or a negation is a contradiction to ask about, never a verdict (the owner can be wrong by error)
     owners = [nm for (nm, band) in sources() if band == "owner"]
@@ -366,11 +366,13 @@ def numbers(text, clock=False):
     # the value tokens of a sentence (393g, 300, 9%); times and dates (13:19, 11-03) are not values unless the claim is about a clock (C34)
     t = text.lower()
     t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)   # 2,188 is one number
+    t = re.sub(r"(?<![\w.])\d[\w.]*(?:-[\w.]+)+", lambda m: " " if re.search(r"[a-z]", m.group(0)) else m.group(0), t)   # C35.1: 48-2026-11-03-cortex-unattended is a name; 0.20-0.80 stays two values
     if not clock: t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", t)
     else: t = re.sub(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b", lambda m: " %s:%s " % (m.group(1), m.group(2)), t)
     t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t)   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
-    return [y for y in (x.strip("'\"()[]{}").rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t)) if y]   # quotes and brackets around a number are punctuation
+    return [y for y in (x.strip("'\"()[]{}").rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t)) if y and VALUE_TOKEN.match(y)]   # quotes and brackets around a number are punctuation
 NUM_CLOCK = re.compile(r"(?<![\w.])\d[\w.%:]*")
+VALUE_TOKEN = re.compile(r"^(\d+(\.\d+)?[a-z%]{0,3}|\d{1,2}:\d{2}(:\d{2})?)$")   # C35.1: a value is digits, a decimal, a short unit or a clock; 60e27de and 7c20c611 are names, not values
 SCALE = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "billion": 1e9}
 UNITS = {"ms": ("t", 1.0), "s": ("t", 1e3), "sec": ("t", 1e3), "secs": ("t", 1e3), "min": ("t", 6e4), "mins": ("t", 6e4), "h": ("t", 3.6e6), "hr": ("t", 3.6e6), "hrs": ("t", 3.6e6),
          "b": ("z", 1.0), "kb": ("z", 1e3), "k": ("z", 1e3), "mb": ("z", 1e6), "m": ("z", 1e6), "gb": ("z", 1e9), "g": ("z", 1e9), "tb": ("z", 1e12), "t": ("z", 1e12)}   # C35: a unit is meaning: the same quantity in another unit is the same value
@@ -433,6 +435,139 @@ def measures():
         try: return json.loads(had[3])
         except ValueError: pass
     cx_put("measures", "judge", 0, 0, clock(), json.dumps(MEASURES_DEFAULT)); return dict(MEASURES_DEFAULT)
+DESIGNS_DEFAULT = {"projects": ["cortex", "neuron"], "words": ["neuron", "nexus", "thesis coin", "cortex"],
+                   "note": "C37 (the owner, 11-04 03:5x): many of my designs have never been done before in that way; there is no box to classify it against until enough of my design exists to have a grounding reference; the designs are fluid, time and state keep the other attempts"}
+def designs():
+    had = cx_get("designs", "judge", 0)
+    if had:
+        try: return json.loads(had[3])
+        except ValueError: pass
+    cx_put("designs", "judge", 0, 0, clock(), json.dumps(DESIGNS_DEFAULT)); return dict(DESIGNS_DEFAULT)
+def own_design(name): return name in (designs().get("projects") or [])
+ROUTES_DEFAULT = {"cortex": ["meaning", "belief", "software", "neural", "language", "logic"], "neuron": ["neural", "meaning", "language", "memory", "software", "logic", "encyclopedia"], "audit": ["software"], "probe": ["software"],
+                  "note": "C36 (the owner, 11-04 03:5x: adding more sources and the routes for them): a project routes to the domains its claims are about; a source carries its domains; agreement counts the routed sources; an owner source is always routed"}
+def routes():
+    had = cx_get("routes", "judge", 0)
+    if had:
+        try: return json.loads(had[3])
+        except ValueError: pass
+    cx_put("routes", "judge", 0, 0, clock(), json.dumps(ROUTES_DEFAULT)); return dict(ROUTES_DEFAULT)
+_SRCD = {}
+def source_info(nm):
+    if nm not in _SRCD:
+        had = cx_get("source", nm, 0)
+        try: _SRCD[nm] = json.loads(had[3]) if had else {}
+        except ValueError: _SRCD[nm] = {}
+    return _SRCD[nm]
+def routed_sources(name):
+    # C36: the sources whose domains the project routes to, and every owner source; every source when no reference is routed
+    want = set(routes().get(name) or [])
+    rs = [(nm, b) for (nm, b) in sources() if b == "owner" or (want & set(source_info(nm).get("domain") or []))]
+    return rs if any(b == "reference" for (nm, b) in rs) else sources()
+def v_sources():
+    ensure_cx(); print("%-44s %-9s %-26s %7s  %s" % ("source", "band", "domains", "lines", "what, where from, as of"))
+    for (nm, b) in sources():
+        d = source_info(nm); cnt = q("SELECT count(*) FROM main.cx WHERE kind = 'source' AND name = ? AND n > 0", nm)[0][0]
+        print("%-44s %-9s %-26s %7d  %s" % (nm, b, ",".join(d.get("domain") or []) or "-", cnt, (d.get("text") or "")[:100]))
+    R = routes(); print("routes: " + "; ".join("%s -> %s" % (k, ",".join(v)) for k, v in R.items() if k != "note") + " | a project routes to domains; agreement counts the routed sources (C36)")
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+WD_ABBR = {"mon": 0, "tue": 1, "tues": 1, "wed": 2, "thu": 3, "thur": 3, "thurs": 3, "fri": 4, "sat": 5, "sun": 6}
+WHEN_RE = r"\b(?:(?:last |this )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(?:last |this )(?:mon|tues|tue|wed|thurs|thur|thu|fri|sat|sun))\b"
+def windows_of(text, ts):
+    # C38 (the owner, 11-04): a weekday, yesterday, today, a date or a clock time in a claim names a window of the graph's own time, resolved against the claim's own time
+    import datetime
+    low = text.lower(); d0 = datetime.datetime.fromtimestamp(ts); day0 = d0.replace(hour=0, minute=0, second=0, microsecond=0); out = []
+    def day(dt, label):
+        a = int(dt.timestamp())
+        for i, (l0, a0, b0) in enumerate(out):
+            if a0 == a: out[i] = (l0 if label in l0 else l0 + ", " + label, a0, b0); return
+        out.append((label, a, a + 86399))
+    for m in re.finditer(WHEN_RE, low):
+        w = m.group(0).split()[-1]; idx = WEEKDAYS.index(w) if w in WEEKDAYS else WD_ABBR[w]; back = (day0.weekday() - idx) % 7 or 7
+        day(day0 - datetime.timedelta(days=back), m.group(0).strip())
+    if re.search(r"\byesterday\b|\blast night\b", low): day(day0 - datetime.timedelta(days=1), "yesterday")
+    if re.search(r"\btoday\b|\btonight\b|\bthis morning\b|\bthis afternoon\b|\bthis evening\b", low): day(day0, "today")
+    if re.search(r"\blast week\b", low):
+        a = day0 - datetime.timedelta(days=day0.weekday() + 7); out.append(("last week", int(a.timestamp()), int(a.timestamp()) + 7 * 86400 - 1))
+    for m in re.finditer(r"\b(\d{4})-(\d{2})-(\d{2})\b", low):
+        try: day(datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))), m.group(0))
+        except ValueError: pass
+    for m in re.finditer(r"(?<![\d-])(\d{1,2})-(\d{2})(?![\d-])", low):
+        try:
+            dt = datetime.datetime(d0.year, int(m.group(1)), int(m.group(2)))
+            if dt > d0: dt = dt.replace(year=d0.year - 1)
+            day(dt, m.group(0))
+        except ValueError: pass
+    return out[:4]
+def timeline_lines(name, t0, t1, limit=400):
+    return q("SELECT n, run, ts, value FROM main.cx WHERE kind = 'ingest' AND name = ? AND n > 0 AND ts >= ? AND ts <= ? ORDER BY ts LIMIT ?", name, t0, t1, limit)
+def timeline_cells(name, run, text, ts):
+    # C38: for each window the claim names, the project's own record in it: how many of the claim's words and pairs those lines hold
+    wins = windows_of(text, ts or int(time.time()))
+    if not wins: return None
+    words = set(g for g in content_gates(run) if not is_value(g)); prs = set(pairs_of(run)); out = []
+    for (label, t0, t1) in wins:
+        rows = [r for r in timeline_lines(name, t0, t1) if r[1] != run]
+        held_w, held_p, best = set(), set(), []
+        for (k, r0, ts0, v) in rows:
+            gs = [g for g in content_gates(r0) if not is_value(g)]; gset = set(gs); hw = words & gset
+            if hw: held_w |= hw; best.append((len(hw), r0))
+            if prs: held_p |= prs & set(zip(gs, gs[1:]))
+        best.sort(reverse=True)
+        out.append({"when": label, "t0": t0, "t1": t1, "lines": len(rows), "words": len(words), "words_held": len(held_w), "pairs": len(prs), "pairs_held": len(held_p), "missing": sorted(sym_of(g) for g in words - held_w)[:8], "best": [r0 for (_, r0) in best[:3]]})
+    return out
+def v_at(name, words):
+    # C38 (the owner, 11-04: last tuesday what was the state of neuron): the state of a project at a time of the graph's own, and the lines that held a word
+    ensure_cx(); pr = cx_get("project", name, 0)
+    if not pr: raise SystemExit("no project " + name)
+    text = " ".join(words); now = int(time.time()); wins = windows_of(text, now)
+    rest = re.sub(WHEN_RE + r"|\byesterday\b|\btoday\b|\btonight\b|\blast week\b|\b\d{4}-\d{2}-\d{2}\b|(?<![\d-])\d{1,2}-\d{2}(?![\d-])", " ", text.lower())
+    terms = [w for w in re.findall(r"[a-z][a-z0-9']+", rest) if w not in STOP]
+    if not wins and not terms: raise SystemExit("cortex at <project> <when> [word]: a weekday, yesterday, today, a date, or a word")
+    if not wins: wins = [("all time", 0, now)]
+    for (label, t0, t1) in wins:
+        print("AT %s, %s (%s to %s):" % (name, label, time.strftime("%Y-%m-%d %H:%M", time.localtime(t0)) if t0 else "the first line", time.strftime("%Y-%m-%d %H:%M", time.localtime(t1))))
+        snaps = q("SELECT value FROM main.cx WHERE kind = 'formula' AND name = ? AND n > 0 AND ts <= ? ORDER BY n DESC LIMIT 1", name, t1)
+        if snaps:
+            sn = json.loads(snaps[0][0]); cps = sn["checkpoints"]
+            done = sorted(int(k) for k, c in cps.items() if c["state"] == "done"); work = sorted(int(k) for k, c in cps.items() if c["state"] == "working"); opn = sorted(int(k) for k, c in cps.items() if c["state"] == "open")
+            print("  as of the formula snapshot %s: %d checkpoints, %d done%s%s; %d ingests, %d verdicts" % (time.strftime("%m-%d %H:%M", time.localtime(sn["ts"])), len(cps), len(done), ("; working " + " ".join("C%d" % x for x in work)) if work else "", ("; open " + " ".join("C%d" % x for x in opn)) if opn else "", sn["ingests"], sn["verdicts"]))
+        else:
+            regd = [n for (n, run, at, ts, text0) in cx_list("checkpoint", name) if ts <= t1]
+            print("  no formula snapshot before then; %d checkpoints registered by then" % len(regd))
+        rows = timeline_lines(name, t0, t1, 1200); voices = {}
+        for (k, r0, ts0, v) in rows:
+            try: vc = json.loads(v).get("voice", "hand") if v and v.startswith("{") else "hand"
+            except ValueError: vc = "hand"
+            voices[vc] = voices.get(vc, 0) + 1
+        vk = {}
+        for (v,) in q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1):
+            d = json.loads(v); vk[d.get("kind")] = vk.get(d.get("kind"), 0) + 1
+        qs = q("SELECT count(*) FROM main.cx WHERE kind = 'question' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1)[0][0]
+        pa = [json.loads(v) for (v,) in q("SELECT value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1)]
+        acc = [p for p in pa if not (p.get("superseded_by") or p.get("rejected_by"))]; ret = [p for p in pa if p.get("superseded_by") or p.get("rejected_by")]
+        print("  lines typed: %d (%s); verdicts: %s; questions asked: %d; parts accepted then and still standing: %d; parts of that time since retired: %d" % (len(rows), ", ".join("%s %d" % kv for kv in sorted(voices.items(), key=lambda kv: -kv[1])) or "none", ", ".join("%s %d" % kv for kv in sorted(vk.items(), key=lambda kv: -kv[1])) or "none", qs, len(acc), len(ret)))
+        for p in ret[:6]: print("    retired: C%s run %d (%s) %s: %s" % (p.get("n"), p.get("run"), time.strftime("%m-%d %H:%M", time.localtime(p.get("ts", 0))), ("superseded by run %s" % p["superseded_by"]) if p.get("superseded_by") else "rejected by the owner", line_text(p["run"])[:80]))
+        if terms:
+            gs = [g for g in (gate_of(w) for w in terms) if g]
+            if not gs: print("  word %s: no gate in the brain" % " ".join(terms)); continue
+            for g in gs:
+                had = cx_get("gate", name, g); d = json.loads(had[3]) if had else None
+                print("  word %s in %s: %s" % (sym_of(g), name, ("first run %d, last run %d, %d times" % (d["first"], d["last"], d["times"])) if d else "never"))
+            hit = [(ts0, r0) for (k, r0, ts0, v) in rows if all(g in set(content_gates(r0)) for g in gs)]
+            print("  lines holding %s in this window: %d of %d read" % (" ".join(sym_of(g) for g in gs), len(hit), len(rows)))
+            for (ts0, r0) in hit[-12:]:
+                vd = cx_get("verdict", name, r0); d = json.loads(vd[3]) if vd else {}; pt = cx_get("part", name, text_key(line_text(r0))); pd = json.loads(pt[3]) if pt else None
+                st = "-" if not pd else ("rejected" if pd.get("rejected_by") == "owner" else ("retired" if (pd.get("superseded_by") or pd.get("rejected_by")) else "part"))
+                print("    %s run %d %s %s: %s" % (time.strftime("%m-%d %H:%M", time.localtime(ts0)), r0, (d.get("kind") or "unjudged") if d else "unjudged", st, line_text(r0)[:100]))
+def rebuild_voices():
+    # the voice rows and the per-word rows recomputed from the newest verdict of every judged run (after a re-judge or a rule change)
+    ensure_cx(); q("DELETE FROM main.cx WHERE kind IN ('voice', 'vgate')"); n = 0
+    for nm in projects():
+        for (run, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n", nm):
+            d = json.loads(v); by = d.get("judge") if d.get("judge") in ("receipt", "shape", "sources") else "judgment"
+            tally_voice(d.get("voice", "hand"), d.get("kind"), by, bool(d.get("guess")), nm, run); n += 1
+    print("voices rebuilt from %d verdicts" % n)
 def measure_of(text):
     # C34: the words of a claim that name a measure, and the prints that settle them (the owner: if date and today had actions, meaning, this would be possible)
     M = measures(); ws = set(re.findall(r"[a-z][a-z']+", text.lower())); hit = {}
@@ -487,7 +622,7 @@ def ground_cells(name, n, run, text, new_syms):
     return cells
 def ground_str(g):
     if not g: return "no ground"
-    items = ["%s %d" % (k, g[k]) for k in ("receipt", "owner", "reference", "memory") if g.get(k)]
+    items = ["%s %d" % (k, g[k]) for k in ("receipt", "owner", "reference", "memory", "timeline") if g.get(k)]
     if g.get("by_source") and len(g["by_source"]) > 1: items.append("(" + " ".join("%s %d" % kv for kv in sorted(g["by_source"].items(), key=lambda kv: -kv[1])[:4]) + ")")
     if g.get("none"): items.append("none: " + ",".join(g["none"]))
     if g.get("of"): items.append("agreement %d of %d" % (g.get("agree", 0), g["of"]))
@@ -509,13 +644,17 @@ def v_receipt(name, n, cmd):
     cx_put("receipts", name, n, got[-1]["run"] if got else 0, clock(), json.dumps(rc))
     for x in got: print("receipt run %d %s C%d: %s => %s" % (x["run"], name, n, cmd, receipt_line(x)[:100]))
     print("receipt: %d lines typed in %.0f ms; %s C%d has receipts of: %s" % (len(got), (time.time() - t0) * 1000, name, n, ", ".join(sorted(rc))))
-def v_source(name, band=None, text=None):
+def v_source(name, band=None, text=None, domain=None):
+    if band is None and text is None and domain is not None:   # C36: cortex source <name> --domain a,b sets the domains of a registered source
+        ensure_cx(); had = cx_get("source", name, 0)
+        if not had: raise SystemExit("no source " + name)
+        d = json.loads(had[3]); d["domain"] = domain; cx_put("source", name, 0, had[0], had[1], json.dumps(d)); _SRCD.pop(name, None); print("source %s domains: %s" % (name, ",".join(domain))); return
     # a source is a project of typed lines: cortex source <name> owner|reference : <what it is, where from, as of>; then cortex source <name> - types its lines from stdin (build time, no judge)
     ensure_cx()
     if band:
         if band not in BANDS: raise SystemExit("a source band is owner or reference (a receipt comes from cortex receipt)")
-        run, at, _ = record("source", name, 0, "%s : %s" % (band, text)); cx_put("source", name, 0, run, at, json.dumps({"band": band, "text": text, "ts": int(time.time())}))
-        print("source %s (%s) run %d: %s" % (name, band, run, text[:120])); return
+        run, at, _ = record("source", name, 0, "%s : %s" % (band, text)); cx_put("source", name, 0, run, at, json.dumps({"band": band, "text": text, "ts": int(time.time()), "domain": domain or []}))
+        print("source %s (%s%s) run %d: %s" % (name, band, (", " + ",".join(domain)) if domain else "", run, text[:120])); return
     if not cx_get("source", name, 0): raise SystemExit("register the source first: cortex source %s owner|reference : <what it is, where from, as of>" % name)
     raw = sys.stdin.read(); t0 = time.time(); n_typed = dupes = noise = refused = 0
     for sent in sentences(raw):
@@ -770,6 +909,13 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
     cells["pair_ground"] = pair_ground(name, run)
     cells["owner_conflict"] = owner_conflict(run)
     cells["sources"] = source_check(run)
+    iv = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
+    try: ivd = json.loads(iv[0][0]) if iv and iv[0][0].startswith("{") else {}
+    except (ValueError, TypeError): ivd = {}
+    cells["voice"] = ivd.get("voice", "hand"); cells["designer"] = own_design(name) and cells["voice"] == "owner"   # C37
+    had_i = cx_get("ingest", name, text_key(text)); cells["timeline"] = timeline_cells(name, run, text, had_i[2] if had_i else None)   # C38
+    for tl in (cells["timeline"] or []):
+        if tl["words_held"]: cells["ground"]["timeline"] = max(cells["ground"].get("timeline", 0), tl["words_held"])
     return cells
 def formula(cells, answers):
     # the substitution formulas over a full sheet, in order: what the shape settles, then the deterministic word cells, then the judgment cells
@@ -777,7 +923,7 @@ def formula(cells, answers):
     if cells.get("same_as"): return "dupe", "shape"                                   # the kernel's own repeat of an earlier run
     if cells.get("echo"): return "dupe", "shape"                                      # the expected sentence's own shape with nothing out of line: words, no observation
     sc = cells.get("sources") or {}
-    if len(sc.get("disagree", [])) >= 3 and not sc.get("confirm"): return "hallucination", "sources"   # C28 (the owner): a statement proven false by three or more sources
+    if len(sc.get("disagree", [])) >= 3 and not sc.get("confirm") and not cells.get("designer"): return "hallucination", "sources"   # C37: never for the designer on their own design, that is a question   # C28 (the owner): a statement proven false by three or more sources
     rb = cells.get("receipt_before_claim")
     about = cells.get("receipt_named") or cells.get("numbers_in_ext") or cells.get("shape_expected", 0) >= 0.5   # C22: the claim is about this print: names its command, cites its values, or states the expected
     if rb and cells.get("numbers_out") and about: return "hallucination", "receipt"   # a value the machine never printed, said after the print, by a claim about that print (C35b: a number beside a missing measure's word was set aside as unchecked)
@@ -830,8 +976,11 @@ def belief_of(voice, name, kind, by, sc):
     conf = sc.get("confirm", []) if sc else []
     ref_conf = [x for x in conf if x not in owner_srcs]; owner_conf = any(x in owner_srcs for x in conf) or band == "owner"
     if by == "receipt" and kind in ("completes", "progresses", "supersedes", "holds"): return 1.0, "the machine's print"
-    if len(ref_conf) >= 2: return (B["reference_agree"] if band == "owner" else B["llm_and_two_sources"]), "two sources agree"
-    if len(ref_conf) == 1 and owner_conf: return B["owner_and_source"], "the owner and a source agree"
+    own = own_design(name) and owner_conf   # C37 (the owner, 11-04): on a design of the owner, the owner's line is a reference until the design's own prints ground it
+    if own: ref_conf = ref_conf + ["the designer"]
+    if len(ref_conf) >= 2: return (B["reference_agree"] if band == "owner" else B["llm_and_two_sources"]), "two sources agree" + (" (the designer counted, C37)" if own else "")
+    if len(ref_conf) == 1 and owner_conf and not own: return B["owner_and_source"], "the owner and a source agree"
+    if len(ref_conf) == 1 and own: return max(B["reference_alone"], round(banded, 2) if band == "owner" else 0.0), "the designer on their own design: a reference alone until the design's prints ground it (C37)"
     if len(ref_conf) == 1: return B["reference_alone"], "a reference alone"
     if owner_conf and band == "llm": return B["llm_and_owner"], "llm and owner agree, no source"
     return round(banded, 2), "the voice alone, inside its band %.2f to %.2f" % (lo, hi)
@@ -920,8 +1069,14 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s | agreement %d of %d sources%s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-", len(pg.get("agree", [])), pg.get("sources", 0), (" (" + ", ".join(pg["agree"][:4]) + ")") if pg.get("agree") else ""))
     no_source = pg.get("pairs", 0) >= 3 and not pg.get("held_by") and not cells.get("numbers_in_ext")   # no source holds any pair and no print grounds a value: the run left known ground at its first pair
     unknown = (cells.get("ground", {}).get("none") or []) + ([("pair: " + x) for x in pg.get("none", [])[:6]] if no_source else [])
+    for tl in (cells.get("timeline") or []):   # C38: the record of the graph's own time is the ground for a claim that names a time
+        print("  timeline: %s (%s) holds %d of %d words and %d of %d pairs in %d lines of %s%s (C38)" % (tl["when"], time.strftime("%m-%d", time.localtime(tl["t0"])), tl["words_held"], tl["words"], tl["pairs_held"], tl["pairs"], tl["lines"], name, (" | not held: " + ", ".join(tl["missing"])) if tl["missing"] else ""))
+        if not tl["lines"]: unknown = ["no record of %s on %s (%s)" % (name, tl["when"], time.strftime("%m-%d", time.localtime(tl["t0"])))] + unknown
+        elif tl["words"] and tl["words_held"] * 2 < tl["words"]: unknown = ["the record of %s on %s does not hold: %s" % (name, tl["when"], ", ".join(tl["missing"][:6]))] + unknown
     sc = cells.get("sources") or {}
     if sc.get("confirm") or sc.get("disagree"): print("  sources: %d confirm (%s) | %d disagree (%s)" % (len(sc.get("confirm", [])), ", ".join(sc.get("confirm", [])[:4]), len(sc.get("disagree", [])), "; ".join("%s differs by %s: %s" % (d["source"], ",".join(d["differs"]), d["line"][:70]) for d in sc.get("disagree", [])[:3])))
+    if cells.get("designer") and len(sc.get("disagree", [])) >= 3 and not sc.get("confirm"):   # C37
+        print("  three sources disagree with the designer on their own design: a question, not a verdict (C37)"); unknown = ["three sources disagree with the designer: " + "; ".join("%s: %s" % (d["source"], d["line"][:60]) for d in sc["disagree"][:3])] + unknown
     oc = cells.get("owner_conflict")
     if oc:
         print("  against an owner line (differs by %s): %s" % (",".join(oc["differs"]), oc["line"][:120])); unknown = ["against the owner line run %d (%s): %s" % (oc["run"], ",".join(oc["differs"]), oc["line"][:80])] + unknown
@@ -1384,6 +1539,11 @@ USAGE = """cortex <verb> ...
   remainder <name> [<n> : <text>]          the contract's parts left not satisfied, typed on their checkpoint; <name> alone lists them and names the next work
   remainder <name> <n> <k> satisfied [: by what]
   freeze <path>                            sha of the handler into the brain; file read-only
+  source <name> --domain a,b               the domains of a source (C36); a project routes to domains, agreement counts the routed sources
+  sources                                  every source with its band, domains, lines and origin, and the routes
+  at <name> <when> [word]                  C38: the state of the project at a time of the graph's own (last tuesday, yesterday, 11-03), and the lines that held a word, each with its verdict and part state
+  ingest <name> --voice <who> <text>       the voice of a hand ingest (owner, hand, a session); the capture sets it by itself
+  voices --rebuild                         recompute every voice's counts from the newest verdict of each judged run
   accept <name> <n> [run]                  the owner's word: with a run, that sentence is a part of C n's state; without, C n is done
   reject <name> <n> <run>                  the owner's word: that sentence is not a part of C n's state, whatever the judge said
   mark <name> <run> <kind> [: <why>]       the labeled set: what that judged sentence was (completes progresses regresses supersedes drift invention hallucination dupe noise unsettled)
@@ -1407,7 +1567,9 @@ def main(argv):
     elif v == "state": v_state(a[0], int(a[1]), a[2])
     elif v == "accept": v_accept(a[0], int(a[1]), int(a[2]) if len(a) > 2 else None)
     elif v == "reject": v_reject(a[0], int(a[1]), int(a[2]))
-    elif v == "ingest": v_ingest(a[0], sys.stdin.read() if a[1:] == ["-"] else " ".join(a[1:]))
+    elif v == "ingest":
+        if "--voice" in a: i = a.index("--voice"); VOICE[0] = a[i + 1]; a = a[:i] + a[i + 2:]
+        v_ingest(a[0], sys.stdin.read() if a[1:] == ["-"] else " ".join(a[1:]))
     elif v == "judge": v_judge(a[0], int(a[1]), int(a[2]))
     elif v == "hydrate": v_hydrate(a[0], int(a[a.index("--at") + 1]) if "--at" in a else None)
     elif v == "turn":
@@ -1432,9 +1594,17 @@ def main(argv):
     elif v == "verdicts": v_verdicts(a[0], int(a[1]) if len(a) > 1 and a[1].isdigit() else None, int(a[a.index("--limit") + 1]) if "--limit" in a else 40)
     elif v == "receipt": v_receipt(a[0], int(a[1]), " ".join(a[2:]))
     elif v == "source":
+        dom = None
+        if "--domain" in a: i = a.index("--domain"); dom = [x for x in a[i + 1].split(",") if x]; a = a[:i] + a[i + 2:]
         if len(a) >= 2 and a[1] == "-": v_source(a[0])
+        elif dom is not None and " : " not in " ".join(a): v_source(a[0], None, None, dom)
         else:
-            s2 = " ".join(a); k2, t2 = split_colon(a); v_source(k2[0], k2[1] if len(k2) > 1 else None, t2)
+            k2, t2 = split_colon(a); v_source(k2[0], k2[1] if len(k2) > 1 else None, t2, dom)
+    elif v == "sources": v_sources()
+    elif v == "at": v_at(a[0], a[1:])
+    elif v == "voices":
+        if "--rebuild" in a: rebuild_voices()
+        else: print("cortex voices --rebuild   recompute every voice's counts from the newest verdict of each judged run")
     elif v == "questions": v_questions(a[0], int(a[1]) if len(a) > 1 else None)
     elif v == "remainder":
         if len(a) == 1: v_remainder(a[0])
