@@ -604,6 +604,18 @@ def measure_of(text, name=None):
 def receipts_of(name, n):
     had = cx_get("receipts", name, n)
     return json.loads(had[3]) if had else {}
+_SPECN = {}
+def spec_numbers(spec):
+    # the numbers a project's spec source states, read from its replayed lines (a number is digit gates in the brain, so the gate key cannot hold it whole)
+    if spec not in _SPECN:
+        out = set()
+        for (k, run) in q("SELECT n, run FROM main.cx WHERE kind = ? AND name = ? AND n > 0 LIMIT 400", "source", spec):
+            if run: out |= set(numbers(line_text(run)))
+        _SPECN[spec] = out
+    return _SPECN[spec]
+def jload(v):
+    try: return json.loads(v) if v and v.startswith("{") else {}
+    except (ValueError, TypeError): return {}
 def ground_cells(name, n, run, text, new_syms):
     # per word gate: which ground holds it (receipt, owner, reference, the project's own memory, none); per number: did the machine print it
     meas = measure_of(text, name); is_clock = "date" in meas
@@ -641,7 +653,7 @@ def ground_cells(name, n, run, text, new_syms):
         cells["numbers_in"] = [t for t in cells["numbers"] if t in rnums]; cells["numbers_out"] = [t for t in cells["numbers"] if t not in rnums]
         spec = name + "-repo"   # C47b: the numbers the project's own spec states (the repo source, the owner's voice) are ground; the worker may describe its input
         if cx_get("source", spec, 0) and cells["numbers_out"]:
-            held = [t for t in cells["numbers_out"] if gate_of(t) and cx_get("gate", spec, gate_of(t))]
+            held = [t for t in cells["numbers_out"] if t in spec_numbers(spec)]
             if held: cells["numbers_out"] = [t for t in cells["numbers_out"] if t not in held]; cells["numbers_spec"] = held
         cells["numbers_in_ext"] = [t for t in cells["numbers"] if t in rnums_ext]
         cells["numbers_rounded"] = {}
@@ -1313,7 +1325,7 @@ def hydration_text(name, pr, nxt):
     for (n, run, at, ts, text) in cx_list("checkpoint", name):
         st = cx_get("state", name, n); s = st[3] if st else "open"
         lines.append("  C%d [%s] %s" % (n, s, text[:70] if (s == "done" and n != nxt) else (text if n == nxt else text[:160])))
-    vs = [(n, json.loads(v)) for (n, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 40", name)]
+    vs = [(n, jload(v)) for (n, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 40", name)]
     moves = [(n, d) for (n, d) in vs if d.get("kind") in ("completes", "progresses", "supersedes", "holds") and d.get("part") and not str(d.get("part")).startswith("refused")][:3]
     if moves:
         lines.append("LAST MOVES (verdicts that added state; drift, hallucination and invention never hydrate, C40):")
@@ -1520,6 +1532,8 @@ def v_decide(name, k, how, text=None):
     if not had: raise SystemExit("no hand-back %d of %s" % (k, name))
     d = json.loads(had[3]); n = d["n"]
     if how not in ("accept", "reject", "checkpoint"): raise SystemExit("decide accept|reject|checkpoint")
+    note = text if (how != "checkpoint" and text and " || " not in text) else None   # a note after the colon is the decision reason, not a re-typed checkpoint
+    if note: text = None
     if how in ("accept", "checkpoint") and text:
         exp = None
         if " || " in text: text, exp = text.split(" || ", 1)
@@ -1529,7 +1543,7 @@ def v_decide(name, k, how, text=None):
     for r in rs:
         if r["run"] == d.get("remainder_run") and not r.get("satisfied"): r["satisfied"] = "decided %s by the owner or the liaison %s" % (how, time.strftime("%m-%d %H:%M")); r["satisfied_ts"] = int(time.time())
     cx_put("remainder", name, n, d.get("remainder_run") or 0, clock(), json.dumps(rs))
-    d["decided"] = how; d["decided_ts"] = int(time.time()); cx_put("handback", name, k, had[0], had[1], json.dumps(d))
+    d["decided"] = how; d["decided_ts"] = int(time.time()); d["note"] = note; cx_put("handback", name, k, had[0], had[1], json.dumps(d))
     st = cx_get("state", name, n)
     if not st or st[3] != "done": v_state(name, n, "working")
     print("hand-back %d of %s decided: %s; C%d unparked; cortex build %s continues" % (k, name, how, n, name))
@@ -1825,7 +1839,8 @@ def v_status(name=None):
         for (n, run, at, ts, text) in cx_list("checkpoint", nm):
             s = cx_get("state", nm, n); print("  C%d [%s]%s %s" % (n, s[3] if s else "open", " NEXT" if n == nxt else "", text[:110]))
         for (n, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", nm):
-            d = json.loads(v); print("  verdict run %d C%s %s %.2f (%s): %s" % (n, d.get("n"), d.get("kind"), d.get("p", 0), d.get("judge"), line_text(n)[:70]))
+            d = jload(v)
+            if d: print("  verdict run %d C%s %s %.2f (%s): %s" % (n, d.get("n"), d.get("kind"), d.get("p", 0), d.get("judge"), line_text(n)[:70]))
 def v_freeze(path):
     ensure_cx(); sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
     run, at, _ = record("freeze", "handler", 0, sha); os.chmod(path, 0o444)
