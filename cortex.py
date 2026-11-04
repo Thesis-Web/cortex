@@ -370,6 +370,7 @@ def numbers(text, clock=False):
     t = re.sub(r"(?<![\w.])\d[\w.]*(?:-[\w.]+)+", lambda m: " " if re.search(r"[a-z]", m.group(0)) else m.group(0), t)   # C35.1: 48-2026-11-03-cortex-unattended is a name; 0.20-0.80 stays two values
     if not clock: t = re.sub(r"\b\d{1,2}:\d{2}(:\d{2})?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}-\d{2}\b", " ", t)
     else: t = re.sub(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b", lambda m: " %s:%s " % (m.group(1), m.group(2)), t)
+    t = re.sub(r"`(\d[\w.%]*)`", r" \1 ", t)   # C44c: a backticked number (`6`, `3.0`, `82mb`) is a value; a backticked command is not
     t = re.sub(r"`[^`]*`", " ", t); t = re.sub(r"--?[a-z][\w-]*[ =]\d+(\.\d+)?", " ", t); t = re.sub(r"(?:^|[\s:;])\$ [^;`]*", " ", t)   # C44b: a quoted shell command ($ python3 sum.py 1 2 3) is a command, its digits are arguments   # C22: a command in backticks or a flag's argument (--at 1, -m 300) is not a value
     return [y for y in (x.strip("'\"()[]{}").rstrip(".,;:") for x in (NUM_CLOCK if clock else NUM).findall(t)) if y and VALUE_TOKEN.match(y)]   # quotes and brackets around a number are punctuation
 NUM_CLOCK = re.compile(r"(?<![\w.])\d[\w.%:]*")
@@ -1251,7 +1252,7 @@ def hydration_text(name, pr, nxt):
         qs = open_questions(name, nxt, 5)
         if qs: lines.append("OPEN QUESTIONS (words of C%d's claims that no receipt, owner line or reference holds; the owner answers them, a worker never guesses them): " % nxt + "; ".join("run %d: %s" % (d["run"], ", ".join(d["words"])) for d in qs))
         lines.append("RECEIPTS RULE: before a sentence cites a print, pipe that print in: <command> | cortex receipt %s %d <command>; a sentence about a print names its command; a number said before its print is a guess; a print older than the claim is the only one that judges it." % (name, nxt))
-        lines.append("END YOUR ANSWER with one line `EXPECTED: met` or `EXPECTED: not met`, then the live output that shows it. Add `NEEDED: <what this hydration lacked>` if anything was missing, and `FLAW: <a flaw in this checkpoint or its expected that you cannot fix or verify yourself>` if you found one; the cortex hands a flaw back to the owner.")
+        lines.append("END YOUR ANSWER with one line `EXPECTED: met` or `EXPECTED: not met`, then one sentence that restates the EXPECTED OUTPUT above in its own words with the values you observed after piping the print (that sentence is what the judge matches against the print; a paraphrase does not close the checkpoint), then the live output. Add `NEEDED: <what this hydration lacked>` only for something still missing now, and `FLAW: <a flaw in this checkpoint or its expected that you cannot fix or verify yourself>` if you found one; the cortex hands a flaw back to the owner.")
     else:
         lines.append("DO NOW: nothing; every checkpoint is done. Say so.")
         left = [(cn, r) for (cn, run, at, ts, ctext) in cx_list("checkpoint", name) for r in remainders_of(name, cn) if not r.get("satisfied")]
@@ -1648,6 +1649,10 @@ def v_remainder(name, n=None, text=None, k=None, note=None):
     r = typed("cortex remainder %s %d : %s" % (name, n, text)); run = r["run"]; key_gates(name, run)
     rs.append({"k": len(rs) + 1, "run": run, "ts": int(time.time()), "satisfied": None})
     cx_put("remainder", name, n, run, clock(), json.dumps(rs)); print("remainder %s C%d.%d run %d: %s" % (name, n, len(rs), run, text[:120]))
+def v_need_clear(name, n):
+    had = cx_get("need", name, n)
+    if had: cx_put("need", name, n, had[0], had[1], "[]")
+    print("needs of %s C%d cleared (answered by the liaison)" % (name, n))
 def v_need(name, n, text, who="hand"):
     # C41: what a worker said the hydration lacked; typed on the checkpoint, carried by its next hydration
     ensure_cx()
@@ -1839,7 +1844,9 @@ def main(argv):
             i = a.index(flag) if flag in a else -1
             return a[i + 1] if i >= 0 and i + 1 < len(a) and not a[i + 1].startswith("--") else None
         v_capture(opt("--cwd"), opt("--name"))
-    elif v == "need": k4, t4 = split_colon(a); v_need(k4[0], int(k4[1]), t4)
+    elif v == "need":
+        if "--clear" in a: v_need_clear(a[0], int(a[1]))
+        else: k4, t4 = split_colon(a); v_need(k4[0], int(k4[1]), t4)
     elif v == "mark":
         s = " ".join(a); why = ""
         if " : " in s: s, why = s.split(" : ", 1)
