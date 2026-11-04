@@ -2131,6 +2131,8 @@ def test_kernel(cmd):
         subprocess.run(["cp", "--sparse=always", os.path.join(B, "brain.map"), os.path.join(T, "brain.map")], check=True)
         for f in ("brain.map.main.db", "brain.map.sixth.db", "brain.map.xyz"):
             if os.path.exists(os.path.join(B, f)): shutil.copy(os.path.join(B, f), os.path.join(T, f))
+        live_cx = os.path.join(HOME, "cortex", "nk", "sources", "cx.db")   # C54: the source db goes with the brain it answers
+        if os.path.exists(live_cx): shutil.copy(live_cx, os.path.join(NK, "sources", "cx.db"))
         t2 = time.time(); subprocess.run(["systemctl", "--user", "start", "cortex-nk", "cortex-page"], check=True)
         for i in range(300):
             if up(PORT): break
