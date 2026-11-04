@@ -296,7 +296,9 @@ def pair_ground(name, run):
             had = cx_get("pair", pj, k)
             if had and not (pj == name and json.loads(had[3]).get("first") == run): memory[pj] = memory.get(pj, 0) + 1
         if not who: none.append("%s %s" % (sym_of(a), sym_of(b)))   # held by no source; a project's own ingests are memory, a model's words, never ground
-    return {"pairs": len(pairs_of(run)), "held_by": held, "memory": memory, "none": none}
+    np_ = len(pairs_of(run))
+    agree = sorted([nm for nm, c in held.items() if np_ and c * 2 >= np_])   # a source agrees with a claim when it holds at least half of its pairs (C24: the belief row weighs sources agreeing)
+    return {"pairs": np_, "held_by": held, "memory": memory, "none": none, "agree": agree, "sources": len(srcn)}
 def key_gates(name, run):
     # the (project, gate) key: the first run of this project that crossed the gate and how many times since (the owner: the project's metadata on the gate)
     for g in set(content_gates(run)):
@@ -364,6 +366,7 @@ def ground_str(g):
     items = ["%s %d" % (k, g[k]) for k in ("receipt", "owner", "reference", "memory") if g.get(k)]
     if g.get("by_source") and len(g["by_source"]) > 1: items.append("(" + " ".join("%s %d" % kv for kv in sorted(g["by_source"].items(), key=lambda kv: -kv[1])[:4]) + ")")
     if g.get("none"): items.append("none: " + ",".join(g["none"]))
+    if g.get("of"): items.append("agreement %d of %d" % (g.get("agree", 0), g["of"]))
     return " ".join(items) or "no ground"
 def v_receipt(name, n, cmd):
     # the machine's own print, piped in (df -h / | cortex receipt audit 1 df -h /): typed as receipt lines and kept as the checkpoint's ground; a model's hand never retypes it
@@ -672,7 +675,9 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     body = "%s %.3f %s" % (kind, p, judge)
     vrun, at, _ = record("verdict", name, run, body)
     accepting = kind in ("completes", "progresses", "supersedes") and (name, n) not in NO_PARTS
-    part = add_part(name, n, run, text, p, judge, cells.get("ground")) if accepting else ("rejected" if retire_part(name, n, run, vrun, "rejected_by") else "")
+    gr = dict(cells.get("ground") or {}); pg0 = cells.get("pair_ground") or {}
+    if pg0.get("pairs"): gr["agree"] = len(pg0.get("agree", [])); gr["of"] = pg0.get("sources", 0)
+    part = add_part(name, n, run, text, p, judge, gr) if accepting else ("rejected" if retire_part(name, n, run, vrun, "rejected_by") else "")
     if kind == "supersedes" and cells.get("supersedes_run") and not part.startswith("refused") and retire_part(name, n, cells["supersedes_run"], run, "superseded_by"): part += " | retired the part of run %d" % cells["supersedes_run"]
     moved = ""
     if kind == "completes" and p >= THRESH and by not in ("shape", "receipt"): moved = " | a judgment cell's completes does not move the state: the receipt, the shape or the owner's accept does"
@@ -688,7 +693,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     geo = cells["geometry"]
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", (" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else ""))
     pg = cells.get("pair_ground") or {}
-    if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-"))
+    if pg.get("pairs"): print("  pairs: %d, held by sources %s | memory %s | held by no source: %s | agreement %d of %d sources%s" % (pg["pairs"], " ".join("%s %d" % kv for kv in sorted(pg["held_by"].items(), key=lambda kv: -kv[1])[:4]) or "none", " ".join("%s %d" % kv for kv in sorted(pg["memory"].items(), key=lambda kv: -kv[1])[:3]) or "none", "; ".join(pg["none"][:6]) or "-", len(pg.get("agree", [])), pg.get("sources", 0), (" (" + ", ".join(pg["agree"][:4]) + ")") if pg.get("agree") else ""))
     no_source = pg.get("pairs", 0) >= 3 and not pg.get("held_by") and not cells.get("numbers_in_ext")   # no source holds any pair and no print grounds a value: the run left known ground at its first pair
     unknown = (cells.get("ground", {}).get("none") or []) + ([("pair: " + x) for x in pg.get("none", [])[:6]] if no_source else [])
     if (len(unknown) >= 2 or no_source) and kind not in ("noise", "dupe", "drift"): ask_question(name, n, run, unknown[:8], vrun)
