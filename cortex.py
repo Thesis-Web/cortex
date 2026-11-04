@@ -692,7 +692,7 @@ def v_receipt(name, n, cmd):
         try: r = typed("cortex receipt %s %d : %s" % (name, n, body))
         except RuntimeError as e: print("receipt line refused: %s" % e); continue
         run = r["run"]; cx_put("receipt", name, text_key(body), run, clock(), json.dumps({"n": n, "cmd": cmd, "ts": int(time.time())})); key_gates(name, run); got.append({"run": run})
-    rc[cmd] = {"ts": int(time.time()), "lines": got}   # the newest print of this command is the ground; older prints stay as typed lines in the brain
+    rc[cmd] = {"ts": int(time.time()), "lines": got + (rc.get(cmd, {}).get("lines") or [])[:60]}   # the newest print first; the older prints of the same command stay on the checkpoint (C47d), so an older claim keeps the print it was made against
     cx_put("receipts", name, n, got[-1]["run"] if got else 0, clock(), json.dumps(rc))
     for x in got: print("receipt run %d %s C%d: %s => %s" % (x["run"], name, n, cmd, receipt_line(x)[:100]))
     print("receipt: %d lines typed in %.0f ms; %s C%d has receipts of: %s" % (len(got), (time.time() - t0) * 1000, name, n, ", ".join(sorted(rc))))
@@ -705,7 +705,7 @@ def type_receipt(name, n, cmd, lines):
         try: r = typed("cortex receipt %s %d : %s" % (name, n, body))
         except RuntimeError: continue
         cx_put("receipt", name, text_key(body), r["run"], clock(), json.dumps({"n": n, "cmd": cmd, "ts": int(time.time())})); key_gates(name, r["run"]); got.append({"run": r["run"]})
-    if got: rc[cmd] = {"ts": int(time.time()), "lines": got}; cx_put("receipts", name, n, got[-1]["run"], clock(), json.dumps(rc))
+    if got: rc[cmd] = {"ts": int(time.time()), "lines": got + (rc.get(cmd, {}).get("lines") or [])[:60]}; cx_put("receipts", name, n, got[-1]["run"], clock(), json.dumps(rc))
     return len(got)
 def v_check_set(name, n, cmd):
     ensure_cx()
@@ -1614,7 +1614,7 @@ def v_capture(cwd=None, name=None):
                 try: r = typed("cortex receipt %s %d : %s" % (name, nxt0, body))
                 except RuntimeError: continue
                 run0 = r["run"]; cx_put("receipt", name, text_key(body), run0, clock(), json.dumps({"n": nxt0, "cmd": cmdline, "ts": int(time.time()), "session": (hook.get("session_id") or "")[:8]})); key_gates(name, run0); got.append({"run": run0})
-            if got: rc[cmdline] = {"ts": int(time.time()), "lines": got}; cx_put("receipts", name, nxt0, got[-1]["run"], clock(), json.dumps(rc)); nrec += len(got)
+            if got: rc[cmdline] = {"ts": int(time.time()), "lines": got + (rc.get(cmdline, {}).get("lines") or [])[:60]}; cx_put("receipts", name, nxt0, got[-1]["run"], clock(), json.dumps(rc)); nrec += len(got)
         if nrec: print("receipts: %d lines typed from %d tool results for C%d" % (nrec, len(results[-40:]), nxt0))
     own = []
     if owner_texts:
