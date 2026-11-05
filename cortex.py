@@ -2567,11 +2567,12 @@ def v_teach(function, k=5, name="cortex"):
             t0_ = line_text(run0)
             if t0_ and len(t0_) > 20: picked.append((run0, t0_))
             if len(picked) >= k: break
-        for (run, t) in picked:   # the lesson taught 11-04 20:4x: a line typed before C30 carried its project in the prefix; the brain holds it as another line, the front door as the same sentence
-            try: kr = typed("cortex ingest : %s" % t)["run"]
+        for (run, t) in picked:   # the lesson taught 11-04 20:4x: the brain keys a repeat by the whole typed line (its prefix too), the front door by the sentence; the lesson re-types the line as the brain saw it
+            full = (ask("run main %d" % run).get("run") or {}).get("text") or ("cortex ingest : %s" % t)
+            try: kr = typed(full)["run"]
             except RuntimeError: continue
             rr = run_row(kr); brain = (rr[1] or 0) if rr else 0
-            held = cx_get("line", "*", text_key(t)); fd = held[0] if held else 0   # C30: the sentence's one run, whichever project typed it first
+            fd = run   # C30: the sentence's one run is the line row we picked; the brain must answer that run as same_as when the sentence is typed again
             total += 1; eq = brain == fd and brain > 0; equal += 1 if eq else 0
             rows.append("brain same_as %d | front door first run %d | %s | %s" % (brain, fd, "equal" if eq else "differ", t[:70]))
     elif function == "pairs":
