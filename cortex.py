@@ -799,12 +799,14 @@ def ask_question(name, n, run, words, vrun):
     except RuntimeError: qrun = 0
     cx_put("question", name, run, qrun, clock(), json.dumps({"n": n, "words": words, "ts": int(time.time()), "verdict_run": vrun, "answered": None}))
     print("  question asked, no ground for: %s | answer: cortex mark %s %d <kind>, accept or reject it, or type a source that holds the words" % (", ".join(words), name, run))
-def answer_question(name, run, how):
+def answer_question(name, run, how, found=None):
     had = cx_get("question", name, run)
     if not had: return
     d = json.loads(had[3])
     if d.get("answered"): return
-    d["answered"] = how; d["answered_ts"] = int(time.time()); cx_put("question", name, run, had[0], had[1], json.dumps(d))
+    d["answered"] = how; d["answered_ts"] = int(time.time())
+    if found is not None: d["found"] = found[:40]   # C51.1: pointers to the lines found (source and row id, or run), no text; re-read by cortex questions --answered
+    cx_put("question", name, run, had[0], had[1], json.dumps(d))
 def open_questions(name, n=None, limit=20):
     out = []
     for (run, v) in q("SELECT n, value FROM main.cx WHERE kind = 'question' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name):
@@ -2008,7 +2010,7 @@ def v_questions_ask(name):
     ensure_cx(); qs = open_questions(name, None, 60); srcs = [nm for (nm, b) in sources()]; closed = 0
     print("questions of %s asked of the sources: %d open" % (name, len(qs)))
     for d in qs:
-        words = d.get("words") or []; found, left = [], []
+        words = d.get("words") or []; found, found_shown, left, ptrs = [], [], [], []
         for w in words:
             if w.startswith(("no print", "no record", "against the owner", "three sources", "the record of")): left.append(w); continue
             body = w[6:] if w.startswith("pair: ") else w
@@ -2018,14 +2020,14 @@ def v_questions_ask(name):
             if w.startswith("pair: ") and len(gates) == 2 and all(gates): holders = [(nm, source_holds_pair(nm, gates[0], gates[1])) for nm in srcs]; holders = [(nm, h) for (nm, h) in holders if h]
             elif gates and all(gates): holders = [(nm, source_holds_gate(nm, gates[0])) for nm in srcs if all(source_holds_gate(nm, g) for g in gates)]
             if holders:
-                where = []
+                where, shown = [], []
                 for (nm, h) in holders[:3]:
-                    if source_is_db(nm):   # C54, C51.1: the lines found, from the source db, with path and line
-                        for (sid, t, p, l) in db_lines_holding(nm, toks, 1): where.append("%s%s: %s" % (nm, (" %s:%s" % (p, l)) if p else "", t[:100]))
+                    if source_is_db(nm):   # C54, C51.1: the lines found, from the source db, with path and line; the record keeps the row id, the text is re-cut at read
+                        for (sid, t, p, l) in db_lines_holding(nm, toks, 1): where.append("%s%s" % (nm, (" %s:%s" % (p, l)) if p else "")); shown.append("%s%s: %s" % (nm, (" %s:%s" % (p, l)) if p else "", t[:100])); ptrs.append({"w": w, "src": nm, "id": sid})
                         continue
                     first = json.loads(h[3]).get("first"); p, l = source_line_of(nm, first)
-                    where.append("%s%s" % (nm, (" %s:%s" % (p, l)) if p else ""))
-                found.append("%s held by %s" % (w, ", ".join(where)))
+                    where.append("%s%s" % (nm, (" %s:%s" % (p, l)) if p else "")); shown.append(where[-1]); ptrs.append({"w": w, "src": nm, "run": first})
+                found.append("%s held by %s" % (w, ", ".join(where))); found_shown.append("%s held by %s" % (w, ", ".join(shown)))
             elif len(toks) == 1 and not w.startswith("pair: "):
                 # C51: a word no source holds is asked of the brain's own dictionaries (define : word); the definitions typed as the source defined-words populate what the brain needed to know
                 defs = kernel_define(toks[0])
@@ -2041,16 +2043,63 @@ def v_questions_ask(name):
                             try: r = typed("cortex source %s : %s" % (src, sent))
                             except RuntimeError: continue
                             cx_put("source", src, k, r["run"], clock(), json.dumps({"from": frm, "word": toks[0]})); key_gates(src, r["run"]); key_pairs(src, r["run"]); typed_k += 1
-                    found.append("%s defined by %s (%d lines from %s)" % (w, src, typed_k, ",".join(sorted(set(f for f, t in defs)))))
+                    found.append("%s defined by %s (%d lines from %s)" % (w, src, typed_k, ",".join(sorted(set(f for f, t in defs))))); found_shown.append(found[-1]); ptrs.append({"w": w, "src": src, "word": toks[0]})
                 else: left.append(w)
             else: left.append(w)
         if found and not left:
-            answer_question(name, d["run"], "sources: " + "; ".join(found)[:300]); closed += 1
+            answer_question(name, d["run"], "sources: " + "; ".join(found)[:300], ptrs); closed += 1
             try: record("answer", name, d["run"], "C%d run %d: %s" % (d.get("n", 0), d["run"], "; ".join(found)[:400]))
             except RuntimeError: pass
-            print("  C%s run %d: closed by the sources: %s" % (d.get("n"), d["run"], "; ".join(found)[:300]))
-        else: print("  C%s run %d: %s%s" % (d.get("n"), d["run"], ("held: " + "; ".join(found)[:200] + " | ") if found else "", "no source holds: " + "; ".join(left)[:240]))
-    print("%d of %d questions closed by the sources; the rest wait on the owner or a new source" % (closed, len(qs)))
+            print("  C%s run %d: closed by the sources: %s" % (d.get("n"), d["run"], "; ".join(found_shown)[:300]))
+        else: print("  C%s run %d: %s%s" % (d.get("n"), d["run"], ("held: " + "; ".join(found_shown)[:200] + " | ") if found else "", "no source holds: " + "; ".join(left)[:240]))
+    print("%d of %d questions closed by the sources; %d answered by the sources before (cortex questions %s --answered prints their lines, C51.1); the rest wait on the owner or a new source" % (closed, len(qs), len(answered_questions(name)), name))
+def answered_questions(name, limit=60):
+    # C51.1: the questions of a project the sources answered (closed by cortex questions --ask), newest first
+    out = []
+    for (run, v) in q("SELECT n, value FROM main.cx WHERE kind = 'question' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name):
+        d = json.loads(v)
+        if not str(d.get("answered") or "").startswith("sources"): continue
+        d["run"] = run; out.append(d)
+    return out[:limit]
+def question_lines(d):
+    # C51.1 (remainder of C51): the lines found for an answered question, read now: a source db row by its id (the text re-cut at read, C54), a typed source line replayed from its run,
+    # the brain's own definitions (defined-words) by the word; a question closed before the pointers were kept (11-04 23:xx) is looked up again by its words
+    lines = []; ptrs = list(d.get("found") or [])
+    if not ptrs:
+        for w in d.get("words") or []:
+            body = w[6:] if w.startswith("pair: ") else w
+            toks = [t for t in re.findall(r"[a-z][a-z0-9_']+", body.lower()) if t not in STOP]
+            if not toks: continue
+            for nm in [n for (n, b) in sources()]:
+                if source_is_db(nm):
+                    for (sid, t, p, l) in db_lines_holding(nm, toks, 1): ptrs.append({"w": w, "src": nm, "id": sid})
+            if len(toks) == 1 and not w.startswith("pair: "): ptrs.append({"w": w, "src": "defined-words", "word": toks[0]})
+    for p in ptrs:
+        if p.get("id"):
+            c = cx_db(); rows = list(c.execute("SELECT text, path, line FROM corpus WHERE id = ?", (p["id"],))); c.close()
+            for (t, pa, l) in rows: lines.append((p["w"], p["src"], ("%s:%s" % (pa, l)) if pa else "row %d" % p["id"], t))
+        elif p.get("run"):
+            pa, l = source_line_of(p["src"], p["run"]); lines.append((p["w"], p["src"], ("%s:%s" % (pa, l)) if pa else "run %d" % p["run"], line_text(p["run"])))
+        elif p.get("word"):
+            for (run, v) in q("SELECT run, value FROM main.cx WHERE kind = 'source' AND name = ? AND n > 0", p["src"]):
+                try: dv = json.loads(v)
+                except (ValueError, TypeError): continue
+                if dv.get("word") == p["word"]: lines.append((p["w"], p["src"], "run %d from %s" % (run, dv.get("from")), line_text(run)))
+    seen, out = set(), []   # a migrated source holds a line twice, as a db row and as its typed history run: print it once
+    for L in lines:
+        k = (L[0], (L[3] or "").strip().lower()[:120])
+        if k in seen: continue
+        seen.add(k); out.append(L)
+    return out
+def v_questions_answered(name):
+    ensure_cx(); qs = answered_questions(name)
+    print("questions of %s answered by the sources: %d" % (name, len(qs)))
+    for d in qs:
+        print("C%s run %d (%s): %s | answered %s%s" % (d.get("n"), d["run"], time.strftime("%m-%d %H:%M", time.localtime(d["ts"])), ", ".join(d.get("words") or []), time.strftime("%m-%d %H:%M", time.localtime(d.get("answered_ts") or d["ts"])), "" if d.get("found") else " (closed before the pointers were kept; looked up again by its words)"))
+        L = question_lines(d)
+        for (w, src, where, t) in L[:12]: print("  %s: %s %s: %s" % (w, src, where, (t or "")[:140]))
+        if not L: print("  no line found now: the source that answered may be retired or its rows gone")
+    print("%d answered questions of %s; the lines are re-read from the source db by row id, replayed from the run for a typed source (C51.1)" % (len(qs), name))
 def kernel_define(word):
     # the brain's own dictionaries asked: define : <word>; the def rows of the run's out mailbox (run N from wn: <text>) are the definitions
     try: r = ask("type main define : %s" % word)
@@ -2771,6 +2820,7 @@ USAGE = """cortex <verb> ...
   self start|stop|refresh       the test system: the cascade kernel on 7010 over a copy of the live brain
   source <name> reference --path <folder> [--glob a,b] : <what>   C50: a code base docs and code typed with paths
   questions <project> --ask     C51: the open questions asked of the sources
+  questions <project> --answered   C51.1: the questions the sources answered, each with its lines found re-read now (source, file:line or run, the line)
   project <name> : <scope>                 the project's scope line
   checkpoint <name> <n> : <text> [|| <expected>] [--kind read|write|design|judgment]
   state <name> <n> open|working|done
@@ -2905,6 +2955,7 @@ def main(argv):
         else: print("cortex voices --rebuild   recompute every voice's counts from the newest verdict of each judged run")
     elif v == "questions":
         if "--ask" in a: v_questions_ask(a[0])
+        elif "--answered" in a: v_questions_answered(a[0])
         else: v_questions(a[0], int(a[1]) if len(a) > 1 and a[1].isdigit() else None, "--prune" in a)
     elif v == "remainder":
         if len(a) == 1: v_remainder(a[0])
