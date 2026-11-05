@@ -430,7 +430,10 @@ _SRC = []
 def sources():
     if not _SRC:
         for (nm, v) in q("SELECT name, value FROM main.cx WHERE kind = 'source' AND n = 0 AND name >= ''"):
-            try: _SRC.append((nm, json.loads(v).get("band", "reference")))
+            try:
+                d = json.loads(v)
+                if d.get("retired"): continue   # the owner, 11-04 18:2x: a source typed in breach of the code block grounds nothing; its runs stay as history
+                _SRC.append((nm, d.get("band", "reference")))
             except ValueError: pass
         _SRC.append(None)
     return [x for x in _SRC if x]
@@ -760,7 +763,17 @@ def v_source(name, band=None, text=None, domain=None):
         print("source %s (%s%s) run %d: %s" % (name, band, (", " + ",".join(domain)) if domain else "", run, text[:120])); return
     if not cx_get("source", name, 0): raise SystemExit("register the source first: cortex source %s owner|reference : <what it is, where from, as of>" % name)
     source_type(name, sys.stdin.read())
+CODE_EXT = (".py", ".c", ".h", ".ts", ".tsx", ".js", ".rs", ".go", ".sql", ".sh", ".java", ".cpp", ".cc", ".rb", ".php", ".cs", ".swift", ".kt", ".lua", ".pl")
+def code_share(raw):
+    ls = [l for l in raw.splitlines() if l.strip()]
+    if not ls: return 0.0
+    return sum(1 for l in ls if is_noise(l) in ("code", "command-or-markup", "symbols")) / len(ls)
+def hard_block_code(raw, where):
+    # the owner, 11-04 18:2x: a hard block for the hub builder and the neuron builder: code written into the neuron as words is never ingested; code lives outside the brain as a source db
+    if code_share(raw) >= 0.3: raise SystemExit("hard block (the owner, 11-04 18:2x): code never enters the brain as words (%s: %.0f%% code lines); type it as a source db: cortex source <name> reference --db ..." % (where, code_share(raw) * 100))
 def source_type(name, raw):
+    raw = re.sub(r"```.*?```", " ", raw, flags=re.S)   # the owner, 11-04: fenced code never enters the brain as words
+    hard_block_code(raw, "the text of source " + name)
     t0 = time.time(); n_typed = dupes = noise = refused = 0
     for sent in sentences(raw):
         if is_noise(sent): noise += 1; continue
@@ -1897,6 +1910,8 @@ def file_paragraphs(path):
     if buf: out.append((start, "\n".join(buf)))
     return out
 def source_type_paths(name, root, files, limit_per_file=400):
+    bad = [f for f in files if f.lower().endswith(CODE_EXT)]
+    if bad: raise SystemExit("hard block (the owner, 11-04 18:2x): code never enters the brain as words: %s; type a code base as a source db: cortex source %s reference --db --path <folder>" % (", ".join(os.path.relpath(b, root) for b in bad[:4]), name))
     # C50 (the owner, 11-04: code base docs should be able to sources with paths, so the brain can start to understand code that is being handed to it, beyond just shape):
     # a code base's docs and code typed as a reference source, every sentence keyed with the file path and the line it came from, so a claim's ground names the file
     t0 = time.time(); n_typed = dupes = noise = refused = 0; by_file = {}
