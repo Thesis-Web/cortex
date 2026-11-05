@@ -100,7 +100,7 @@ def is_noise(s):
     toks = t.split(); filey = [x for x in toks if ("/" in x and re.search(r"\w/|/\w", x)) or re.match(r"^[\w.-]+\.(txt|py|sh|md|db|json|log|html|c|h|so|map|jsonl|service)$", x)]
     if toks and toks[0] in filey: return "path"
     if len(filey) >= 2 and len(content_words(" ".join(x for x in toks if x not in filey))) < 4: return "path"   # C10.1: a sentence that names two paths among its words is a sentence
-    if re.search(r"\b(jq|curl|ssh|grep|sed|awk|python3|bash|git|sudo|systemctl|cortex)\s+-", t) or t.endswith(("{", "}", ";", "\\")): return "code"
+    if (re.search(r"\b(jq|curl|ssh|grep|sed|awk|python3|bash|git|sudo|systemctl|cortex)\s+-", t) or t.endswith(("{", "}", ";", "\\"))) and not (len(content_words(t)) >= 6 and OBS.search(t)): return "code"   # C10.4 (11-04 23:5x): a prose claim that names its command with a flag (cortex questions cortex --answered printed ...) is a sentence; a bare command line is code
     nonspace = [c for c in t if not c.isspace()]
     if not nonspace: return "empty"
     letters = sum(c.isalpha() for c in nonspace)
