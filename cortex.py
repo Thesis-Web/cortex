@@ -764,10 +764,17 @@ def v_source(name, band=None, text=None, domain=None):
     if not cx_get("source", name, 0): raise SystemExit("register the source first: cortex source %s owner|reference : <what it is, where from, as of>" % name)
     source_type(name, sys.stdin.read())
 CODE_EXT = (".py", ".c", ".h", ".ts", ".tsx", ".js", ".rs", ".go", ".sql", ".sh", ".java", ".cpp", ".cc", ".rb", ".php", ".cs", ".swift", ".kt", ".lua", ".pl")
+CODE_HEAD = re.compile(r"^\s*(def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|const|let|var|function|fn|pub|struct|impl|package|func|print|#include|using|namespace|async|await|yield|lambda|switch|case|break|continue|static|void|int|char|float|double|bool|self\.|this\.)\b")
+def is_code_line(l):
+    t = l.strip()
+    if not t: return False
+    if is_noise(t) in ("code", "command-or-markup", "symbols"): return True
+    if CODE_HEAD.match(t): return True
+    return bool(re.search(r"[=(){}\[\];]", t)) and len(content_words(t)) <= 3
 def code_share(raw):
     ls = [l for l in raw.splitlines() if l.strip()]
     if not ls: return 0.0
-    return sum(1 for l in ls if is_noise(l) in ("code", "command-or-markup", "symbols")) / len(ls)
+    return sum(1 for l in ls if is_code_line(l)) / len(ls)
 def hard_block_code(raw, where):
     # the owner, 11-04 18:2x: a hard block for the hub builder and the neuron builder: code written into the neuron as words is never ingested; code lives outside the brain as a source db
     if code_share(raw) >= 0.3: raise SystemExit("hard block (the owner, 11-04 18:2x): code never enters the brain as words (%s: %.0f%% code lines); type it as a source db: cortex source <name> reference --db ..." % (where, code_share(raw) * 100))
@@ -1595,7 +1602,7 @@ def project_for_cwd(cwd):
     # which project a hub session's turn belongs to, by its working folder; a folder of no project is not captured
     if not cwd: return None
     if "/neuron" in cwd.lower(): return "neuron"
-    if cwd.rstrip("/") == "/home/exnulla": return "cortex"
+    if cwd.rstrip("/") == "/home/exnulla" or cwd.startswith("/home/exnulla/.claude"): return "cortex"   # the hub session's own folders (skills, memory, scratchpad) are the cortex session (11-04 18:xx: two hours of a session went uncaptured after a cd)
     return None
 EXPECTED_MARK = re.compile(r"expected: ?(not )?met|^(needed|flaw):")
 def candidate(name, n, text):
