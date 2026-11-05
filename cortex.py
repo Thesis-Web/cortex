@@ -2572,9 +2572,10 @@ def v_teach(function, k=5, name="cortex"):
             try: kr = typed(full)["run"]
             except RuntimeError: continue
             rr = run_row(kr); brain = (rr[1] or 0) if rr else 0
-            fd = run   # C30: the sentence's one run is the line row we picked; the brain must answer that run as same_as when the sentence is typed again
+            fd = run   # C30: the sentence's one run is the line row we picked; the brain must answer that run as same_as when the line is typed again
             total += 1; eq = brain == fd and brain > 0; equal += 1 if eq else 0
-            rows.append("brain same_as %d | front door first run %d | %s | %s" % (brain, fd, "equal" if eq else "differ", t[:70]))
+            if not eq and brain == 0: noround = locals().get("noround", 0) + 1; locals()["noround"] = noround   # the brain saw a new line: its own decode of the run does not round-trip the encoder (apostrophes, decimals); the hp builder's encoder work
+            rows.append("brain same_as %d | front door first run %d | %s | %s" % (brain, fd, "equal" if eq else ("not replayable by the encoder, the brain saw a new line" if brain == 0 else "differ"), t[:70]))
     elif function == "pairs":
         dbs = [nm for (nm, band) in sources() if source_is_db(nm)]
         for (run, t) in teach_inputs(name, k):
@@ -2599,7 +2600,9 @@ def v_teach(function, k=5, name="cortex"):
     else: raise SystemExit("teach dupe|pairs|known")
     print("teach %s on %s, %d inputs at random:" % (function, name, total))
     for r in rows: print("  " + r)
-    if function in ("dupe", "pairs"): print("equal %d of %d" % (equal, total))
+    if function == "dupe":
+        nr = sum(1 for r in rows if "not replayable" in r); print("equal %d of %d, %d differ, %d not replayable by the encoder" % (equal, total, total - equal - nr, nr))
+    elif function == "pairs": print("equal %d of %d" % (equal, total))
     else: print("measured %d of %d (a measure, not a replacement)" % (total, total))
     body = "lesson %s: %d inputs, %s" % (function, total, ("equal %d of %d" % (equal, total)) if function in ("dupe", "pairs") else "measured")
     try: record("lesson", "teach", None, clean(body))
