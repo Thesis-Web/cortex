@@ -225,6 +225,31 @@ def sym_of(g):
     if g not in _SYM:
         rows = q("SELECT symbol FROM main.label WHERE gate = ?", g); _SYM[g] = rows[0][0] if rows else ""
     return _SYM[g]
+def run_words(run):
+    # C59 (the owner, 11-05 18:21: ' is a neuron, . is a neuron, - is a neuron, " is a neuron; why does it need to split the run? those are just runs inside a run):
+    # the words of a typed line as the encoder laid them, each word the gates between two space neurons, every piece kept (marks, digits, one-letter pieces); gates, no text
+    if not _COLON: _COLON.append(gate_of(":"))
+    gs = shape_of(run); i = gs.index(_COLON[0]) + 1 if _COLON[0] in gs else 0
+    out, cur = [], []
+    for g in gs[i:] + [None]:
+        if g is None or not (sym_of(g) or "").strip():
+            if cur: out.append(tuple(cur)); cur = []
+        else: cur.append(g)
+    return out
+_ENC_DROPPED = {}
+def enc_cells(run, others):
+    # C59 side by side, not deciding until the owner retires the cut: the line's neurons and its words (runs inside the run) against the other runs (expected, checkpoint, scope);
+    # the neurons the regex cut (content_words) throws away; counts in the cell, the dropped symbols only printed (C17: no text in the index)
+    W = run_words(run); P = [g for w in W for g in w]; c = {"neurons": len(P), "words": len(W)}
+    for k, r in others.items():
+        if not r: continue
+        ow = run_words(r); c["shared_" + k] = len(set(P) & set(g for w in ow for g in w)); c["words_" + k] = len(set(W) & set(ow))
+    fd = content_words("".join(sym_of(g) for g in shape_of(run))); lost = []
+    for w in W:
+        whole = "".join(sym_of(g) for g in w).lower(); carried = [f for f in fd if f in whole]
+        lost += [sym_of(g) for g in w if not any(sym_of(g).lower() in f for f in carried)]
+    c["cut_drops"] = len(lost); _ENC_DROPPED[run] = lost
+    return c
 def content_gates(run):
     # the gates after the line's prefix (cortex <kind> <name> [n] :) that carry content, in order: words not in STOP, and digits (value gates)
     if not _COLON: _COLON.append(gate_of(":"))
@@ -1073,6 +1098,8 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
     cells["observed"] = bool(OBS.search(text))
     cells.update(shape_cells(name, n, run, pr, ck, ex, parts))
     cells.update(ground_cells(name, n, run, text, cells["new_to_project"]))
+    try: cells["enc"] = enc_cells(run, {"expected": ex[0] if ex else None, "checkpoint": ck[0] if ck else None, "scope": pr[0] if pr else None})   # C59, side by side
+    except Exception as e: cells["enc"] = {"error": str(e)[:80]}
     cells["pair_ground"] = pair_ground(name, run)
     cells["owner_conflict"] = owner_conflict(run)
     cells["sources"] = source_check(run)
@@ -1259,6 +1286,8 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     print("  voice: %s%s | belief row: 1 the project record: %s; 2 the words: %s on %d gates (%d confirmed, %d false); 3 the sources: %d confirm, %d disagree, agreement %d of %d | this voice on %s: %s" % (vc, " (a labeled guess)" if iv.get("guess") else "", rec, ("trust %.2f" % wt["trust"]) if wt["trust"] is not None else "no record", wt["gates"], wt["confirmed"], wt["false"], len((cells.get("sources") or {}).get("confirm", [])), len((cells.get("sources") or {}).get("disagree", [])), len((cells.get("pair_ground") or {}).get("agree", [])), (cells.get("pair_ground") or {}).get("sources", 0), name, ("trust %.2f over %d claims" % (pt["trust"], pt["claims"])) if pt and pt["trust"] is not None else "no record yet"))
     if cells.get("numbers_spec"): print("  numbers the spec holds (the repo source): %s (C47b)" % ", ".join(cells["numbers_spec"]))
     print("  ground: %s | receipts %d (%s)%s numbers in %s out %s%s" % (ground_str(cells.get("ground")), cells.get("receipt_runs", 0), ",".join(cells.get("receipt_cmds", [])) or "-", "" if not cells.get("receipt_runs") or cells.get("receipt_before_claim") else " all newer than the claim: no print at its time", ",".join(cells.get("numbers_in", [])) or "-", ",".join(cells.get("numbers_out", [])) or "-", ((" | rounded: " + ", ".join("%s for %s" % kv for kv in cells["numbers_rounded"].items())) if cells.get("numbers_rounded") else "") + ((" | newest print: " + cells["receipt_newest"]) if cells.get("receipt_newest") else "")))
+    ec = cells.get("enc") or {}
+    if ec.get("neurons"): print("  encoder words (C59, side by side, not deciding until the owner retires the cut): %d neurons in %d words; shared with the expected %d neurons, %d whole words (the cut shares %d words); the cut throws away %d: %s" % (ec["neurons"], ec["words"], ec.get("shared_expected", 0), ec.get("words_expected", 0), cells.get("shared_expected", 0), ec.get("cut_drops", 0), " ".join(_ENC_DROPPED.get(run, [])[:16]) or "-"))
     if cells.get("numbers_in_newer") and kind in ("hallucination", "unsettled", "drift"): print("  a print newer than this claim holds %s: a later print never switches a verdict (C33b); pipe the print first, then make the claim again (re-ingest it) and judge the new run (C33c)" % ", ".join(cells["numbers_in_newer"]))
     if cells.get("print_missing") and kind not in ("noise", "dupe", "drift") and (name, n) not in NO_PARTS:   # C35.3
         print("  no print holds %s: pipe the print this claim is about, then type the claim again (C35.3)" % ", ".join(cells["print_missing"]))
@@ -2646,7 +2675,14 @@ def v_teach(function, k=5, name="cortex"):
             unknown_n = max(0, all_n - known_n); overlap = min(unknown_n, len(none))
             total += 1
             rows.append("run %d: brain know %s (unknown %d) | front door no ground %d: %s | overlap at most %d | %s" % (run, kn, unknown_n, len(none), ", ".join(none[:5]) or "-", overlap, t[:50]))
-    else: raise SystemExit("teach dupe|pairs|known")
+    elif function == "words":   # C59 (the owner 11-05 18:21): the line as the encoder laid it, runs inside the run, beside the front door cut
+        laid = thrown = 0
+        for (run, t) in teach_inputs(name, k):
+            W = run_words(run); c_ = enc_cells(run, {}); lost = _ENC_DROPPED.get(run, [])
+            total += 1; laid += c_["neurons"]; thrown += len(lost)
+            rows.append("run %d: the encoder %d neurons in %d words | the cut keeps %d words and throws away %d neurons: %s | %s" % (run, c_["neurons"], len(W), len(content_words(t)), len(lost), " ".join(lost[:14]) or "-", t[:50]))
+        rows.append("in all: the encoder laid %d neurons, the cut threw away %d" % (laid, thrown))
+    else: raise SystemExit("teach dupe|pairs|known|words")
     print("teach %s on %s, %d inputs at random:" % (function, name, total))
     for r in rows: print("  " + r)
     if function == "dupe":
