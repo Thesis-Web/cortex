@@ -953,13 +953,16 @@ def v_author(name, n, model=None, feedback=None):
     if prog.startswith("new-programs/"):
         srcp = os.path.normpath(os.path.join(scratch, prog))
         if not srcp.startswith(scratch) or not os.path.isfile(srcp): return {"status": "refused", "why": "the new program %s is not in the copy" % prog}
-        body = open(srcp, errors="replace").read()
+        body = open(srcp, errors="replace").read(); prev = (check_of(name, n) or {}).get("installed")   # the program this checkpoint's own last check installed: a rewrite replaces it in place
         for f in sorted(os.listdir(CHECKLIB)):
+            if f == prev: continue
             other = open(os.path.join(CHECKLIB, f), errors="replace").read()
             r0 = difflib.SequenceMatcher(None, body, other, autojunk=True).ratio() if abs(len(body) - len(other)) < max(len(body), len(other)) * 0.5 else 0.0
             if r0 >= 0.8: return {"status": "refused", "why": "the new program is %.0f%% the library's %s: use that program with your variables (rail C7: a program is stored once)" % (r0 * 100, f)}
         base = re.sub(r"[^a-z0-9_.-]", "_", os.path.basename(prog).lower()); stem, ext = os.path.splitext(base); k = 2
-        while os.path.exists(os.path.join(CHECKLIB, base)): base = "%s-%d%s" % (stem, k, ext); k += 1
+        if prev and os.path.isfile(os.path.join(CHECKLIB, prev)): base = prev
+        else:
+            while os.path.exists(os.path.join(CHECKLIB, base)): base = "%s-%d%s" % (stem, k, ext); k += 1
         shutil.copy(srcp, os.path.join(CHECKLIB, base)); prog = installed = base
     if not prog or "/" in prog or not os.path.isfile(os.path.join(CHECKLIB, prog)): return {"status": "refused", "why": "no program %r in the library" % prog}
     bad = cites_not_held(cites)
