@@ -1,0 +1,96 @@
+nkxyz: the history of places begins at clock 0 (/home/james/cortex/gates/brain/brain.map.xyz.0)
+nk: 86 symbols laid in each brain, listening on 127.0.0.1:7009
+=== LINES-nk.txt 22:21:58
+typed 60 lines, refused 1 (22:21:58)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":1,"runs":553,"hops":7839,"pending":0,"gates":444,"refused":0,"shards":418,"shard_rows":418,"hop_us":22.677,"pastes":328,"paste_us":109.7,"hop_s":0.196,"paste_s":0.036,"returns":12,"return_us":14.5,"return_s":0.000,"receipts":7839,"hops_run":
+=== wikt born
+{"schema":"main","run":554,"runs":7,"hits":271,"hops":19,"born":1,"refused":0,"seconds":0.001,"out":[["main",554,"me","554"],["main",554,"newgate","445"],["main",554,"know","0/1"],["main",554,"remembe
+wikt gate 445
+{"cols":[],"rows":[]}
+wikt.me now: {"cols":["gate"],"rows":[[445]]}
+=== TEACH-LINES-nk.txt 22:21:59
+typed 18 lines, refused 1 (22:21:59)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":1,"runs":687,"hops":10473,"pending":0,"gates":462,"refused":0,"shards":522,"shard_rows":522,"hop_us":22.446,"pastes":412,"paste_us":129.2,"hop_s":0.257,"paste_s":0.053,"returns":12,"return_us":14.5,"return_s":0.000,"receipts":10473,"hops_run
+=== TEACH-2-nk.txt 22:21:59
+typed 5 lines, refused 1 (22:21:59)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":1,"runs":703,"hops":11827,"pending":0,"gates":463,"refused":0,"shards":535,"shard_rows":535,"hop_us":22.139,"pastes":423,"paste_us":140.7,"hop_s":0.284,"paste_s":0.059,"returns":12,"return_us":14.5,"return_s":0.000,"receipts":11827,"hops_run
+=== TEACH-3-nk.txt 22:21:59
+typed 4 lines, refused 1 (22:21:59)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":1,"runs":721,"hops":13180,"pending":0,"gates":465,"refused":0,"shards":549,"shard_rows":549,"hop_us":21.970,"pastes":435,"paste_us":151.8,"hop_s":0.312,"paste_s":0.066,"returns":12,"return_us":14.5,"return_s":0.000,"receipts":13180,"hops_run
+=== TEACH-4-nk.txt 22:21:59
+typed 4 lines, refused 1 (22:21:59)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":2,"runs":739,"hops":14300,"pending":0,"gates":487,"refused":0,"shards":561,"shard_rows":561,"hop_us":22.002,"pastes":444,"paste_us":158.4,"hop_s":0.338,"paste_s":0.070,"returns":16,"return_us":13.7,"return_s":0.000,"receipts":14300,"hops_run
+=== TEACH-5-nk.txt 22:21:59
+typed 2 lines, refused 1 (22:21:59)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":2,"runs":761,"hops":14688,"pending":0,"gates":491,"refused":0,"shards":577,"shard_rows":577,"hop_us":21.994,"pastes":458,"paste_us":160.0,"hop_s":0.347,"paste_s":0.073,"returns":16,"return_us":13.7,"return_s":0.000,"receipts":14688,"hops_run
+=== TEACH-6-nk.txt 22:21:59
+typed 3 lines, refused 1 (22:21:59)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":3,"runs":1198,"hops":14710,"pending":1,"gates":2753,"refused":0,"shards":1009,"shard_rows":1009,"hop_us":21.414,"pastes":466,"paste_us":455.8,"hop_s":0.348,"paste_s":0.212,"returns":439,"return_us":10.9,"return_s":0.005,"receipts":14710,"hop
+=== TEACH-7-nk.txt 22:22:00
+typed 2 lines, refused 1 (22:22:01)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":12,"runs":4250,"hops":15602,"pending":2,"gates":10403,"refused":0,"shards":4013,"shard_rows":4013,"hop_us":22.381,"pastes":525,"paste_us":2576.4,"hop_s":0.453,"paste_s":1.353,"returns":3393,"return_us":6.7,"return_s":0.023,"receipts":15602,"
+=== TEACH-8-nk.txt 22:22:01
+typed 3 lines, refused 1 (22:22:01)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":26,"runs":6295,"hops":16406,"pending":1,"gates":15668,"refused":0,"shards":5993,"shard_rows":5993,"hop_us":23.377,"pastes":603,"paste_us":2928.2,"hop_s":0.541,"paste_s":1.766,"returns":5309,"return_us":6.0,"return_s":0.032,"receipts":16406,"
+=== RECALL-nk.txt 22:22:02
+typed 3 lines, refused 1 (22:22:02)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":34,"runs":7530,"hops":17698,"pending":1,"gates":17814,"refused":0,"shards":7187,"shard_rows":7187,"hop_us":31.222,"pastes":663,"paste_us":2998.4,"hop_s":0.803,"paste_s":1.988,"returns":6448,"return_us":6.5,"return_s":0.042,"receipts":17698,"
+=== RECALL-2-nk.txt 22:22:02
+typed 3 lines, refused 1 (22:22:02)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":42,"runs":8223,"hops":18930,"pending":1,"gates":18923,"refused":0,"shards":7834,"shard_rows":7834,"hop_us":39.860,"pastes":729,"paste_us":2907.8,"hop_s":1.103,"paste_s":2.120,"returns":7034,"return_us":6.4,"return_s":0.045,"receipts":18930,"
+=== SHAPE-nk.txt 22:22:03
+typed 2 lines, refused 1 (22:22:03)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":47,"runs":8996,"hops":19297,"pending":1,"gates":20335,"refused":0,"shards":8580,"shard_rows":8580,"hop_us":41.221,"pastes":769,"paste_us":2984.8,"hop_s":1.189,"paste_s":2.295,"returns":7743,"return_us":6.3,"return_s":0.049,"receipts":19297,"
+=== RECALL-3-nk.txt 22:22:03
+typed 3 lines, refused 1 (22:22:04)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":55,"runs":10692,"hops":22548,"pending":1,"gates":22921,"refused":0,"shards":10186,"shard_rows":10186,"hop_us":61.793,"pastes":881,"paste_us":2892.4,"hop_s":2.097,"paste_s":2.548,"returns":9240,"return_us":5.9,"return_s":0.055,"receipts":2254
+=== REBIND-nk.txt 22:22:04
+typed 1 lines, refused 1 (22:22:05)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":59,"runs":11841,"hops":22649,"pending":2,"gates":24358,"refused":0,"shards":11315,"shard_rows":11315,"hop_us":60.007,"pastes":908,"paste_us":3757.4,"hop_s":2.112,"paste_s":3.412,"returns":10346,"return_us":5.9,"return_s":0.061,"receipts":226
+=== RECALL-5-nk.txt 22:22:05
+typed 3 lines, refused 1 (22:22:06)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":68,"runs":12822,"hops":24758,"pending":1,"gates":26399,"refused":0,"shards":12247,"shard_rows":12247,"hop_us":74.465,"pastes":977,"paste_us":3783.3,"hop_s":2.855,"paste_s":3.696,"returns":11214,"return_us":5.9,"return_s":0.066,"receipts":247
+=== BORN-nk.txt 22:22:06
+typed 3 lines, refused 1 (22:22:07)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":72,"runs":13846,"hops":26767,"pending":3,"gates":27928,"refused":0,"shards":13246,"shard_rows":13246,"hop_us":88.425,"pastes":1016,"paste_us":3859.2,"hop_s":3.661,"paste_s":3.921,"returns":12176,"return_us":5.8,"return_s":0.070,"receipts":26
+=== RELMAP-nk.txt 22:22:07
+typed 1 lines, refused 1 (22:22:08)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":72,"runs":13880,"hops":29598,"pending":3,"gates":27931,"refused":0,"shards":13260,"shard_rows":13260,"hop_us":108.489,"pastes":1036,"paste_us":3790.2,"hop_s":4.804,"paste_s":3.927,"returns":12176,"return_us":5.8,"return_s":0.070,"receipts":2
+=== RECALL-6-nk.txt 22:22:08
+typed 3 lines, refused 1 (22:22:10)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":76,"runs":14806,"hops":32157,"pending":1,"gates":28672,"refused":0,"shards":14155,"shard_rows":14155,"hop_us":122.676,"pastes":1080,"paste_us":3786.8,"hop_s":5.862,"paste_s":4.090,"returns":13033,"return_us":5.6,"return_s":0.073,"receipts":3
+=== RECALL-7-nk.txt 22:22:10
+typed 3 lines, refused 1 (22:22:11)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":86,"runs":16343,"hops":34453,"pending":1,"gates":30528,"refused":0,"shards":15593,"shard_rows":15593,"hop_us":131.635,"pastes":1193,"paste_us":3624.9,"hop_s":6.805,"paste_s":4.325,"returns":14385,"return_us":5.4,"return_s":0.078,"receipts":3
+=== FORMULA-nk.txt 22:22:11
+typed 3 lines, refused 1 (22:22:11)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":91,"runs":17351,"hops":35756,"pending":1,"gates":31519,"refused":0,"shards":16448,"shard_rows":16448,"hop_us":133.040,"pastes":1334,"paste_us":3426.8,"hop_s":7.201,"paste_s":4.571,"returns":15153,"return_us":6.2,"return_s":0.094,"receipts":3
+=== REBIND-g35-nk.txt 22:22:12
+typed 1 lines, refused 1 (22:22:12)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":93,"runs":17836,"hops":36072,"pending":1,"gates":31955,"refused":0,"shards":16812,"shard_rows":16812,"hop_us":131.084,"pastes":1420,"paste_us":3280.7,"hop_s":7.208,"paste_s":4.659,"returns":15446,"return_us":6.2,"return_s":0.095,"receipts":3
+=== SHAPE-2-nk.txt 22:22:12
+typed 2 lines, refused 1 (22:22:12)
+| # | prompt | line | run | runs | hits | born | refused | s | what the brain put in its out mailbox |
+{"main":{"defined":93,"runs":18177,"hops":36838,"pending":1,"gates":31955,"refused":0,"shards":16935,"shard_rows":16935,"hop_us":128.473,"pastes":1570,"paste_us":2992.0,"hop_s":7.220,"paste_s":4.697,"returns":15446,"return_us":6.2,"return_s":0.095,"receipts":3
+=== DONE 22:22:12

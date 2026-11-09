@@ -1,0 +1,9 @@
+# TEACH-5-nk.txt (2026-10-30 22:30, mine): after the cut, step back follows the receipt a run was made from by (run, ordinal) and says whether that receipt is held or re-stepped. (The know question's re-lay on the node rows went into LINES-nk line 5 itself, my SQL from the first.)
+
+
+
+# 1. step back laid again: the receipt by (run, ordinal); the row says kept 1 (held) or 0 (re-stepped). Its run is {run:1}.
+BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) SELECT above , 23 , 1 , CAST ( ( SELECT group_concat ( symbol , '' ) FROM ( SELECT l.symbol FROM seq s JOIN label l ON l.gate = s.gate WHERE s.run = above AND s.pos > ( SELECT min ( pos ) FROM seq WHERE run = above AND gate = 68 ) + 1 ORDER BY s.pos ) ) AS INTEGER ) ; INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) VALUES ( above , 25 , 0 , NULL ) ; BUILD BUILD WITH RECURSIVE back ( run , depth ) AS ( SELECT what , 0 UNION ALL SELECT r.parent , depth + 1 FROM run r JOIN back ON r.id = back.run WHERE r.parent IS NOT NULL ) SELECT b.depth , r.id , r.kept , ( SELECT symbol FROM label WHERE gate = r.arrival ) , ( SELECT symbol FROM label WHERE gate = r.cell ) , h.run , h.pos , ( SELECT symbol FROM label WHERE gate = h.gate ) , h.shard , ( SELECT symbol FROM label WHERE gate = h.before ) , ( SELECT symbol FROM label WHERE gate = h.next ) , h.call , h.spawn FROM back b JOIN run r ON r.id = b.run LEFT JOIN hit h ON h.run = r.from_run AND h.ord = r.from_ord ORDER BY b.depth ; BUILD BUILD INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) VALUES ( above , 25 , 1 , reply ) ; BUILD
+
+# 2. Bind step's shard to it.
+BUILD UPDATE dna SET call = {run:1} WHERE gate = {gate:step} AND before = 1 AND trigger = {gate:back} ; BUILD

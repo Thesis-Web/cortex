@@ -6,3 +6,12 @@ nk/nk
 nk/hello
 nk/out/
 nk/nk.g35*
+# 2026-11-09: kept out of git: build files, the hand backups, the test system (brain-test, nk-new), the 11-02 gates brain and sources
+__pycache__/
+*.pyc
+*.before-*
+brain-test/
+nk-new/
+gates/brain/
+gates/sources/
+gates/kernel/nk

@@ -1,0 +1,3 @@
+# REBIND-g35-nk.txt (2026-11-02): the sixth's define row (define 156, before the sixth 5, ':' 68) calls the recall define 19937222 (RECALL-7),
+# as the owner's own row does: a define asked by the sixth answers from the point's own table when it has one, and lays the catalog relationships.
+BUILD UPDATE dna SET call = 19937222 WHERE gate = 156 AND before = 5 AND trigger = 68 ; BUILD
