@@ -2290,6 +2290,9 @@ def v_status(name=None):
         nxt = next_checkpoint(nm)
         for (n, run, at, ts, text) in cx_list("checkpoint", nm):
             s = cx_get("state", nm, n); print("  C%d [%s]%s %s" % (n, s[3] if s else "open", " NEXT" if n == nxt else "", text[:110]))
+            if name:   # jev C3: the status of one project lists each checkpoint with its expected output
+                ex = cx_get("expected", nm, n)
+                if ex: print("      expected: %s" % ex[3][:240])
         for (n, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", nm):
             d = jload(v)
             if d: print("  verdict run %d C%s %s %.2f (%s): %s" % (n, d.get("n"), d.get("kind"), d.get("p", 0), d.get("judge"), line_text(n)[:70]))
