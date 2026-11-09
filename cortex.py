@@ -2565,6 +2565,24 @@ def v_why(name, plan=False, quiet=False):
         v_check_set("cortex-self", nn, chk); nn += 1
     print("plan registered on cortex-self (%d checkpoints); the test brain must hold the runs: cortex self refresh; then cortex build cortex-self --box 20 --turns 4" % (nn - 1))
     return faults
+def judge_keep(test_cx):
+    # the judge brain's tables (judge_*) exist only in the test kernel's cx.db; before a refresh copies the live cx.db over it, they are kept in a copy beside it
+    import sqlite3
+    if not os.path.exists(test_cx): return None
+    c = sqlite3.connect("file:%s?mode=ro" % test_cx, uri=True); n = c.execute("SELECT count(*) FROM sqlite_master WHERE tbl_name LIKE 'judge%'").fetchone()[0]; c.close()
+    if not n: return None
+    keep = test_cx + ".judge-keep"; shutil.copy(test_cx, keep); return keep
+def judge_restore(test_cx, keep):
+    # the tables first, their rows, then the triggers (a trigger made before the rows would fire on them)
+    import sqlite3
+    c = sqlite3.connect(test_cx, timeout=60); c.execute("ATTACH DATABASE ? AS k", (keep,)); out = []
+    objs = c.execute("SELECT type, name, sql FROM k.sqlite_master WHERE tbl_name LIKE 'judge%' AND sql IS NOT NULL").fetchall()
+    for (ty, nm, sql) in [o for o in objs if o[0] == "table"]:
+        c.execute("DROP TABLE IF EXISTS main.%s" % nm); c.execute(sql); c.execute("INSERT INTO main.%s SELECT * FROM k.%s" % (nm, nm))
+        out.append("%s %d" % (nm, c.execute("SELECT count(*) FROM main.%s" % nm).fetchone()[0]))
+    for (ty, nm, sql) in [o for o in objs if o[0] in ("index", "view")] + [o for o in objs if o[0] == "trigger"]: c.execute(sql); out.append("%s %s" % (ty, nm))
+    c.commit(); c.execute("DETACH DATABASE k"); c.close()
+    return "the judge brain carried over the copy (kept in %s): %s" % (os.path.basename(keep), ", ".join(out))
 def test_kernel(cmd):
     # the test system beside the live one (the owner, 11-04: or maybe into a test system): the cascade kernel on port 7010 over a copy of the live brain
     B = os.path.join(HOME, "cortex", "brain"); T = os.path.join(HOME, "cortex", "brain-test"); NK = os.path.join(HOME, "cortex", "nk-new")
@@ -2599,7 +2617,11 @@ def test_kernel(cmd):
         for f in ("brain.map.main.db", "brain.map.sixth.db", "brain.map.xyz"):
             if os.path.exists(os.path.join(B, f)): shutil.copy(os.path.join(B, f), os.path.join(T, f))
         live_cx = os.path.join(HOME, "cortex", "nk", "sources", "cx.db")   # C54: the source db goes with the brain it answers
-        if os.path.exists(live_cx): shutil.copy(live_cx, os.path.join(NK, "sources", "cx.db"))
+        test_cx = os.path.join(NK, "sources", "cx.db")
+        if os.path.exists(live_cx):
+            keep = judge_keep(test_cx)   # the judge brain lives only in the test kernel's source db (judge C1 to C3, rail C6): carried over the copy, never lost
+            shutil.copy(live_cx, test_cx)
+            if keep: print(judge_restore(test_cx, keep))
         t2 = time.time(); subprocess.run(["systemctl", "--user", "start", "cortex-nk", "cortex-page"], check=True)
         for i in range(300):
             if up(PORT): break
