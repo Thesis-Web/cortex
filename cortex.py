@@ -764,17 +764,300 @@ def close_by_check(name, n, chk):
     if runs:
         idx = min(len(runs) - 1, max(0, int(chk.get("typed") or 1) - 1))
         add_part(name, n, runs[idx], "the cortex check printed: " + chk["last"][:200], 1.0, "check", {"receipt": 1})
-    v_state(name, n, "done"); n2 = next_checkpoint(name)
+    if RAIL and not check_audited(name, n):
+        print("C%d: check ok, but this check was not written by the exec and audited by another maker (rail C2, C3): not closed" % n); return False
+    _CLOSING[0] = True
+    try: v_state(name, n, "done")
+    finally: _CLOSING[0] = False
+    n2 = next_checkpoint(name)
     if n2 is not None and n2 != n:
         s2 = cx_get("state", name, n2)
         if not s2 or s2[3] != "working": v_state(name, n2, "working")
-    print("C%d done by the cortex own check (check ok); next C%s" % (n, n2))
+    print("C%d done by the cortex own check (check ok); next C%s" % (n, n2)); return True
 def v_check_run(name, n, close=False):
     r = run_check(name, n)
     if r is None: raise SystemExit("no check on %s C%d; set one: cortex check %s %d : <command>" % (name, n, name, n))
     print("check %s C%d: %s | %d receipt lines typed" % (name, n, r["last"][:300], r["typed"]))
     if close and r["ok"]: close_by_check(name, n, r)
     elif close: print("not closed: the check printed check wrong")
+# ---- the rail (the owner, 11-09 00:48: ok do it .. you have claude exec on the backside of the cortex .. this could be used to build the tests, or the expected output, and to audit .. thus you are not checking your own work) ----
+# C1 only the cortex own check closes a checkpoint; C2 a claude exec turn writes the check, a library program plus variables, never the worker or the liaison;
+# C3 a codex exec turn breaks copies of the work without seeing the check, and the check must catch every break and pass the real work twice on fresh inputs;
+# C5 a check's citations are read from the source db; C7 a program stored once, a row of variables per checkpoint
+RAIL = os.environ.get("CORTEX_RAIL", "on") != "off"
+_CLOSING = [False]
+CHECKLIB = os.path.join(WORKDIR, "checks", "lib")
+RAILDIR = os.path.join(WORKDIR, "rail", "scratch")
+AUTHOR_MODEL = os.environ.get("CORTEX_AUTHOR_MODEL", "sonnet")
+AUDIT_ENGINE = os.environ.get("CORTEX_AUDIT_ENGINE", "codex")
+def met_waits(name, n, why):
+    # rail C1: the expected met by <why>; the checkpoint stays working; only the cortex own check closes it
+    st = cx_get("state", name, n)
+    if st and st[3] == "done": return ""
+    if not st or st[3] != "working": v_state(name, n, "working")
+    had = cx_get("met", name, n)
+    try: m = json.loads(had[3]) if had else []
+    except ValueError: m = []
+    m.append({"why": why[:200], "ts": int(time.time())}); cx_put("met", name, n, 0, clock(), json.dumps(m[-20:]))
+    return " | C%d met by %s; it stays working until the cortex own check prints check ok (rail C1)%s" % (n, why, "" if check_audited(name, n) else "; no audited check yet")
+def check_of(name, n):
+    had = cx_get("check", name, n)
+    try: return json.loads(had[3]) if had else None
+    except ValueError: return None
+def check_audited(name, n):
+    d = check_of(name, n) or {}; a = d.get("audited") or {}
+    return bool(a.get("ok")) and a.get("cmd") == d.get("cmd")
+def work_root(name): return repo_of(name) or os.path.join(WORKDIR, name)
+def is_cortex_work(name): return os.path.realpath(work_root(name)) == os.path.realpath(os.path.join(HOME, "cortex"))
+def work_copy(name, dst):
+    # a copy of the work for the author or the auditor: the git files of the cortex (not the kernel's sources), or the folder's files up to 20 MB each
+    src = work_root(name)
+    if os.path.exists(dst): shutil.rmtree(dst)
+    os.makedirs(dst)
+    if not os.path.isdir(src): return dst
+    if is_cortex_work(name):
+        files = [f for f in subprocess.run(["git", "ls-files"], cwd=src, capture_output=True, text=True).stdout.split("\n") if f and not f.startswith(("nk/", "__pycache__", "brain"))]
+    else:
+        files = []
+        for root, dirs, fs in os.walk(src):
+            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "node_modules", ".venv", "mutants", ".pytest_cache", "target")]
+            for f in fs:
+                p = os.path.join(root, f)
+                try:
+                    if os.path.isfile(p) and os.path.getsize(p) <= 20 * 1024 * 1024: files.append(os.path.relpath(p, src))
+                except OSError: pass
+            if len(files) > 6000: break
+    for f in files:
+        d = os.path.join(dst, f); os.makedirs(os.path.dirname(d), exist_ok=True)
+        try: shutil.copy2(os.path.join(src, f), d)
+        except (IsADirectoryError, FileNotFoundError, PermissionError): pass
+    return dst
+def lib_listing():
+    os.makedirs(CHECKLIB, exist_ok=True); out = []
+    for f in sorted(os.listdir(CHECKLIB)):
+        p = os.path.join(CHECKLIB, f)
+        if not os.path.isfile(p): continue
+        head = open(p, errors="replace").read(1200).splitlines()
+        out.append("- %s: %s" % (f, " ".join(l.lstrip("#").strip() for l in head[:6] if l.startswith("#"))[:400]))
+    return "\n".join(out) or "(empty: you write the first program)"
+def prog_cmd(name, prog, vars_):
+    import shlex
+    p = os.path.join(CHECKLIB, prog); pre = "CORTEX_PORT=7010 " if is_cortex_work(name) else ""
+    return pre + ("python3 " if prog.endswith(".py") else "bash ") + shlex.quote(p) + " " + shlex.quote(json.dumps(vars_))
+def check_print(cmd, cwd):
+    # the check run without typing anything: its last line decides, its inputs line is kept
+    try:
+        p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, cwd=cwd, timeout=240, env=dict(os.environ, PATH=os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")))
+        out = (p.stdout + ("\n" + p.stderr if p.stderr.strip() else "")).strip()
+    except subprocess.TimeoutExpired: out = "check wrong: the check ran past 240 s"
+    lines = [l for l in out.splitlines() if l.strip()] or ["check wrong: the check printed nothing"]
+    oks = [l for l in lines if l.lower().startswith(("check ok", "check wrong"))]
+    inp = next((l for l in lines if l.lower().startswith("inputs:")), "")
+    return {"ok": lines[-1].lower().startswith("check ok"), "last": (oks[-1] if oks else lines[-1])[:400], "inputs": inp[:400]}
+def last_json(text, keys):
+    dec = json.JSONDecoder(); t = text or ""
+    for m in reversed(list(re.finditer(r"\{", t))):
+        try: obj, _ = dec.raw_decode(t[m.start():])
+        except ValueError: continue
+        if isinstance(obj, dict) and any(k in obj for k in keys): return obj
+    return None
+def cites_not_held(cites):
+    # rail C5: every cited row read from the source db; a row that does not hold the cited words refuses the check
+    import sqlite3
+    bad = []
+    if not cites: return bad
+    if not isinstance(cites, list): return ["cites is not a list"]
+    try: c = sqlite3.connect("file:%s?mode=ro" % cx_db_path(), uri=True, timeout=30)
+    except sqlite3.Error as e: return ["the source db did not open: %s" % e]
+    for ct in cites[:12]:
+        if not isinstance(ct, dict): bad.append("a citation that is not a row: %r" % (ct,)); continue
+        try: ln = int(ct.get("line"))
+        except (TypeError, ValueError): bad.append("a citation with no line: %r" % (ct,)); continue
+        rows = c.execute("SELECT text FROM corpus WHERE source = ? AND line = ?" + (" AND path = ?" if ct.get("path") else ""), (ct.get("source"), ln) + ((ct.get("path"),) if ct.get("path") else ())).fetchall()
+        want = [w for w in re.findall(r"[a-z0-9_]+", str(ct.get("words", "")).lower()) if w not in STOP]
+        if not rows: bad.append("no row %s %s:%s" % (ct.get("source"), ct.get("path"), ln)); continue
+        txt = " ".join(r[0] for r in rows).lower(); miss = [w for w in want if w not in txt]
+        if miss or not want: bad.append("row %s %s:%s does not hold %s" % (ct.get("source"), ct.get("path"), ln, ", ".join(miss) or "any cited words"))
+    c.close(); return bad
+def v_look(words, source=None):
+    # rail C5: read only; the rows of the source db that hold a word or a pair
+    import sqlite3
+    ws = [w.lower() for w in words if w.strip()][:2]
+    if not ws: raise SystemExit("look <word> [<word>] [--source s]")
+    c = sqlite3.connect("file:%s?mode=ro" % cx_db_path(), uri=True, timeout=30); sf = " AND c.source = ?" if source else ""; extra = (source,) if source else ()
+    if len(ws) == 1: rows = c.execute("SELECT c.source, c.path, c.line, c.text FROM words w JOIN corpus c ON c.id = w.id WHERE w.word = ?" + sf + " LIMIT 15", (ws[0],) + extra).fetchall()
+    else: rows = c.execute("SELECT c.source, c.path, c.line, c.text FROM words a JOIN words b ON a.id = b.id JOIN corpus c ON c.id = a.id WHERE a.word = ? AND b.word = ?" + sf + " LIMIT 15", (ws[0], ws[1]) + extra).fetchall()
+    for (s, p, l, t) in rows: print("%s %s:%s: %s" % (s, p or "-", l, t[:300]))
+    print("%d rows (the first 15 at most)" % len(rows)); c.close()
+AUTHOR_PROMPT = """You write the cortex's own check for one checkpoint. You are not the worker who builds this project and not the liaison who talks to the owner; you write the test the work must pass. Only the check you leave counts.
+
+PROJECT {NAME}: {SCOPE}
+CHECKPOINT C{N}: {CK}
+EXPECTED OUTPUT: {EX}
+{REPORTED}
+This folder is a copy of the work. The cortex will run your check with its working folder set to the real work, and also to broken copies another model makes without seeing your check: your check must pass the real work and fail every broken copy.
+
+THE CHECK LIBRARY ({LIB}) holds check programs stored once, each taking its variables as one JSON argument (read a program before you use it):
+{LISTING}
+
+Rules:
+1. Use a library program with your own variables when one fits. Write a new program only when none fits, and write it so other checkpoints can use it with other variables: everything particular to this checkpoint comes in through the variables. Save it as ./new-programs/<short_name>.py (python3, standard library only) or .sh; its first lines are # comments saying what it checks and which variables it takes.
+2. The check makes its own inputs each run (random values, a fresh temp file, a random pick among the cases) and prints one line starting "inputs:" naming them. Its LAST line starts "check ok:" or "check wrong:" and says what it saw.
+3. It checks the EXPECTED OUTPUT by running the work itself (the program, the commands, the verbs) from the working folder with relative paths, never an absolute path to the real work, never by reading what a worker or the record said was done. It never changes the work; temp files it makes it removes.
+4. {EXTRA}
+5. Any behaviour you rely on beyond the EXPECTED OUTPUT itself (what a command prints, a flag, a format, a library call) is cited from a source row you looked up: run   cortex look <word> [<second word>]   (it prints source path:line: text) and put each citation in "cites" as {"source": ..., "path": ..., "line": ..., "words": "<the words of that row you rely on>"}. Cite only rows you saw; the cortex reads every cited row and refuses a check whose row does not hold its words. No citation is needed for what the EXPECTED OUTPUT says itself.
+6. Run your check here on this copy before you answer.
+
+Your LAST message is ONE JSON object and nothing after it:
+{"program": "<library file name, or new-programs/<name>.py>", "vars": {...}, "cites": [...], "why": "<one line: which wrong versions it catches>"}
+or, when no print a machine can make shows this checkpoint's expected output:
+{"no_check": "<why, and what the checkpoint would have to say for a machine to check it>"}
+or, when the work in this copy does not meet the EXPECTED OUTPUT and your check is right, the check object with one more key:
+"work_wrong": "<what the work does instead, as your check printed it>"
+"""
+MUTANT_PROMPT = """You test a check by breaking the work it checks. You never see the check: do not look for it, for any cortex check or test, or for anything outside this folder.
+
+PROJECT {NAME}: {SCOPE}
+CHECKPOINT C{N}: {CK}
+EXPECTED OUTPUT: {EX}
+
+This folder is a copy of the work. Make up to three broken versions, the kind a careless or gaming worker would leave: each fails the EXPECTED OUTPUT in a different, small, plausible way (an off by one, a special case hardcoded for the example, a missing error path, an output format slightly off, a test or data file edited so it passes, a value printed but not computed). Not a crash on start unless that is a real mistake a worker makes.
+For each: make ./mutants/m<k>/ a full copy of this folder (everything except ./mutants) with your one change, and write ./mutants/m<k>.txt saying in one line what is wrong in it.
+{REPORT}
+Your LAST message is ONE JSON object and nothing after it:
+{"mutants": [{"dir": "mutants/m1", "wrong": "<one line>"}]{REPORTKEY}}
+"""
+def fill(t, **kw):
+    for k, v in kw.items(): t = t.replace("{" + k + "}", str(v))
+    return t
+def v_author(name, n, model=None, feedback=None):
+    # rail C2: a claude exec turn writes the check of C n on a copy of the work; the cortex installs a new program once, reads the citations, stores the check row
+    ensure_cx(); pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
+    if not ck: raise SystemExit("no checkpoint %s %d" % (name, n))
+    model = model or AUTHOR_MODEL; scratch = work_copy(name, os.path.join(RAILDIR, "%s-C%d-author" % (name, n)))
+    report = not repo_of(name) and not os.path.isdir(os.path.join(WORKDIR, name, ".git")) and name in ("audit", "probe")
+    reported = ""
+    if report: reported = "REPORTED (the accepted parts of C%d: for a report this is the thing under test; pass the reported values to your check as variables, never trust them): %s\n" % (n, " | ".join(line_text(p["run"])[:200] for p in parts_of(name, n, 6) if p.get("run")) or "(none)")
+    if is_cortex_work(name): extra = "This project's work is the cortex front door itself (cortex.py in this folder) over a brain. Run it as   CORTEX_PORT=7010 python3 cortex.py <verb> ...   from the working folder (the test brain on port 7010; the cortex also sets CORTEX_PORT=7010 for your check). Never use port 7007, the live brain, and never the cortex command on the PATH for the work (it runs the live file; it is only for look). The test brain is a copy of the live one from some days ago: the check reads what the verb prints now on inputs it chooses, not today's run numbers."
+    elif report: extra = "This project's work is a report about this machine: the check prints the value fresh and compares it with the reported value given in the variables; a value that moves with time (uptime, free memory, free space) is compared with a tolerance you state, or answer no_check."
+    else: extra = "Nothing outside the working folder and your temp files is yours to change."
+    prompt = fill(AUTHOR_PROMPT, NAME=name, SCOPE=(pr[3] if pr else "")[:1500], N=n, CK=ck[3], EX=ex[3] if ex else "(none: answer no_check unless the checkpoint text itself names a print)", REPORTED=reported, LIB=CHECKLIB, LISTING=lib_listing(), EXTRA=extra)
+    if feedback: prompt += "\nYOUR LAST CHECK OF THIS CHECKPOINT WAS REFUSED: %s\nWrite it again so that this is no longer true (or answer work_wrong or no_check if that is the truth).\n" % feedback[:1500]
+    out, err, rc, secs = worker("claude", model, prompt, scratch, True)
+    obj = last_json(out, ("program", "no_check"))
+    if not obj: return {"status": "no answer", "why": "the author gave no JSON object (rc %d): %s" % (rc, (out or err or "")[-300:])}
+    if obj.get("no_check"): record("checkauthor", name, n, clean("the author claude %s answered no check for C%d: %s" % (model, n, str(obj["no_check"])[:400]))); return {"status": "no_check", "why": str(obj["no_check"])[:600]}
+    prog = str(obj.get("program") or ""); vars_ = obj.get("vars") if isinstance(obj.get("vars"), dict) else {}; cites = obj.get("cites") or vars_.get("cites") or []
+    installed = None
+    if prog.startswith("new-programs/"):
+        srcp = os.path.normpath(os.path.join(scratch, prog))
+        if not srcp.startswith(scratch) or not os.path.isfile(srcp): return {"status": "refused", "why": "the new program %s is not in the copy" % prog}
+        body = open(srcp, errors="replace").read()
+        for f in sorted(os.listdir(CHECKLIB)):
+            other = open(os.path.join(CHECKLIB, f), errors="replace").read()
+            r0 = difflib.SequenceMatcher(None, body, other, autojunk=True).ratio() if abs(len(body) - len(other)) < max(len(body), len(other)) * 0.5 else 0.0
+            if r0 >= 0.8: return {"status": "refused", "why": "the new program is %.0f%% the library's %s: use that program with your variables (rail C7: a program is stored once)" % (r0 * 100, f)}
+        base = re.sub(r"[^a-z0-9_.-]", "_", os.path.basename(prog).lower()); stem, ext = os.path.splitext(base); k = 2
+        while os.path.exists(os.path.join(CHECKLIB, base)): base = "%s-%d%s" % (stem, k, ext); k += 1
+        shutil.copy(srcp, os.path.join(CHECKLIB, base)); prog = installed = base
+    if not prog or "/" in prog or not os.path.isfile(os.path.join(CHECKLIB, prog)): return {"status": "refused", "why": "no program %r in the library" % prog}
+    bad = cites_not_held(cites)
+    if bad: return {"status": "refused", "why": "citations not held by their rows (rail C5): " + "; ".join(bad)[:500]}
+    cmd = prog_cmd(name, prog, vars_)
+    d = {"cmd": cmd, "program": prog, "vars": vars_, "cites": cites, "why": str(obj.get("why") or "")[:300], "author": "claude:%s" % model, "secs": round(secs), "ts": int(time.time()), "audited": None, "installed": installed, "work_wrong": str(obj.get("work_wrong") or "")[:400] or None}
+    cx_put("check", name, n, 0, clock(), json.dumps(d))
+    record("checkauthor", name, n, clean("the check of C%d was written by claude %s in %d s with the library program %s%s; it catches: %s" % (n, model, secs, prog, " (new)" if installed else "", d["why"][:200])))
+    return {"status": "written", "cmd": cmd, "program": prog, "installed": installed, "cites": len(cites), "work_wrong": d["work_wrong"]}
+def v_audit_check(name, n, model=None):
+    # rail C3: the check on the real work twice (fresh inputs), then on the broken copies another maker made without seeing it; every copy caught or refused
+    ensure_cx(); d = check_of(name, n)
+    if not d: raise SystemExit("no check on %s C%d" % (name, n))
+    pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
+    cmd = d["cmd"]; real = work_root(name); probs, killed, survived, maker = [], [], [], None
+    r1 = check_print(cmd, real); r2 = check_print(cmd, real)
+    if not (r1["ok"] and r2["ok"]): probs.append("your check printed check wrong on the real work: %s (if the work does not meet the expected output, answer with work_wrong)" % (r2 if r1["ok"] else r1)["last"][:300])
+    if not r1["inputs"]: probs.append("the check printed no inputs: line")
+    elif r1["inputs"] == r2["inputs"]: probs.append("the same inputs twice (%s): the check makes no fresh inputs" % r1["inputs"][:150])
+    if not probs:
+        scratch = work_copy(name, os.path.join(RAILDIR, "%s-C%d-audit" % (name, n)))
+        report = bool(d.get("vars")) and name in ("audit", "probe")
+        rep_t = ("This work is a report of values about this machine; the check takes the reported values in variables named: %s. Instead of folders, give up to three plausible wrong reports for those variables." % ", ".join(k for k in d["vars"] if k != "cites")) if report else ""
+        prompt = fill(MUTANT_PROMPT, NAME=name, SCOPE=(pr[3] if pr else "")[:1500], N=n, CK=ck[3], EX=ex[3] if ex else "(none)", REPORT=rep_t, REPORTKEY=', "value_mutants": [{"vars": {}, "wrong": "<one line>"}]' if report else "")
+        for eng, mdl in ((AUDIT_ENGINE, model or "default"), ("claude", "opus")):
+            try: out, err, rc, secs = worker(eng, mdl, prompt, scratch, True)
+            except subprocess.TimeoutExpired: out, err, rc, secs = "", "timeout", 1, 0
+            obj = last_json(out, ("mutants", "value_mutants")) or {}
+            if obj.get("mutants") or obj.get("value_mutants"): maker = "%s:%s" % (eng, mdl); break
+        for m in (obj.get("mutants") or [])[:3]:
+            dp = os.path.normpath(os.path.join(scratch, str(m.get("dir", ""))))
+            if not dp.startswith(scratch + os.sep) or not os.path.isdir(dp): continue
+            r = check_print(cmd, dp); (survived if r["ok"] else killed).append("%s (%s): %s" % (m.get("dir"), str(m.get("wrong"))[:140], r["last"][:160]))
+        for vm in (obj.get("value_mutants") or [])[:3]:
+            v2 = dict(d.get("vars") or {}); v2.update(vm.get("vars") or {}); r = check_print(prog_cmd(name, d["program"], v2), real)
+            (survived if r["ok"] else killed).append("values %s (%s): %s" % (json.dumps(vm.get("vars"))[:120], str(vm.get("wrong"))[:120], r["last"][:160]))
+        if not maker: probs.append("audit failed: no maker made a broken version (%s)" % ((out or err or "")[-200:]))
+        for s in survived: probs.append("a broken version passed your check: %s" % s)
+        if not probs: shutil.rmtree(scratch, ignore_errors=True)
+    ok = not probs and bool(killed)
+    d["audited"] = {"ok": ok, "by": maker, "killed": killed, "survived": survived, "real": [r1["last"], r2["last"]], "inputs": [r1["inputs"], r2["inputs"]], "problems": probs, "cmd": cmd, "ts": int(time.time())}
+    cx_put("check", name, n, 0, clock(), json.dumps(d))
+    record("checkaudit", name, n, clean("the check of C%d audited by %s: %d broken versions caught, %d passed; on the real work %s and %s%s" % (n, maker or "no maker", len(killed), len(survived), r1["last"][:120], r2["last"][:120], ("; refused: " + "; ".join(probs)[:300]) if probs else "")))
+    return {"ok": ok, "by": maker, "killed": killed, "survived": survived, "real": [r1["last"], r2["last"]], "inputs": [r1["inputs"], r2["inputs"]], "problems": probs}
+def prove_check(name, n, model=None):
+    # rail C2, C3: write and audit the check of C n; audited | work wrong | no check | refused | audit failed, and why
+    fb, why = None, ""
+    for attempt in (1, 2):
+        d = check_of(name, n) or {}
+        if attempt == 2 or not str(d.get("author") or "").startswith(("claude", "codex")):
+            a = v_author(name, n, model, fb)
+            if a["status"] == "no_check": return "no check", a["why"]
+            if a["status"] != "written": fb = why = a.get("why") or "no answer"; continue
+            if a.get("work_wrong"):
+                r = check_print(check_of(name, n)["cmd"], work_root(name))
+                if not r["ok"]: return "work wrong", "%s | the check printed: %s" % (a["work_wrong"], r["last"][:200])
+                fb = why = "you said work_wrong but your check printed check ok on the real work: %s" % r["last"][:200]; continue
+        au = v_audit_check(name, n)
+        if au["ok"]: return "audited", ""
+        if any(p.startswith("audit failed") for p in au["problems"]): return "audit failed", "; ".join(au["problems"])[:400]
+        fb = why = "; ".join(au["problems"])[:1200]
+    return "refused", why
+def v_prove(name, n=None, done_only=False, box_min=None, model=None):
+    # rail C4: each checkpoint (or the done ones) gets a check written and audited, then run: check ok keeps or closes, check wrong reopens, no check hands back
+    ensure_cx(); t0 = time.time()
+    try: sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError): pass
+    tally = {}
+    for (k, run, at, ts, text) in cx_list("checkpoint", name):
+        if n is not None and k != n: continue
+        if box_min and time.time() - t0 > box_min * 60: print("prove %s: the box of %d min ran out before C%d" % (name, box_min, k)); break
+        st = (cx_get("state", name, k) or (0, 0, 0, "open"))[3]
+        if done_only and st != "done": continue
+        if st == "done": tally["done before"] = tally.get("done before", 0) + 1
+        res, why = ("audited", "") if check_audited(name, k) else prove_check(name, k, model)
+        if res == "audited":
+            r = run_check(name, k)
+            if r and r["ok"]:
+                out = "kept" if st == "done" else ("closed" if close_by_check(name, k, r) is not False else "still open")
+            else:
+                out = "reopened" if st == "done" else "still open"
+                if st == "done": v_state(name, k, "working")
+                v_need(name, k, "the cortex own check printed: %s" % (r or {}).get("last", "nothing")[:260], who="cortex check"); why = (r or {}).get("last", "")
+        elif res == "work wrong":
+            out = "reopened" if st == "done" else "still open"
+            if st == "done": v_state(name, k, "working")
+            v_need(name, k, "the check written by the exec printed on the work: %s" % why[:260], who="cortex check")
+        elif res == "audit failed": out = "audit failed (state left as it was)"
+        else:
+            out = "handed back, " + res
+            if st == "done": v_state(name, k, "working")
+            handback(name, k, ("not yet a checkpoint, no machine print can show its expected: %s" if res == "no check" else "the check could not be written and audited: %s") % why[:300], {"engine": "claude"})
+        tally[out] = tally.get(out, 0) + 1
+        line = "prove %s C%d (was %s): %s%s" % (name, k, st, out, (" | " + why[:200]) if why else "")
+        print(line)
+        try: record("prove", name, k, clean(line))
+        except Exception as e: print("  (the prove line was not typed: %s)" % e)
+    print("prove %s: %s in %.0f s" % (name, ", ".join("%s %d" % kv for kv in tally.items()) or "nothing to prove", time.time() - t0))
+    return tally
 def v_source(name, band=None, text=None, domain=None):
     if band is None and text is None and domain is not None:   # C36: cortex source <name> --domain a,b sets the domains of a registered source
         ensure_cx(); had = cx_get("source", name, 0)
@@ -955,6 +1238,8 @@ def v_checkpoint(name, n, text, expected=None, kind=None):
     if not cx_get("state", name, n): v_state(name, n, "open")
 def v_state(name, n, state):
     ensure_cx(); assert state in ("open", "working", "done"), state
+    if state == "done" and RAIL and not _CLOSING[0]:   # rail C1 (the owner, 11-09: ok do it): only the cortex own check closes a checkpoint
+        print(("state %s %d: done refused, " % (name, n)) + (met_waits(name, n, "the state verb").strip(" |") or "already done")); return
     run, at, _ = record("state", name, n, state); print("state %s %d %s run %d clock %d" % (name, n, state, run, at))
     had = cx_get("states", name, n); hist = json.loads(had[3]) if had else []   # C42: every state change kept with its run, clock and time
     hist.append({"state": state, "run": run, "at": at, "ts": int(time.time())}); cx_put("states", name, n, run, at, json.dumps(hist[-200:]))
@@ -1220,6 +1505,7 @@ def close_by_parts(name, n):
     cov, k, m, used = parts_cover(name, n)
     if not used: return ""
     st = cx_get("state", name, n)
+    if cov >= THRESH and (not st or st[3] != "done") and RAIL: return met_waits(name, n, "its parts together, %d of %d expected gates by %d parts (C39)" % (k, m, used))
     if cov >= THRESH and (not st or st[3] != "done"):
         v_state(name, n, "done"); n2 = next_checkpoint(name)
         if n2 is not None and n2 != n:
@@ -1267,7 +1553,8 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     if kind == "completes" and p >= THRESH and by not in ("shape", "receipt"): moved = " | a judgment cell's completes does not move the state: the receipt, the shape or the owner's accept does"
     if kind == "completes" and p >= THRESH and by in ("shape", "receipt") and (name, n) not in NO_PARTS:
         st = cx_get("state", name, n)
-        if not st or st[3] != "done":
+        if (not st or st[3] != "done") and RAIL: moved = met_waits(name, n, "this verdict, completes %.2f by %s" % (p, by))
+        elif not st or st[3] != "done":
             v_state(name, n, "done"); n2 = next_checkpoint(name)
             if n2 is not None and n2 != n:
                 s2 = cx_get("state", name, n2)
@@ -1366,6 +1653,11 @@ def hydration_text(name, pr, nxt):
         ck = cx_get("checkpoint", name, nxt); ex = cx_get("expected", name, nxt)
         lines.append("DO NOW, C%d: %s" % (nxt, ck[3]))
         if ex: lines.append("EXPECTED OUTPUT: %s" % ex[3])
+        mt = cx_get("met", name, nxt) if RAIL else None
+        if mt:
+            try: mw = json.loads(mt[3])[-1]["why"]
+            except (ValueError, IndexError, KeyError): mw = "a verdict"
+            lines.append("MET, NOT CLOSED: the expected was met by %s; only the cortex own check closes C%d (rail C1)%s" % (mw, nxt, "" if check_audited(name, nxt) else "; its check is not yet written and audited"))
         ps = parts_of(name, nxt)
         if ps: lines.append("ACCEPTED SO FAR (parts of C%d's state, each with its time, confidence and ground): " % nxt + " | ".join("%s [%s%s | %s]" % (line_text(p["run"])[:90], time.strftime("%m-%d %H:%M", time.localtime(p.get("ts") or 0)), (" p%.2f %s" % (p["p"], p.get("by") or "")) if p.get("p") is not None else "", ("the owner's word" if p.get("by") == "owner" or (p.get("by") is None and p.get("p") is None) else ground_str(p.get("ground")))) for p in reversed(ps)))
         rc = receipts_of(name, nxt)
@@ -1425,6 +1717,7 @@ def v_hydrate(name, at=None):
 def v_accept(name, n, run=None):
     # the owner's word: with a run, that ingest's sentence becomes a part of C n's state; without, C n is done
     ensure_cx()
+    if run is None and RAIL: print(met_waits(name, n, "the accept").strip(" |") or "C%d is done already" % n); return
     if run is None: v_state(name, n, "done"); return
     rows = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
     if not rows: raise SystemExit("ingest run %s is not in the index" % run)
@@ -1490,7 +1783,8 @@ def v_turn(name, engine="claude", model=None, act=False, at=None, cwd=None):
         run_ = v_ingest(name, out, quiet=True)
         if p >= THRESH:
             r0 = run_[0]["run"] if run_ else 0; add_part(name, nxt, r0, out[:300], p, "judgment")
-            if out.startswith("judgment by graph"):
+            if out.startswith("judgment by graph") and RAIL: print(met_waits(name, nxt, "the judgment by graph (%.2f)" % p).strip(" |"))
+            elif out.startswith("judgment by graph"):
                 v_state(name, nxt, "done"); n2 = next_checkpoint(name)
                 if n2 is not None: v_state(name, n2, "working")
                 print("C%d done by the judgment (%.2f); next C%s" % (nxt, p, n2))
@@ -1594,6 +1888,14 @@ def v_build(name, engine="claude", model=None, box_min=30, max_turns=12, act=Tru
             print("build %s: nothing unblocked: %s" % (name, "every checkpoint is done" if alldone else "the rest wait on the owner (cortex handbacks %s)" % name)); break
         turns[nxt] = turns.get(nxt, 0) + 1; k += 1
         before = (cx_get("state", name, nxt) or (0, 0, 0, "open"))[3]; nparts = parts_cover(name, nxt)[3]
+        if RAIL and not check_audited(name, nxt):   # rail C2, C3: the check is written and audited before the worker's turn; the worker never sees it
+            pr_, why_ = prove_check(name, nxt)
+            if pr_ == "work wrong": v_need(name, nxt, "the check written by the exec printed on the work: %s" % why_[:260], who="cortex check")
+            elif pr_ != "audited":
+                if pr_ != "audit failed": handback(name, nxt, ("not yet a checkpoint, no machine print can show its expected: %s" if pr_ == "no check" else "the check could not be written and audited: %s") % why_[:300], {"engine": "claude"})
+                print("schedule: C%d has no audited check (%s: %s); the build moves on" % (nxt, pr_, why_[:160]))
+                if pr_ == "audit failed": break
+                continue
         try: res = v_turn(name, engine, model, act, nxt, cwd=cwd)
         except SystemExit as e: res = {"n": nxt, "engine": engine, "secs": 0.0, "kinds": [], "out": "", "needed": [], "flaws": ["the worker failed: %s" % e]}
         res = res or {}
@@ -1602,8 +1904,8 @@ def v_build(name, engine="claude", model=None, box_min=30, max_turns=12, act=Tru
         if chk is not None:
             if chk["ok"]:
                 chk_note = " check ok"
-                if after != "done" and re.search(r"(?mi)^\s*expected:\s*met\b", res.get("out") or ""):   # 11-04 16:3x (the lesson build): the cortex own print decides (C47); check ok and the worker's met line close the checkpoint, the check's print its part
-                    close_by_check(name, nxt, chk); after = "done"; moved = True; chk_note += " (closed by the cortex own check)"
+                if after != "done" and (RAIL or re.search(r"(?mi)^\s*expected:\s*met\b", res.get("out") or "")):   # 11-04 16:3x (the lesson build): the cortex own print decides (C47); check ok and the worker's met line close the checkpoint, the check's print its part
+                    if close_by_check(name, nxt, chk) is not False: after = "done"; moved = True; chk_note += " (closed by the cortex own check)"
             else:
                 chk_note = " check WRONG: " + chk["last"][:120]
                 if after == "done": v_state(name, nxt, "working"); after = "working"; print("C%d reopened: the cortex's own check failed: %s" % (nxt, chk["last"][:200])); chk_note += " (reopened)"
@@ -2879,6 +3181,10 @@ USAGE = """cortex <verb> ...
   freeze <path>                            sha of the handler into the brain; file read-only
   source <name> --domain a,b               the domains of a source (C36); a project routes to domains, agreement counts the routed sources
   sources                                  every source with its band, domains, lines and origin, and the routes
+  author <name> <n> [--model m]            rail C2 (the owner, 11-09): a claude exec turn writes the check of C n (a library program plus variables, citations), or answers no check
+  audit-check <name> <n>                   rail C3: the check run on the real work twice (fresh inputs) and on broken copies a codex exec turn made without seeing it; every copy caught or the check is refused
+  prove <name> [n] [--done] [--box min]    rail C4: write and audit the check of each checkpoint (or the done ones), run it: check ok keeps or closes, check wrong reopens, no check hands back
+  look <word> [<word>] [--source s]        rail C5: the source db rows that hold a word or a pair, with source, path and line (read only)
   check <name> <n> : <command>             C47: the cortex's own check of a checkpoint, run in the repo after every build turn; its print is a receipt the worker never touched; check ok closes, check wrong reopens
   check <name> <n>                         run the check now and type its print
   need <name> <n> : <text>                 C41: what a worker said the hydration lacked; carried by the next hydration of that checkpoint
@@ -2927,6 +3233,14 @@ def main(argv):
             i = a.index(flag) if flag in a else -1
             return a[i + 1] if i >= 0 and i + 1 < len(a) and not a[i + 1].startswith("--") else None
         v_capture(opt("--cwd"), opt("--name"))
+    elif v == "author":
+        r9 = v_author(a[0], int(a[1]), next((a[i + 1] for i in range(len(a) - 1) if a[i] == "--model"), None)); print(json.dumps(r9)[:1500])
+    elif v == "audit-check":
+        r9 = v_audit_check(a[0], int(a[1])); print(json.dumps(r9)[:1500])
+    elif v == "prove":
+        v_prove(a[0], int(a[1]) if len(a) > 1 and a[1].isdigit() else None, "--done" in a, int(a[a.index("--box") + 1]) if "--box" in a else None, next((a[i + 1] for i in range(len(a) - 1) if a[i] == "--model"), None))
+    elif v == "look":
+        v_look([x for x in a if not x.startswith("--") and not (a.index(x) > 0 and a[a.index(x) - 1] == "--source")], a[a.index("--source") + 1] if "--source" in a else None)
     elif v == "check":
         s6 = " ".join(a)
         if " : " in s6: k6, t6 = split_colon(a); v_check_set(k6[0], int(k6[1]), t6)
