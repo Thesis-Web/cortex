@@ -807,7 +807,10 @@ def check_of(name, n):
 def check_audited(name, n):
     d = check_of(name, n) or {}; a = d.get("audited") or {}
     return bool(a.get("ok")) and a.get("cmd") == d.get("cmd")
-def work_root(name): return repo_of(name) or os.path.join(WORKDIR, name)
+def work_root(name):
+    w = repo_of(name) or os.path.join(WORKDIR, name)
+    if not os.path.isdir(w): os.makedirs(w, exist_ok=True)   # a work that lives elsewhere (the neuron on hp) gets an empty folder here, so its check runs (rail C4)
+    return w
 def is_cortex_work(name): return os.path.realpath(work_root(name)) == os.path.realpath(os.path.join(HOME, "cortex"))
 def work_copy(name, dst):
     # a copy of the work for the author or the auditor: the git files of the cortex (not the kernel's sources), or the folder's files up to 20 MB each
