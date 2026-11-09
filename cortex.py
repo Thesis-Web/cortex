@@ -3193,6 +3193,152 @@ def v_senses(cmd, k=6):
         print("score after re-teaching: %d correct of %d; still incorrect: %s" % (correct, len(picks), ", ".join(w for (w, s, se), r in zip(picks, rows) if r.endswith("incorrect")) or "none"))
         return
     raise SystemExit("senses plan|lecture|problems|reteach|test|quiz [--n k]")
+# ---- jev C2 (the owner, 11-09 01:30: cortex decides what to hydrate you with based on your ask): the hydration by the ask, bounded; the state, the source rows the ask
+#      and the project's open work need (best by rarity, a few per source), the record lines that hold an ask word; never the whole record ----
+ASK_GENERIC = set("build built make made get give tell show find need needs want use using used what which who how why when where one two new all any each every more most other some such own same way thing things part parts like".split())
+def ask_words(text):
+    return [w for w in dict.fromkeys(re.findall(r"[a-z][a-z0-9_']+", (text or "").lower())) if w not in STOP and len(w) > 1]
+REFLIST = re.compile(r"\bin proc\b|\bproceedings of\b|\bet al\.?,? \(?(19|20)\d\d|\barxiv[: ]\d|\bdoi\b|\bpp\. \d|\bvol\. \d|^\s*\[\d+\]")
+def hydration_ask(name, question, cap=12000, ask_cap=8, other_cap=2):
+    import sqlite3, math
+    pr = cx_get("project", name, 0)
+    if not pr: raise SystemExit("no project " + name)
+    t0 = time.time(); aw = [w for w in ask_words(question) if w not in ASK_GENERIC] or ask_words(question)
+    cps = cx_list("checkpoint", name); states = {n: (cx_get("state", name, n) or (0, 0, 0, "open"))[3] for (n, run, at, ts, text) in cps}
+    cw = []
+    for (n, run, at, ts, text) in cps:
+        if states[n] != "done": cw += ask_words(text)
+    cw = [w for w in dict.fromkeys(cw) if w not in aw and w not in ASK_GENERIC]
+    sw = [w for w in dict.fromkeys(ask_words(pr[3])) if w not in aw and w not in cw and w not in ASK_GENERIC]   # the scope is the owner's speech: its words steer least
+    routed = [nm for (nm, b) in routed_sources(name) if source_is_db(nm)]
+    nxt = next_checkpoint(name); st = ["PROJECT %s: %s" % (name, pr[3][:700])]
+    for (n, run, at, ts, text) in cps:
+        ex = cx_get("expected", name, n); st.append("  C%d [%s]%s %s%s" % (n, states[n], " NEXT" if n == nxt else "", text[:220], (" || expected: " + ex[3][:160]) if ex else ""))
+    groups, cand, weight, total, nopath, dropped = {}, {}, {}, 1, 0, 0
+    if routed:
+        c = sqlite3.connect("file:%s?mode=ro" % cx_db_path(), uri=True, timeout=30); ph = ",".join("?" * len(routed))
+        total = c.execute("SELECT count(*) FROM corpus WHERE source IN (%s)" % ph, routed).fetchone()[0] or 1
+        for (w, base) in [(w, 1.0) for w in aw[:12]] + [(w, 0.4) for w in cw[:50]] + [(w, 0.2) for w in sw[:40]]:
+            ids = [i for (i,) in c.execute("SELECT id FROM words WHERE word = ? AND source IN (%s) LIMIT 6000" % ph, [w] + routed)]
+            if not ids or len(ids) > total * 0.08: continue   # a word in more than 8 of 100 rows tells nothing
+            weight[w] = base * math.log(total / len(ids))
+            for i in ids: cand.setdefault(i, set()).add(w)
+        top = sorted(cand.items(), key=lambda kv: -sum(weight[w] for w in kv[1]))[:1500]
+        got = {}
+        if top:
+            for (i, src, path, line, text) in c.execute("SELECT id, source, path, line, text FROM corpus WHERE id IN (%s)" % ",".join(str(int(i)) for i, _ in top)): got[i] = (src, path, line, text)
+        c.close()
+        scored = []
+        for i, ws in top:
+            if i not in got: continue
+            src, path, line, text = got[i]
+            if not path or line is None: nopath += 1; continue   # a row is given with its path and line, or not at all
+            hasask = [w for w in ws if w in aw]
+            if len(text) < 40 or REFLIST.search(text) or (len(ws) < 2) or (not hasask and len(ws) < 3): dropped += 1; continue
+            nw = len([w for w in ask_words(text) if w not in ASK_GENERIC])
+            scored.append((sum(weight[w] for w in ws) / math.sqrt(max(8, nw) / 8.0), bool(hasask), src, path, line, text))
+        seen, per = set(), {}
+        for (sc, hasask, src, path, line, text) in sorted(scored, key=lambda x: -x[0]):
+            k = re.sub(r"[^a-z]+", "", text.lower())[:120]
+            if k in seen: continue
+            if per.get((src, hasask), 0) >= (ask_cap if hasask else other_cap): continue
+            seen.add(k); per[(src, hasask)] = per.get((src, hasask), 0) + 1; groups.setdefault(src, []).append((sc, path, line, text))
+    rec = []
+    pwset = set(cw) | set(sw)
+    if aw:
+        def keep(t, w): return len((set(ask_words(t)) & pwset) - {w}) >= 2   # a record line holds an ask word and two of the project's words
+        for (rn,) in q("SELECT run FROM main.cx WHERE kind = 'ingest' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 120", name):
+            t = line_text(rn)
+            if t and set(ask_words(t)) & set(aw): rec.append("run %d (ingest): %s" % (rn, t[:240]))
+        for kind in ("need", "handback"):
+            for (n, run, at, ts, v) in cx_list(kind, name):
+                if set(ask_words(v)) & set(aw): rec.append("%s %s C%d: %s" % (kind, name, n, re.sub(r"\s+", " ", v)[:240]))
+        owners = [nm for (nm, b) in sources() if b == "owner"]
+        for w in aw[:6]:
+            g = gate_of(w)
+            if not g: continue
+            for nm in owners:
+                had = cx_get("gate", nm, g)
+                if not had: continue
+                try: d = json.loads(had[3])
+                except ValueError: continue
+                for rn in sorted(set([d.get("first"), d.get("last")]) - {None}):
+                    t = line_text(rn)
+                    if t and keep(t, w): rec.append("run %d (owner source %s, holds %s): %s" % (rn, nm, w, t[:240]))
+    rec = list(dict.fromkeys(rec)); nrows = sum(len(v) for v in groups.values())
+    head = ["ASK %s: %s" % (name, question),
+            "THE CORTEX READ (jev C2): ask words %s; the open checkpoints' words %s; the scope's words weigh least; %d routed source dbs (%s), %d rows, %d candidates; %d rows kept from %d sources (at most %d per source holding an ask word, %d otherwise), %d left out with no path, %d left out as reference lists, fragments or one word; %d record lines; %.1f s" % (", ".join(aw) or "-", ", ".join(w for w in cw if w in weight)[:240] or "-", len(routed), ",".join(routes().get(name) or []) or "every source", total, len(cand), nrows, len(groups), ask_cap, other_cap, nopath, dropped, len(rec), time.time() - t0),
+            "STATE:"] + st
+    body = "\n".join(head) + "\n"
+    out_rec = ["RECORD LINES holding an ask word (the project's own lines; the owner's lines that also hold two of the project's words):"] if rec else []
+    tail = "LAWS: report only what you observed as live output; never invent a result, a term, a file or a source row; a row not printed here is not in your hydration."
+    room = cap - len((body + tail).encode()) - 200
+    rec_room = min(2500, room // 4) if rec else 0
+    for r in rec:
+        if len(("\n".join(out_rec) + r).encode()) > rec_room: break
+        out_rec.append("  " + r)
+    room -= len("\n".join(out_rec).encode())
+    # the rows grouped by source, the sources in the order of their best row; the budget is spent best row first across all sources
+    order = sorted(groups, key=lambda s0: -max(x[0] for x in groups[s0])); flat = sorted([(x[0], s0, x) for s0 in groups for x in groups[s0]], key=lambda y: -y[0])
+    picked, used = {}, len("SOURCE ROWS".encode()) + 80
+    for (sc, s0, (sc2, path, line, text)) in flat:
+        ln = "    %s:%s: %s" % (path, line, re.sub(r"\s+", " ", text)[:340])
+        extra = len(ln.encode()) + 1 + (0 if s0 in picked else len(s0) + 4)
+        if used + extra > room: continue
+        picked.setdefault(s0, []).append(ln); used += extra
+    out_rows = ["SOURCE ROWS (source, then path:line: the row; the sources in the order of their best row for the ask):"]
+    for s0 in order:
+        if s0 in picked: out_rows.append("  " + s0); out_rows += picked[s0]
+    if len(out_rows) == 1: out_rows.append("  (none: no routed source db holds the ask's words%s)" % ("" if routed else "; the project routes to no db source: cortex route %s <domains>" % name))
+    return body + "\n".join(out_rows) + "\n" + ("\n".join(out_rec) + "\n" if len(out_rec) > 1 else "") + tail + "\n"
+def v_route(name=None, doms=None):
+    # a project routes to the domains its claims are about (C36); the liaison sets it for a new project
+    ensure_cx(); R = routes()
+    if name and doms is not None:
+        R[name] = doms; cx_put("routes", "judge", 0, 0, clock(), json.dumps(R)); print("route %s -> %s" % (name, ",".join(doms)))
+        n = len([1 for (nm, b) in routed_sources(name) if b == "reference" and set(source_info(nm).get("domain") or []) & set(doms)])
+        print("%s now counts %d reference sources" % (name, n))
+    else: print("routes: " + "; ".join("%s -> %s" % (k, ",".join(v)) for k, v in R.items() if k != "note"))
+# ---- jev C3: the outline built by a claude exec turn from the ask hydration alone (an empty folder, no tools granted); every row it names must be a row the hydration printed ----
+ASKPLAN_PROMPT = """You write the outline of a build for the cortex, a persistent memory that prescribes one checkpoint at a time to a headless worker and closes a checkpoint only when a check the cortex runs itself prints check ok.
+Your whole context is the hydration below: the project's state and the source rows the cortex chose for the ask. You have no other source: do not search, fetch or read anything else; this folder is empty.
+
+{HYD}
+WRITE THE OUTLINE of what is left to build for project {NAME}, as {LO} to {HI} checkpoints in build order, numbered from {N0}. Each checkpoint is exactly one line:
+checkpoint <n> : <what is built, one sentence, ending with the source rows it rests on as (source path:line)> || <the live output that proves it: the command run and what it prints, with the values it must print>
+Rules: every source row you name is one printed above, as source path:line exactly; an expected output is a print a machine check can run on random inputs, never a test name, a summary or an intent; the first checkpoint is the smallest piece that prints; every later one uses what the earlier ones built; build on what the state says exists and do not repeat a checkpoint that is there; stay inside the scope; no other text, no headings, no code.
+"""
+def v_plan_ask(name, question, engine="claude", model=None, lo=4, hi=9):
+    ensure_cx(); pr = cx_get("project", name, 0)
+    if not pr: raise SystemExit("no project " + name)
+    hyd = hydration_ask(name, question)
+    cps = cx_list("checkpoint", name); n0 = (max(n for (n, run, at, ts, text) in cps) + 1) if cps else 1
+    if model is None: model = MODEL_BY_KIND.get("design", "opus") if engine == "claude" else "default"
+    cwd = os.path.join(RAILDIR, "%s-plan-ask" % name)
+    if os.path.exists(cwd): shutil.rmtree(cwd)
+    os.makedirs(cwd)
+    prompt = fill(ASKPLAN_PROMPT, HYD=hyd, NAME=name, N0=n0, LO=lo, HI=hi)
+    print("plan %s --ask %r: the hydration %d bytes, the design worker %s %s in an empty folder, prompt %d bytes" % (name, question, len(hyd.encode()), engine, model, len(prompt.encode())))
+    out, err, rc, secs = worker(engine, model, prompt, cwd, False)
+    if rc != 0 or not out.strip(): print("worker stderr: " + err[-600:]); raise SystemExit("the design worker failed, nothing typed")
+    printed, cur = set(), None
+    for l in hyd.split("\n"):
+        m0 = re.match(r"^  (\S+)$", l); m1 = re.match(r"^    (\S+?:\d+): ", l)
+        if m0: cur = m0.group(1)
+        elif m1 and cur: printed.add("%s %s" % (cur, m1.group(1)))
+    got, refused = [], []
+    for m in re.finditer(r"(?mi)^\s*checkpoint\s+(\d+)\s*:\s*(.+?)\s*\|\|\s*(.+?)\s*$", out):
+        n, text, exp = int(m.group(1)), m.group(2), m.group(3)
+        named = re.findall(r"([a-z0-9][a-z0-9.\-]+ [^\s():,;]+?:\d+)", text)
+        bad = [x for x in named if x not in printed]
+        if not named: refused.append("C%d names no source row" % n); continue
+        if bad: refused.append("C%d names rows the hydration did not print: %s" % (n, ", ".join(bad[:3]))); continue
+        if cx_get("checkpoint", name, n): refused.append("C%d exists already" % n); continue
+        v_checkpoint(name, n, "%s (jev C3: written by %s %s from the hydration of the ask: %s)" % (text, engine, model, question), exp); got.append(n)
+    record("planask", name, n0, clean("the outline of %s from the ask %s was written by %s %s in %d s from a hydration of %d bytes: %d checkpoints typed open (%s), %d refused%s" % (name, question, engine, model, secs, len(hyd.encode()), len(got), " ".join("C%d" % x for x in got), len(refused), ("; " + "; ".join(refused)[:300]) if refused else "")))
+    print("plan %s --ask: %d checkpoints typed open in %.0f s (%s)%s" % (name, len(got), secs, " ".join("C%d" % x for x in got), ("; refused: " + "; ".join(refused)) if refused else ""))
+    if not got: print("--- the design worker's output (first 2000 bytes) ---"); print(out[:2000])
+    return got
 USAGE = """cortex <verb> ...
   senses plan|lecture|problems|reteach|test|quiz [--n k]   the project lesson-senses: a lesson the brain takes the way a human is taught; the learner on CORTEX_LEARNER (7010), the key in wn.db read by the judge only
   teach dupe|pairs|known [--n k] [--project p]   C57 / teach: a lesson the brain takes: its own answer beside the front door answer on k random inputs; equal k of k
@@ -3215,6 +3361,9 @@ USAGE = """cortex <verb> ...
   ingest <name> <text | ->                 sentences typed as cortex ingest lines (- reads stdin)
   judge <name> <n> <run>                   verdict on an ingested run against checkpoint n
   hydrate <name> [--at n]                  the next worker's whole prompt
+  hydrate <name> --ask <question>          jev C2: the state, the source rows and record lines the ask and the open work need, bounded (12 kb)
+  plan <name> --ask <question> [--model m]   jev C3: the design worker writes the outline from that hydration alone; a checkpoint naming a row it was not given is refused
+  route [<project> <a,b>]                  the domains a project routes to (C36)
   turn <name> [--engine claude|codex] [--model m] [--act]   hydrate, one worker turn, ingest, judge, move
   plan <name> <repo path> [--engine e] [--model m] [--scope s]   C43: the repo's own words typed as an owner source; a design worker writes the outline; typed open; read it before build
   build <name> [--box min] [--turns k] [--engine e] [--model m] [--no-act]   C44: hydrate, one headless turn on the hydration alone, ingest, judge, move, again; NEEDED grows the hydration; FLAW parks and hands back
@@ -3271,7 +3420,11 @@ def main(argv):
         if "--voice" in a: i = a.index("--voice"); VOICE[0] = a[i + 1]; a = a[:i] + a[i + 2:]
         v_ingest(a[0], sys.stdin.read() if a[1:] == ["-"] else " ".join(a[1:]))
     elif v == "judge": v_judge(a[0], int(a[1]), int(a[2]))
-    elif v == "hydrate": v_hydrate(a[0], int(a[a.index("--at") + 1]) if "--at" in a else None)
+    elif v == "hydrate":
+        if "--ask" in a:
+            ensure_cx(); h = hydration_ask(a[0], " ".join(a[a.index("--ask") + 1:])); sys.stdout.write(h); print("[%d bytes]" % len(h.encode()), file=sys.stderr)
+        else: v_hydrate(a[0], int(a[a.index("--at") + 1]) if "--at" in a else None)
+    elif v == "route": v_route(a[0] if a else None, [x for x in a[1].split(",") if x] if len(a) > 1 else None)
     elif v == "turn":
         engine, model, act, at = "claude", None, False, None
         if "--engine" in a: engine = a[a.index("--engine") + 1]
@@ -3370,7 +3523,8 @@ def main(argv):
         if "--engine" in a: i = a.index("--engine"); engine = a[i + 1]; a = a[:i] + a[i + 2:]
         if "--model" in a: i = a.index("--model"); model = a[i + 1]; a = a[:i] + a[i + 2:]
         if "--scope" in a: i = a.index("--scope"); scope = a[i + 1]; a = a[:i] + a[i + 2:]
-        v_plan(a[0], a[1], engine, model, scope)
+        if "--ask" in a: v_plan_ask(a[0], " ".join(a[a.index("--ask") + 1:]), engine, model)
+        else: v_plan(a[0], a[1], engine, model, scope)
     elif v == "build":
         engine, model, box, turns = "claude", None, 30, 12
         if "--engine" in a: engine = a[a.index("--engine") + 1]
