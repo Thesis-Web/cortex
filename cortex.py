@@ -1005,7 +1005,7 @@ def v_audit_check(name, n, model=None):
         cmd0 = (prog_cmd(name, d["program"], v0) if os.path.isfile(os.path.join(CHECKLIB, d.get("program") or "-")) else cmd).replace("CORTEX_PORT=7010", "CORTEX_PORT=7099")
         r0 = check_print(cmd0, real if report else nd); shutil.rmtree(nd, ignore_errors=True)
         (survived if r0["ok"] else killed).append("the work absent (%s%s): %s" % (how, ", no brain on the port" if "CORTEX_PORT=7010" in cmd else "", r0["last"][:160]))
-        if not maker and not killed: probs.append("audit failed: no maker made a broken version (%s)" % ((out or err or "")[-200:]))
+        if not maker and not killed and not survived: probs.append("audit failed: no maker made a broken version (%s)" % ((out or err or "")[-200:]))   # the work absent passing the check is a refusal, not a failed audit
         for s in survived: probs.append("a broken version passed your check: %s" % s)
         if not probs: shutil.rmtree(scratch, ignore_errors=True)
     ok = not probs and bool(killed)
@@ -1073,6 +1073,35 @@ def v_prove(name, n=None, done_only=False, box_min=None, model=None):
         except Exception as e: print("  (the prove line was not typed: %s)" % e)
     print("prove %s: %s in %.0f s" % (name, ", ".join("%s %d" % kv for kv in tally.items()) or "nothing to prove", time.time() - t0))
     return tally
+def v_jev(names, k=8, seed=None):
+    # rail C6 (the owner, 11-09: the judge --> jev like needs to happen): our own jev lives in the judge brain as rows of sql (judge/judge-jev.sql) on the test kernel;
+    # a request row fires rules 1 to 6 through the mother; this verb only asks and prints, beside the python judge's verdict; nothing here decides
+    import random
+    if PORT != 7010: raise SystemExit("the judge brain lives on the test kernel: CORTEX_PORT=7010 cortex jev <project ...> [--n k] [--seed s]")
+    ensure_cx(); pool = []
+    for nm in names:
+        for (n0, run0, at0, ts0, v0) in cx_list("verdict", nm):
+            try: d0 = json.loads(v0)
+            except (ValueError, TypeError): continue
+            if isinstance(d0, dict) and d0.get("kind") and d0.get("n") is not None: pool.append((nm, n0, d0))
+    rnd = random.Random(seed); pick = rnd.sample(pool, min(k, len(pool)))
+    same = llm_only = llm_over = 0; t0 = time.time()
+    for (nm, run, d0) in pick:
+        cn = int(d0["n"]); q("INSERT INTO cx.judge_ask (run, name, n, ts) VALUES (?, ?, ?, ?)", run, nm, cn, int(time.time()))
+        rows = q("SELECT completes, progresses, regresses, supersedes, off_scope, invents, contradicts, verdict, evidence FROM cx.judge_jev WHERE run = ? AND name = ? AND n = ?", run, nm, cn)
+        cell = q("SELECT voice, check_state, values_held, pair_sources, pairs_held, pairs FROM cx.judge_cell WHERE run = ? AND name = ? AND n = ?", run, nm, cn)
+        errs = [r for r in q("SELECT id, said FROM cx.judge_rule WHERE id IN (1, 2, 3, 4, 5, 6)") if str(r[1] or "").startswith("error")]
+        if not rows: print("run %d %s C%d: the judge brain wrote no jev row%s" % (run, nm, cn, (" | " + "; ".join("rule %s: %s" % (i, s[:160]) for i, s in errs)) if errs else "")); continue
+        c_, p_, r_, s_, o_, i_, x_, verdict, ev = rows[0]
+        if verdict == d0["kind"]: same += 1
+        if cell and cell[0][0] != "owner" and cell[0][1] is None and not cell[0][2] and not (cell[0][3] >= 2 and cell[0][4] * 2 >= max(1, cell[0][5])):
+            llm_only += 1
+            if max(c_, p_) > 0.8: llm_over += 1
+        print("run %d %s C%d | python: %s %.2f (%s) | jev: %s | completes %.2f progresses %.2f regresses %.2f supersedes %.2f off scope %.2f invents %.2f contradicts %.2f" % (run, nm, cn, d0["kind"], float(d0.get("p") or 0), d0.get("judge"), verdict, c_, p_, r_, s_, o_, i_, x_))
+        print("    evidence: %s" % ev)
+        print("    sentence: %s" % line_text(run)[:220])
+        if errs: print("    rule errors: " + "; ".join("rule %s: %s" % (i, s[:160]) for i, s in errs))
+    print("jev beside the python judge: %d claims, the same verdict on %d; %d held only by an llm voice, of them above 0.80 on completes or progresses: %d; %.0f s" % (len(pick), same, llm_only, llm_over, time.time() - t0))
 def v_source(name, band=None, text=None, domain=None):
     if band is None and text is None and domain is not None:   # C36: cortex source <name> --domain a,b sets the domains of a registered source
         ensure_cx(); had = cx_get("source", name, 0)
@@ -3199,6 +3228,7 @@ USAGE = """cortex <verb> ...
   author <name> <n> [--model m]            rail C2 (the owner, 11-09): a claude exec turn writes the check of C n (a library program plus variables, citations), or answers no check
   audit-check <name> <n>                   rail C3: the check run on the real work twice (fresh inputs) and on broken copies a codex exec turn made without seeing it; every copy caught or the check is refused
   prove <name> [n] [--done] [--box min]    rail C4: write and audit the check of each checkpoint (or the done ones), run it: check ok keeps or closes, check wrong reopens, no check hands back
+  jev <project ...> [--n k] [--seed s]     rail C6: our own jev (the judge brain, rows of sql on the test kernel: the seven questions from evidence, the owner bands, the truth table) beside the python judge on k random judged claims; decides nothing
   look <word> [<word>] [--source s]        rail C5: the source db rows that hold a word or a pair, with source, path and line (read only)
   check <name> <n> : <command>             C47: the cortex's own check of a checkpoint, run in the repo after every build turn; its print is a receipt the worker never touched; check ok closes, check wrong reopens
   check <name> <n>                         run the check now and type its print
@@ -3254,6 +3284,8 @@ def main(argv):
         r9 = v_audit_check(a[0], int(a[1])); print(json.dumps(r9)[:1500])
     elif v == "prove":
         v_prove(a[0], int(a[1]) if len(a) > 1 and a[1].isdigit() else None, "--done" in a, int(a[a.index("--box") + 1]) if "--box" in a else None, next((a[i + 1] for i in range(len(a) - 1) if a[i] == "--model"), None))
+    elif v == "jev":
+        v_jev([x for x in a if not x.startswith("--") and not (a.index(x) > 0 and a[a.index(x) - 1] in ("--n", "--seed"))] or ["cortex"], int(a[a.index("--n") + 1]) if "--n" in a else 8, int(a[a.index("--seed") + 1]) if "--seed" in a else None)
     elif v == "look":
         v_look([x for x in a if not x.startswith("--") and not (a.index(x) > 0 and a[a.index(x) - 1] == "--source")], a[a.index("--source") + 1] if "--source" in a else None)
     elif v == "check":
