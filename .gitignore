@@ -15,3 +15,6 @@ nk-new/
 gates/brain/
 gates/sources/
 gates/kernel/nk
+# 2026-11-09: the source dbs beside the kernel stay on disk, out of git (GitHub refuses over 100 MB)
+nk/sources-egg/*.db
+nk/sources-full/*.db
