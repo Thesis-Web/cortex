@@ -903,7 +903,7 @@ THE CHECK LIBRARY ({LIB}) holds check programs stored once, each taking its vari
 Rules:
 1. Use a library program with your own variables when one fits. Write a new program only when none fits, and write it so other checkpoints can use it with other variables: everything particular to this checkpoint comes in through the variables. Save it as ./new-programs/<short_name>.py (python3, standard library only) or .sh; its first lines are # comments saying what it checks and which variables it takes.
 2. The check makes its own inputs each run (random values, a fresh temp file, a random pick among the cases) and prints one line starting "inputs:" naming them. Its LAST line starts "check ok:" or "check wrong:" and says what it saw.
-3. It checks the EXPECTED OUTPUT by running the work itself (the program, the commands, the verbs) from the working folder with relative paths, never an absolute path to the real work, never by reading what a worker or the record said was done. It never changes the work; temp files it makes it removes.
+3. It checks the EXPECTED OUTPUT by running the work itself (the program, the commands, the verbs) from the working folder with relative paths, never an absolute path to the real work, never by reading what a worker or the record said was done. It never changes the work; temp files it makes it removes. If the work lives outside this folder (a service on a port, another machine, a url), take where it lives in the variable "target": the cortex points target at nothing to see your check print check wrong.
 4. {EXTRA}
 5. Any behaviour you rely on beyond the EXPECTED OUTPUT itself (what a command prints, a flag, a format, a library call) is cited from a source row you looked up: run   cortex look <word> [<second word>]   (it prints source path:line: text) and put each citation in "cites" as {"source": ..., "path": ..., "line": ..., "words": "<the words of that row you rely on>"}. Cite only rows you saw; the cortex reads every cited row and refuses a check whose row does not hold its words. No citation is needed for what the EXPECTED OUTPUT says itself.
 6. Run your check here on this copy before you answer.
@@ -921,7 +921,7 @@ PROJECT {NAME}: {SCOPE}
 CHECKPOINT C{N}: {CK}
 EXPECTED OUTPUT: {EX}
 
-This folder is a copy of the work. Make up to three broken versions, the kind a careless or gaming worker would leave: each fails the EXPECTED OUTPUT in a different, small, plausible way (an off by one, a special case hardcoded for the example, a missing error path, an output format slightly off, a test or data file edited so it passes, a value printed but not computed). Not a crash on start unless that is a real mistake a worker makes.
+This folder is a copy of the work. Make up to three broken versions, the kind a careless or gaming worker would leave: each fails the EXPECTED OUTPUT AS WRITTEN (never a requirement it does not state: no formatting, quoting or wording it does not ask for) in a different, small, plausible way (an off by one, a special case hardcoded for the example, a missing error path, an output format slightly off, a test or data file edited so it passes, a value printed but not computed). Not a crash on start unless that is a real mistake a worker makes. When the work in this folder is a program that talks to a running service (a kernel, a server), break the program in this folder so it prints or sends the wrong thing; an empty list only when nothing in this folder takes part in the expected output.
 For each: make ./mutants/m<k>/ a full copy of this folder (everything except ./mutants) with your one change, and write ./mutants/m<k>.txt saying in one line what is wrong in it.
 {REPORT}
 Your LAST message is ONE JSON object and nothing after it:
@@ -939,13 +939,14 @@ def v_author(name, n, model=None, feedback=None):
     reported = ""
     if report: reported = "REPORTED (the accepted parts of C%d: for a report this is the thing under test; pass the reported values to your check as variables, never trust them): %s\n" % (n, " | ".join(line_text(p["run"])[:200] for p in parts_of(name, n, 6) if p.get("run")) or "(none)")
     if is_cortex_work(name): extra = "This project's work is the cortex front door itself (cortex.py in this folder) over a brain. Run it as   CORTEX_PORT=7010 python3 cortex.py <verb> ...   from the working folder (the test brain on port 7010; the cortex also sets CORTEX_PORT=7010 for your check). Never use port 7007, the live brain, and never the cortex command on the PATH for the work (it runs the live file; it is only for look). The test brain is a copy of the live one from some days ago: the check reads what the verb prints now on inputs it chooses, not today's run numbers."
-    elif report: extra = "This project's work is a report about this machine: the check prints the value fresh and compares it with the reported value given in the variables; a value that moves with time (uptime, free memory, free space) is compared with a tolerance you state, or answer no_check."
+    elif report: extra = "This project's work is a report about this machine: the check prints the value fresh and compares it with the reported value, which it takes in the variable \"reported\" (only there; the auditor will change only that variable to wrong reports); a value that moves with time (uptime, free memory, free space) is compared with a tolerance you state, or answer no_check."
     else: extra = "Nothing outside the working folder and your temp files is yours to change."
     prompt = fill(AUTHOR_PROMPT, NAME=name, SCOPE=(pr[3] if pr else "")[:1500], N=n, CK=ck[3], EX=ex[3] if ex else "(none: answer no_check unless the checkpoint text itself names a print)", REPORTED=reported, LIB=CHECKLIB, LISTING=lib_listing(), EXTRA=extra)
-    if feedback: prompt += "\nYOUR LAST CHECK OF THIS CHECKPOINT WAS REFUSED: %s\nWrite it again so that this is no longer true (or answer work_wrong or no_check if that is the truth).\n" % feedback[:1500]
+    if feedback: prompt += "\nYOUR LAST CHECK OF THIS CHECKPOINT WAS REFUSED: %s\nWrite it again so that this is no longer true (or answer work_wrong or no_check if that is the truth). If a broken version the auditor made is not wrong against the EXPECTED OUTPUT as written, answer instead {\"not_wrong\": \"<which version and why the expected output does not make it wrong>\"}: the owner decides between you and the auditor.\n" % feedback[:1500]
     out, err, rc, secs = worker("claude", model, prompt, scratch, True)
-    obj = last_json(out, ("program", "no_check"))
+    obj = last_json(out, ("program", "no_check", "not_wrong"))
     if not obj: return {"status": "no answer", "why": "the author gave no JSON object (rc %d): %s" % (rc, (out or err or "")[-300:])}
+    if obj.get("not_wrong"): return {"status": "not_wrong", "why": str(obj["not_wrong"])[:600]}
     if obj.get("no_check"): record("checkauthor", name, n, clean("the author claude %s answered no check for C%d: %s" % (model, n, str(obj["no_check"])[:400]))); return {"status": "no_check", "why": str(obj["no_check"])[:600]}
     prog = str(obj.get("program") or ""); vars_ = obj.get("vars") if isinstance(obj.get("vars"), dict) else {}; cites = obj.get("cites") or vars_.get("cites") or []
     installed = None
@@ -981,7 +982,7 @@ def v_audit_check(name, n, model=None):
     if not probs:
         scratch = work_copy(name, os.path.join(RAILDIR, "%s-C%d-audit" % (name, n)))
         report = bool(d.get("vars")) and name in ("audit", "probe")
-        rep_t = ("This work is a report of values about this machine; the check takes the reported values in variables named: %s. Instead of folders, give up to three plausible wrong reports for those variables." % ", ".join(k for k in d["vars"] if k != "cites")) if report else ""
+        rep_t = ("This work is a report of values about this machine, the reported value now: %s. Instead of folders, give up to three plausible wrong reports, each as the variable reported only: {\"vars\": {\"reported\": <a wrong report>}}." % json.dumps(d["vars"].get("reported"))[:300]) if report else ""
         prompt = fill(MUTANT_PROMPT, NAME=name, SCOPE=(pr[3] if pr else "")[:1500], N=n, CK=ck[3], EX=ex[3] if ex else "(none)", REPORT=rep_t, REPORTKEY=', "value_mutants": [{"vars": {}, "wrong": "<one line>"}]' if report else "")
         for eng, mdl in ((AUDIT_ENGINE, model or "default"), ("claude", "opus")):
             try: out, err, rc, secs = worker(eng, mdl, prompt, scratch, True)
@@ -993,13 +994,22 @@ def v_audit_check(name, n, model=None):
             if not dp.startswith(scratch + os.sep) or not os.path.isdir(dp): continue
             r = check_print(cmd, dp); (survived if r["ok"] else killed).append("%s (%s): %s" % (m.get("dir"), str(m.get("wrong"))[:140], r["last"][:160]))
         for vm in (obj.get("value_mutants") or [])[:3]:
-            v2 = dict(d.get("vars") or {}); v2.update(vm.get("vars") or {}); r = check_print(prog_cmd(name, d["program"], v2), real)
+            if "reported" not in (vm.get("vars") or {}): continue   # a value mutant changes only the reported value, never the check's own variables
+            v2 = dict(d.get("vars") or {}); v2["reported"] = vm["vars"]["reported"]; r = check_print(prog_cmd(name, d["program"], v2), real)
             (survived if r["ok"] else killed).append("values %s (%s): %s" % (json.dumps(vm.get("vars"))[:120], str(vm.get("wrong"))[:120], r["last"][:160]))
-        if not maker: probs.append("audit failed: no maker made a broken version (%s)" % ((out or err or "")[-200:]))
+        # the cortex's own broken version, no model in it: the work absent (an empty folder, and for the cortex's own work a port where no brain answers); the check must print check wrong
+        import tempfile
+        nd = tempfile.mkdtemp(prefix="rail-absent-"); v0 = dict(d.get("vars") or {}); how = "an empty folder"
+        if report: v0["reported"] = ""; how = "an empty report"
+        elif "target" in v0: v0["target"] = "127.0.0.1:9"; how = "the target pointed at nothing"
+        cmd0 = (prog_cmd(name, d["program"], v0) if os.path.isfile(os.path.join(CHECKLIB, d.get("program") or "-")) else cmd).replace("CORTEX_PORT=7010", "CORTEX_PORT=7099")
+        r0 = check_print(cmd0, real if report else nd); shutil.rmtree(nd, ignore_errors=True)
+        (survived if r0["ok"] else killed).append("the work absent (%s%s): %s" % (how, ", no brain on the port" if "CORTEX_PORT=7010" in cmd else "", r0["last"][:160]))
+        if not maker and not killed: probs.append("audit failed: no maker made a broken version (%s)" % ((out or err or "")[-200:]))
         for s in survived: probs.append("a broken version passed your check: %s" % s)
         if not probs: shutil.rmtree(scratch, ignore_errors=True)
     ok = not probs and bool(killed)
-    d["audited"] = {"ok": ok, "by": maker, "killed": killed, "survived": survived, "real": [r1["last"], r2["last"]], "inputs": [r1["inputs"], r2["inputs"]], "problems": probs, "cmd": cmd, "ts": int(time.time())}
+    d["audited"] = {"ok": ok, "by": maker or "the work absent only", "strength": "mutants" if maker and len(killed) > 1 else "absent only", "killed": killed, "survived": survived, "real": [r1["last"], r2["last"]], "inputs": [r1["inputs"], r2["inputs"]], "problems": probs, "cmd": cmd, "ts": int(time.time())}
     cx_put("check", name, n, 0, clock(), json.dumps(d))
     record("checkaudit", name, n, clean("the check of C%d audited by %s: %d broken versions caught, %d passed; on the real work %s and %s%s" % (n, maker or "no maker", len(killed), len(survived), r1["last"][:120], r2["last"][:120], ("; refused: " + "; ".join(probs)[:300]) if probs else "")))
     return {"ok": ok, "by": maker, "killed": killed, "survived": survived, "real": [r1["last"], r2["last"]], "inputs": [r1["inputs"], r2["inputs"]], "problems": probs}
@@ -1011,6 +1021,7 @@ def prove_check(name, n, model=None):
         if attempt == 2 or not str(d.get("author") or "").startswith(("claude", "codex")):
             a = v_author(name, n, model, fb)
             if a["status"] == "no_check": return "no check", a["why"]
+            if a["status"] == "not_wrong": return "disputed", "the author says a broken version of the auditor is not wrong: %s | the auditor: %s" % (a["why"][:300], (fb or "")[:300])
             if a["status"] != "written": fb = why = a.get("why") or "no answer"; continue
             if a.get("work_wrong"):
                 r = check_print(check_of(name, n)["cmd"], work_root(name))
@@ -1035,6 +1046,7 @@ def v_prove(name, n=None, done_only=False, box_min=None, model=None):
         if st == "done": tally["done before"] = tally.get("done before", 0) + 1
         res, why = ("audited", "") if check_audited(name, k) else prove_check(name, k, model)
         if res == "audited":
+            why = "audited by " + str(((check_of(name, k) or {}).get("audited") or {}).get("strength") or "")
             r = run_check(name, k)
             if r and r["ok"]:
                 out = "kept" if st == "done" else ("closed" if close_by_check(name, k, r) is not False else "still open")
@@ -1047,6 +1059,9 @@ def v_prove(name, n=None, done_only=False, box_min=None, model=None):
             if st == "done": v_state(name, k, "working")
             v_need(name, k, "the check written by the exec printed on the work: %s" % why[:260], who="cortex check")
         elif res == "audit failed": out = "audit failed (state left as it was)"
+        elif res == "disputed":
+            out = "disputed, handed back (state left as it was)"
+            handback(name, k, "the author and the auditor disagree: %s" % why[:400], {"engine": "claude"})
         else:
             out = "handed back, " + res
             if st == "done": v_state(name, k, "working")
