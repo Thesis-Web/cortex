@@ -804,9 +804,25 @@ def check_of(name, n):
     had = cx_get("check", name, n)
     try: return json.loads(had[3]) if had else None
     except ValueError: return None
+def check_for(name, n):
+    # rail C4.1: what a check is written for: the runs of the checkpoint line and its expected line as they stand now
+    ck, ex = cx_get("checkpoint", name, n), cx_get("expected", name, n)
+    return {"checkpoint": ck[0] if ck else None, "expected": ex[0] if ex else None}
+def check_stale(name, n, d=None):
+    # rail C4.1: the checkpoint or its expected typed again since the check was written and audited; the check no longer speaks for them.
+    # a check written before 11-10 carries no binding: the index rows' times against its audit's time decide
+    d = d if d is not None else (check_of(name, n) or {}); a = d.get("audited") or {}
+    if not d: return None
+    now = check_for(name, n); was = a.get("for") or d.get("for")
+    if was: return None if was == now else "the checkpoint or its expected was typed again since the check was written (runs %s, now %s)" % (was, now)
+    t = a.get("ts") or d.get("ts") or 0
+    for kind in ("checkpoint", "expected"):
+        r = cx_get(kind, name, n)
+        if r and int(r[2] or 0) > int(t): return "the %s of C%d was typed again (run %d) after the check was audited" % (kind, n, r[0])
+    return None
 def check_audited(name, n):
     d = check_of(name, n) or {}; a = d.get("audited") or {}
-    return bool(a.get("ok")) and a.get("cmd") == d.get("cmd")
+    return bool(a.get("ok")) and a.get("cmd") == d.get("cmd") and not check_stale(name, n, d)
 def work_root(name):
     w = repo_of(name) or os.path.join(WORKDIR, name)
     if not os.path.isdir(w): os.makedirs(w, exist_ok=True)   # a work that lives elsewhere (the neuron on hp) gets an empty folder here, so its check runs (rail C4)
@@ -971,7 +987,7 @@ def v_author(name, n, model=None, feedback=None):
     bad = cites_not_held(cites)
     if bad: return {"status": "refused", "why": "citations not held by their rows (rail C5): " + "; ".join(bad)[:500]}
     cmd = prog_cmd(name, prog, vars_)
-    d = {"cmd": cmd, "program": prog, "vars": vars_, "cites": cites, "why": str(obj.get("why") or "")[:300], "author": "claude:%s" % model, "secs": round(secs), "ts": int(time.time()), "audited": None, "installed": installed, "work_wrong": str(obj.get("work_wrong") or "")[:400] or None}
+    d = {"cmd": cmd, "program": prog, "vars": vars_, "cites": cites, "why": str(obj.get("why") or "")[:300], "author": "claude:%s" % model, "secs": round(secs), "ts": int(time.time()), "audited": None, "installed": installed, "work_wrong": str(obj.get("work_wrong") or "")[:400] or None, "for": check_for(name, n)}
     cx_put("check", name, n, 0, clock(), json.dumps(d))
     record("checkauthor", name, n, clean("the check of C%d was written by claude %s in %d s with the library program %s%s; it catches: %s" % (n, model, secs, prog, " (new)" if installed else "", d["why"][:200])))
     return {"status": "written", "cmd": cmd, "program": prog, "installed": installed, "cites": len(cites), "work_wrong": d["work_wrong"]}
@@ -1015,7 +1031,7 @@ def v_audit_check(name, n, model=None):
         for s in survived: probs.append("a broken version passed your check: %s" % s)
         if not probs: shutil.rmtree(scratch, ignore_errors=True)
     ok = not probs and bool(killed)
-    d["audited"] = {"ok": ok, "by": maker or "the work absent only", "strength": "mutants" if maker and len(killed) > 1 else "absent only", "killed": killed, "survived": survived, "real": [r1["last"], r2["last"]], "inputs": [r1["inputs"], r2["inputs"]], "problems": probs, "cmd": cmd, "ts": int(time.time())}
+    d["audited"] = {"ok": ok, "by": maker or "the work absent only", "strength": "mutants" if maker and len(killed) > 1 else "absent only", "killed": killed, "survived": survived, "real": [r1["last"], r2["last"]], "inputs": [r1["inputs"], r2["inputs"]], "problems": probs, "cmd": cmd, "ts": int(time.time()), "for": d.get("for") or check_for(name, n)}
     cx_put("check", name, n, 0, clock(), json.dumps(d))
     record("checkaudit", name, n, clean("the check of C%d audited by %s: %d broken versions caught, %d passed; on the real work %s and %s%s" % (n, maker or "no maker", len(killed), len(survived), r1["last"][:120], r2["last"][:120], ("; refused: " + "; ".join(probs)[:300]) if probs else "")))
     return {"ok": ok, "by": maker, "killed": killed, "survived": survived, "real": [r1["last"], r2["last"]], "inputs": [r1["inputs"], r2["inputs"]], "problems": probs}
@@ -1025,6 +1041,9 @@ def prove_check(name, n, model=None):
     prev = (check_of(name, n) or {}).get("audited") or {}
     if prev and not prev.get("ok") and prev.get("problems") and not any(str(x).startswith("audit failed") for x in prev["problems"]):
         fb = why = "; ".join(prev["problems"])[:1200]   # jev 11-09: a check its last audit refused is written again with the refusal, never audited again as it was (fresh mutants could miss its hole by luck)
+    stale = check_stale(name, n)
+    if stale and not fb:   # rail C4.1: a check written for an older checkpoint or expected is written again for the one standing now, never audited again as it was
+        fb = why = "your last check of this checkpoint is void: %s; write the check for the CHECKPOINT and EXPECTED OUTPUT as they stand now, every part of the expected" % stale
     for attempt in (1, 2):
         d = check_of(name, n) or {}
         if attempt == 2 or fb or not str(d.get("author") or "").startswith(("claude", "codex")):
