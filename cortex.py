@@ -1079,6 +1079,40 @@ def v_prove(name, n=None, done_only=False, box_min=None, model=None):
         except Exception as e: print("  (the prove line was not typed: %s)" % e)
     print("prove %s: %s in %.0f s" % (name, ", ".join("%s %d" % kv for kv in tally.items()) or "nothing to prove", time.time() - t0))
     return tally
+JEV_VERBS = ("ask", "problog", "mln", "opinion", "why", "retract", "verify", "calibrate", "help")
+def jev_door():
+    # jev C8: the reasons of each answer and the retracted rows, kept in the brain's keyed index (main.cx: jevwhy by question id, jevdep and jevretract by row id)
+    ready = []
+    def lit(x): return "'" + str(x).replace("'", "''") + "'"
+    def door_q(sql):
+        if not ready: ensure_cx(); ready.append(1)
+        r = ask("q " + sql)
+        if r.get("error"): raise RuntimeError("brain: " + r["error"])
+        return r.get("rows") or []
+    def get(kind, name):
+        rows = door_q("SELECT value FROM main.cx WHERE kind = %s AND name = %s AND n = 0" % (lit(kind), lit(name)))
+        return rows[0][0] if rows else None
+    def put(kind, name, value):
+        door_q("INSERT OR REPLACE INTO main.cx (kind, name, n, run, at, ts, value) VALUES (%s, %s, 0, 0, 0, %d, %s)" % (lit(kind), lit(name), int(time.time()), lit(value)))
+    def retracted(ids):
+        out, ids = set(), list(ids)
+        for i in range(0, len(ids), 200):
+            ch = ids[i:i + 200]
+            for (nm, v) in door_q("SELECT name, value FROM main.cx WHERE kind = 'jevretract' AND n = 0 AND name IN (%s)" % ", ".join(lit(x) for x in ch)):
+                try:
+                    if json.loads(v).get("retracted"): out.add(nm)
+                except (ValueError, AttributeError): pass
+        return out
+    def record(recs):
+        deps = {}
+        for qid, d in recs:
+            put("jevwhy", qid, json.dumps(d))
+            for r in d["rows"]: deps.setdefault(r["id"], []).append(qid)
+        for rid, qs in deps.items():
+            try: old = json.loads(get("jevdep", rid) or "[]")
+            except ValueError: old = []
+            put("jevdep", rid, json.dumps(sorted(set(old) | set(qs))))
+    return {"get": get, "put": put, "retracted": retracted, "record": record, "cxdb": cx_db_path}
 def v_jev(names, k=8, seed=None):
     # rail C6 (the owner, 11-09: the judge --> jev like needs to happen): our own jev lives in the judge brain as rows of sql (judge/judge-jev.sql) on the test kernel;
     # a request row fires rules 1 to 6 through the mother; this verb only asks and prints, beside the python judge's verdict; nothing here decides
@@ -3408,6 +3442,13 @@ USAGE = """cortex <verb> ...
   author <name> <n> [--model m]            rail C2 (the owner, 11-09): a claude exec turn writes the check of C n (a library program plus variables, citations), or answers no check
   audit-check <name> <n>                   rail C3: the check run on the real work twice (fresh inputs) and on broken copies a codex exec turn made without seeing it; every copy caught or the check is refused
   prove <name> [n] [--done] [--box min]    rail C4: write and audit the check of each checkpoint (or the done ones), run it: check ok keeps or closes, check wrong reopens, no check hands back
+  jev ask --state <file> --q <id>:<formula> [--q ...]   jev C4: one line <id> noul=<p> per question, in the order given; each answer's reasons kept (C8)
+  jev problog --clauses <file> --query <atom>   jev C5: p=<value> by the distribution semantics (independent clauses, worlds enumerated)
+  jev mln --rules <file> --state <file> --query <atom>   jev C6: p=<value>, the worlds weighted by exp(sum w_i n_i(x))
+  jev opinion --rows <file>                  jev C7: <atom> b= d= u= a= p= per fused opinion (trust discounted, cumulative fusion, p = b + a u)
+  jev why <id> | jev retract <row id> [--undo]   jev C8: the path:line of the rows an answer depends on; a retracted row revises only the answers that listed it
+  jev verify --claim <text> --source <db|file|source name>   jev C9: <fact> label=<supported|refuted|nei> row=<path:line|none> per fact, then score=
+  jev calibrate --set <file> [--bins k]      jev C10: bucket=<lo-hi> n= mean_p= freq= per bucket, then ece=  (cortex jev help: the file formats)
   jev <project ...> [--n k] [--seed s]     rail C6: our own jev (the judge brain, rows of sql on the test kernel: the seven questions from evidence, the owner bands, the truth table) beside the python judge on k random judged claims; decides nothing
   look <word> [<word>] [--source s]        rail C5: the source db rows that hold a word or a pair, with source, path and line (read only)
   check <name> <n> : <command>             C47: the cortex's own check of a checkpoint, run in the repo after every build turn; its print is a receipt the worker never touched; check ok closes, check wrong reopens
@@ -3468,6 +3509,9 @@ def main(argv):
         r9 = v_audit_check(a[0], int(a[1])); print(json.dumps(r9)[:1500])
     elif v == "prove":
         v_prove(a[0], int(a[1]) if len(a) > 1 and a[1].isdigit() else None, "--done" in a, int(a[a.index("--box") + 1]) if "--box" in a else None, next((a[i + 1] for i in range(len(a) - 1) if a[i] == "--model"), None))
+    elif v == "jev" and a and a[0] in JEV_VERBS:
+        import jev as jev_c4   # jev C4 to C10: the outline verbs (the owner 11-09: stick to the outline .. proceed); jev.py beside this file
+        return jev_c4.main(a, jev_door())
     elif v == "jev":
         v_jev([x for x in a if not x.startswith("--") and not (a.index(x) > 0 and a[a.index(x) - 1] in ("--n", "--seed"))] or ["cortex"], int(a[a.index("--n") + 1]) if "--n" in a else 8, int(a[a.index("--seed") + 1]) if "--seed" in a else None)
     elif v == "look":
