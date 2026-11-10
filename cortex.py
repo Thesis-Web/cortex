@@ -1102,6 +1102,34 @@ def v_prove(name, n=None, done_only=False, box_min=None, model=None):
     print("prove %s: %s in %.0f s" % (name, ", ".join("%s %d" % kv for kv in tally.items()) or "nothing to prove", time.time() - t0))
     return tally
 JEV_VERBS = ("ask", "problog", "mln", "opinion", "why", "retract", "verify", "calibrate", "help")
+def v_jev_ask(a):
+    # jev C4 (re-typed 11-10 on the owner's words, 11-06 14:46: you would be writing code into the judges brain, different brain; 11-09 00:48: it would take
+    # zero code outside the db): the ask lives in the judge's brain, judge/judge-jev-ask.sql laid as rows of cx.judge_jevrule on the test kernel (work/jev/lay-ask.py);
+    # this verb only types the request row (the state file's text and the questions as typed) and prints the rows the brain wrote for it; jev.py is not read
+    def opt(f):
+        i = a.index(f) if f in a else -1
+        return a[i + 1] if 0 <= i < len(a) - 1 else None
+    state, qs = opt("--state"), [a[i + 1] for i in range(len(a) - 1) if a[i] == "--q"]
+    if not state or not qs: print("cortex jev ask --state <file> --q <id>:<formula> [--q ...]", file=sys.stderr); return 2
+    if PORT != 7010: print("jev: the judge brain lives on the test kernel: CORTEX_PORT=7010 cortex jev ask ...", file=sys.stderr); return 2
+    try:
+        with open(state, encoding="utf-8") as fh: text = fh.read()
+    except OSError as e: print("jev: cannot read %s: %s" % (state, e.strerror), file=sys.stderr); return 2
+    def lit(x): return "'" + str(x).replace("'", "''").replace("\r", "' || char(13) || '").replace("\n", "' || char(10) || '") + "'"   # the door reads one line
+    if not q("SELECT count(*) FROM cx.sqlite_master WHERE type = 'trigger' AND name = 'judge_jevgo'")[0][0]:
+        print("jev: the judge brain holds no ask (lay it: CORTEX_PORT=7010 python3 work/jev/lay-ask.py)", file=sys.stderr); return 1
+    r = ask("q INSERT INTO cx.judge_jevask (verb, state, qs, ts) VALUES ('ask', %s, %s, %d) RETURNING id" % (lit(text), lit(json.dumps(qs)), int(time.time())))
+    if r.get("error") or not r.get("rows"): print("jev: the judge brain: %s" % (r.get("error") or "no request row"), file=sys.stderr); return 1
+    rid = int(r["rows"][0][0])
+    bad = q("SELECT rule, said FROM cx.judge_jevsaid WHERE ask = %d AND said LIKE 'error%%' ORDER BY rule" % rid)
+    errs = q("SELECT err FROM cx.judge_jevout WHERE ask = %d AND err IS NOT NULL ORDER BY qi, rowid" % rid)
+    for (k, said) in bad: print("jev: the judge brain, request %d, rule %d: %s" % (rid, k, said), file=sys.stderr)
+    for (e,) in errs: print("jev: %s" % e, file=sys.stderr)
+    if bad: return 1
+    if errs: return 2
+    rows = q("SELECT qi, line FROM cx.judge_jevout WHERE ask = %d AND err IS NULL ORDER BY qi" % rid)
+    if len(rows) != len(qs): print("jev: the judge brain wrote %d answers for %d questions (request %d)" % (len(rows), len(qs), rid), file=sys.stderr); return 1
+    sys.stdout.write("".join("%s\n" % l for (k, l) in rows)); return 0
 def jev_door():
     # jev C8: the reasons of each answer and the retracted rows, kept in the brain's keyed index (main.cx: jevwhy by question id, jevdep and jevretract by row id)
     ready = []
@@ -3531,6 +3559,8 @@ def main(argv):
         r9 = v_audit_check(a[0], int(a[1])); print(json.dumps(r9)[:1500])
     elif v == "prove":
         v_prove(a[0], int(a[1]) if len(a) > 1 and a[1].isdigit() else None, "--done" in a, int(a[a.index("--box") + 1]) if "--box" in a else None, next((a[i + 1] for i in range(len(a) - 1) if a[i] == "--model"), None))
+    elif v == "jev" and a and a[0] == "ask":
+        return v_jev_ask(a[1:])   # jev C4: the judge brain answers; jev.py is not imported
     elif v == "jev" and a and a[0] in JEV_VERBS:
         import jev as jev_c4   # jev C4 to C10: the outline verbs (the owner 11-09: stick to the outline .. proceed); jev.py beside this file
         return jev_c4.main(a, jev_door())
