@@ -4,7 +4,7 @@
 -- <weight> <literal> and ... => <literal> or ... (or <literal> or ...; a literal an atom or not an atom) has the distance to satisfaction max(0, l(y)),
 -- l = the body's truths summed - (body literals - 1) - the head's truths summed (not x is 1 - x); the state gives every atom a truth value but the query, the
 -- one free atom y; truth = the y in [0,1] that minimizes the weighted total sum w_j max(0, l_j(y)): the total is linear between its breakpoints, so its minimum is at
--- 0, 1 or a breakpoint -c_j / a_j, all of them weighed (the smallest y of the least total). Rules ground as mln. Lay: python3 work/jev/lay.py psl (after ask, problog, mln).
+-- 0, 1 or a breakpoint -c_j / a_j, all of them weighed (the smallest y of the least total). An atom held by opinion rows has its fused p (jev C7) as its truth. Rules ground as mln. Lay: python3 work/jev/lay.py psl (after ask, problog, mln).
 -- ;; ddl
 CREATE TABLE IF NOT EXISTS cx.judge_jevlin (ask INTEGER NOT NULL, rq INTEGER NOT NULL, g INTEGER NOT NULL, w REAL, a REAL, c REAL, PRIMARY KEY (ask, rq, g))
 -- ;; rule 301 the query as typed: the ask's rule 1, run by reference
@@ -36,8 +36,8 @@ INSERT INTO cx.judge_jevout (ask, qi, err)
 WITH qt AS (SELECT q.qi, q.qid, q.form, (SELECT count(*) FROM cx.judge_jevtok t WHERE t.ask = ?1 AND t.qi = q.qi) AS n,
     (SELECT t.a FROM cx.judge_jevtok t WHERE t.ask = ?1 AND t.qi = q.qi AND t.t = 'A' ORDER BY t.k LIMIT 1) AS a
   FROM cx.judge_jevq q WHERE q.ask = ?1 AND q.qi >= 0 AND q.form IS NOT NULL AND q.form <> '')
-SELECT ?1, -1, printf('row %s has a body (%s); a psl state is atoms with truth values in [0,1]', rid, body) FROM cx.judge_jevclause WHERE ask = ?1 AND k >= 0 AND err IS NULL AND body <> '[]'
-UNION ALL SELECT ?1, -1, printf('the atom %s has %d truth values in the state', head, count(*)) FROM cx.judge_jevclause WHERE ask = ?1 AND k >= 0 AND err IS NULL GROUP BY head HAVING count(*) > 1
+SELECT ?1, -1, printf('%s has a body (%s); a psl state is atoms with truth values in [0,1]', coalesce('row ' || rid, 'the opinion of ' || head), body) FROM cx.judge_jevclause WHERE ask = ?1 AND k >= 0 AND err IS NULL AND p IS NOT NULL AND body <> '[]'
+UNION ALL SELECT ?1, -1, printf('the atom %s has %d truth values in the state', head, count(*)) FROM cx.judge_jevclause WHERE ask = ?1 AND k >= 0 AND err IS NULL AND p IS NOT NULL GROUP BY head HAVING count(*) > 1
 UNION ALL SELECT ?1, qi, printf('question %s: the query of psl is the one free atom, not %s', qid, json_quote(form)) FROM qt WHERE n <> 1 OR a IS NULL
 UNION ALL SELECT ?1, qt.qi, printf('question %s: %s is the free atom, but the state gives it a truth value', qt.qid, qt.a) FROM qt WHERE qt.n = 1 AND qt.a IS NOT NULL
   AND EXISTS (SELECT 1 FROM cx.judge_jevclause c WHERE c.ask = ?1 AND c.k >= 0 AND c.err IS NULL AND c.head = qt.a)
@@ -54,13 +54,13 @@ WHERE NOT (CASE WHEN s2.gt > 0 THEN s2.gt > 1 AND s2.gt < length(s2.s) AND repla
 INSERT INTO cx.judge_jevout (ask, qi, err)
 SELECT DISTINCT ?1, -997, printf('the atom %s of rule %d has no truth value in the state; only the query is free', gr.atom, -1000 - gr.qi + 1)
 FROM cx.judge_jevgr gr WHERE gr.ask = ?1
-  AND gr.atom NOT IN (SELECT head FROM cx.judge_jevclause WHERE ask = ?1 AND k >= 0 AND err IS NULL)
+  AND gr.atom NOT IN (SELECT head FROM cx.judge_jevclause WHERE ask = ?1 AND k >= 0 AND err IS NULL AND p IS NOT NULL)
   AND gr.atom NOT IN (SELECT a FROM cx.judge_jevtok WHERE ask = ?1 AND qi >= 0 AND t = 'A' AND a IS NOT NULL)
 -- ;; rule 316 each ground rule's linear form l(y) = a y + c: body literals added, head literals taken away, minus (body literals - 1); a literal's truth y, 1 - y, v or 1 - v
 INSERT INTO cx.judge_jevlin (ask, rq, g, w, a, c)
 WITH ok AS (SELECT 1 AS z WHERE NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
 qa AS (SELECT a AS atom FROM cx.judge_jevtok WHERE ask = ?1 AND qi >= 0 AND t = 'A' AND a IS NOT NULL ORDER BY qi, k LIMIT 1),
-sv AS (SELECT head AS atom, p AS v FROM cx.judge_jevclause WHERE ask = ?1 AND k >= 0 AND err IS NULL),
+sv AS (SELECT head AS atom, p AS v FROM cx.judge_jevclause WHERE ask = ?1 AND k >= 0 AND err IS NULL AND p IS NOT NULL),
 tk AS (SELECT t.qi, t.k, t.t, t.a FROM cx.judge_jevtok t WHERE t.ask = ?1 AND t.qi <= -1000),
 gt AS (SELECT qi, min(k) AS k FROM tk WHERE t = '=>' GROUP BY qi),
 li AS (SELECT tk.qi, tk.k, CASE WHEN gt.k IS NOT NULL AND tk.k < gt.k THEN 1 ELSE -1 END AS sg,

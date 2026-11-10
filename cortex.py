@@ -1102,7 +1102,7 @@ def v_prove(name, n=None, done_only=False, box_min=None, model=None):
     print("prove %s: %s in %.0f s" % (name, ", ".join("%s %d" % kv for kv in tally.items()) or "nothing to prove", time.time() - t0))
     return tally
 JEV_VERBS = ("ask", "problog", "mln", "opinion", "why", "retract", "verify", "calibrate", "help")
-def jev_brain(verb, text, qs, rules=None):
+def jev_brain(verb, text, qs, rules=None, count=True):
     # jev C4, C5: a request row typed in the judge's brain (cx.judge_jevask: the verb, the file's text, the questions as typed); its trigger runs the verb's rule rows
     # through the mother; the rows the brain wrote for it are read back. Nothing here decides. Returns (rc, lines).
     def lit(x): return "'" + str(x).replace("'", "''").replace("\r", "' || char(13) || '").replace("\n", "' || char(10) || '") + "'"   # the door reads one line
@@ -1119,7 +1119,7 @@ def jev_brain(verb, text, qs, rules=None):
     if bad: return 1, None
     if errs: return 2, None
     rows = q("SELECT qi, line FROM cx.judge_jevout WHERE ask = %d AND err IS NULL ORDER BY qi" % rid)
-    if len(rows) != len(qs): print("jev: the judge brain wrote %d answers for %d questions (request %d)" % (len(rows), len(qs), rid), file=sys.stderr); return 1, None
+    if count and len(rows) != len(qs): print("jev: the judge brain wrote %d answers for %d questions (request %d)" % (len(rows), len(qs), rid), file=sys.stderr); return 1, None
     return 0, [l for (k, l) in rows]
 def jev_opt(a, f):
     i = a.index(f) if f in a else -1
@@ -1161,6 +1161,16 @@ def v_jev_soft(verb, a):
     rules, text = jev_read(rpath), jev_read(spath)
     if rules is None or text is None: return 2
     rc, lines = jev_brain(verb, text, ["query:" + query], rules)
+    if rc: return rc
+    sys.stdout.write("".join("%s\n" % l for l in lines)); return 0
+def v_jev_opinion(a):
+    # jev C7 (the owner 11-06 14:46 and 11-09 00:48, as the ask): each source row a subjective-logic opinion weighted by the trust in its source, fused per atom in the
+    # judge's brain (problog's rule 103 discounts and fuses; judge/judge-jev-opinion.sql prints); this verb only types the request row and prints; jev.py is not read
+    path = jev_opt(a, "--rows")
+    if not path: print("cortex jev opinion --rows <file>", file=sys.stderr); return 2
+    text = jev_read(path)
+    if text is None: return 2
+    rc, lines = jev_brain("opinion", text, [], count=False)
     if rc: return rc
     sys.stdout.write("".join("%s\n" % l for l in lines)); return 0
 def jev_door():
@@ -3529,7 +3539,7 @@ USAGE = """cortex <verb> ...
   jev problog --clauses <file> --query <atom>   jev C5: p=<value> by the distribution semantics, in the judge brain (the clauses the query depends on, every world's least model)
   jev mln --rules <file> --state <file> --query <atom>   jev C6: p=<value>, the C5 worlds weighted by exp(sum w_i n_i(x)), in the judge brain
   jev psl --rules <file> --state <file> --query <atom>   jev C6: truth=<value>, the free atom's y in [0,1] of the least weighted total of max(0, l_j(y)), in the judge brain
-  jev opinion --rows <file>                  jev C7: <atom> b= d= u= a= p= per fused opinion (trust discounted, cumulative fusion, p = b + a u)
+  jev opinion --rows <file>                  jev C7: <atom> b= d= u= a= p= per fused opinion (trust discounted, cumulative fusion, p = b + a u), in the judge brain; problog, mln, psl read opinion rows fused
   jev why <id> | jev retract <row id> [--undo]   jev C8: the path:line of the rows an answer depends on; a retracted row revises only the answers that listed it
   jev verify --claim <text> --source <db|file|source name>   jev C9: <fact> label=<supported|refuted|nei> row=<path:line|none> per fact, then score=
   jev calibrate --set <file> [--bins k]      jev C10: bucket=<lo-hi> n= mean_p= freq= per bucket, then ece=  (cortex jev help: the file formats)
@@ -3597,6 +3607,8 @@ def main(argv):
         return v_jev_ask(a[1:])   # jev C4: the judge brain answers; jev.py is not imported
     elif v == "jev" and a and a[0] == "problog":
         return v_jev_problog(a[1:])   # jev C5: the judge brain answers; jev.py is not imported
+    elif v == "jev" and a and a[0] == "opinion":
+        return v_jev_opinion(a[1:])   # jev C7: the judge brain answers; jev.py is not imported
     elif v == "jev" and a and a[0] in ("mln", "psl"):
         return v_jev_soft(a[0], a[1:])   # jev C6: the judge brain answers; jev.py is not imported
     elif v == "jev" and a and a[0] in JEV_VERBS:

@@ -8,10 +8,20 @@
 -- The least model of every world at once: 64 worlds a word (clause u < 6 a fixed pattern, u >= 6 the word's own bit), the clauses run as a little program
 -- (load the clause's word, and each body atom's word, or into the head's word): the facts once, then the clauses with a body one pass for each head they have
 -- (a pass that changes some world adds a head to it); then the query's postfix over the
--- model's words (rules 113, 114, 115: the model's words in cx.judge_jevm and the query's in cx.judge_jevr, read again by mln). Negation in a body, annotated
--- disjunctions and opinions (C7) are refused, named; soft rules in a clauses file are refused here and read by mln (C6). Lay: python3 work/jev/lay.py problog (after the ask).
+-- model's words (rules 113, 114, 115: the model's words in cx.judge_jevm and the query's in cx.judge_jevr, read again by mln). Opinion rows (jev C7) are fused
+-- per head and body into one clause, p = b + a u (rule 103). Negation in a body and annotated disjunctions are refused, named; soft rules in a clauses file are refused here and read by mln (C6). Lay: python3 work/jev/lay.py problog (after the ask).
 -- ;; ddl
 CREATE TABLE IF NOT EXISTS cx.judge_jevclause (ask INTEGER NOT NULL, k INTEGER NOT NULL, rid TEXT, head TEXT, body TEXT, p REAL, err TEXT, PRIMARY KEY (ask, k))
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevclause ADD COLUMN ob REAL
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevclause ADD COLUMN od REAL
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevclause ADD COLUMN ou REAL
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevclause ADD COLUMN oa REAL
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevclause ADD COLUMN ot REAL
 -- ;; ddl
 CREATE TABLE IF NOT EXISTS cx.judge_jevpa (ask INTEGER NOT NULL, qi INTEGER NOT NULL, atom TEXT NOT NULL, ix INTEGER, PRIMARY KEY (ask, qi, atom))
 -- ;; ddl
@@ -24,8 +34,8 @@ CREATE TABLE IF NOT EXISTS cx.judge_jevr (ask INTEGER NOT NULL, qi INTEGER NOT N
 SELECT mother(sql, ?1) FROM cx.judge_jevrule WHERE id = 1 AND verb = 'ask'
 -- ;; rule 102 a query that is not <id>:<formula>: the ask's rule 2, run by reference
 SELECT mother(sql, ?1) FROM cx.judge_jevrule WHERE id = 2 AND verb = 'ask'
--- ;; rule 103 the clauses: ProbLog text (one clause a line, p::head :- b1, b2., % a comment, the row id r<line>) or JSON (rows, {"rows": [...]}, {"<atom>": p}; a row {"id", "atom" or "head", "if" or "body", "p"} or {"clause": "..."})
-INSERT INTO cx.judge_jevclause (ask, k, rid, head, body, p, err)
+-- ;; rule 103 the clauses: ProbLog text (one clause a line, p::head :- b1, b2., % a comment, the row id r<line>) or JSON (rows, {"rows": [...]}, {"<atom>": p}; a row {"id", "atom" or "head", "if" or "body", "p"} or {"clause": "..."}); a row with b, d, u (or a trust) is an opinion (jev C7): discounted by its trust (b' = t b, d' = t d, u' = 1 - t (b + d)), fused per head and body by cumulative fusion (the evidence r = 2b/u, s = 2d/u added; dogmatic ones averaged; the base rate weighted by 1 - u'), one clause row k = 1000000 + its first row with p = b + a u (josang-2001 :29, :31); a trust 0 row is left out; for the verb opinion every row is an opinion (a bare p the dogmatic (p, 1 - p, 0, 0.5))
+INSERT INTO cx.judge_jevclause (ask, k, rid, head, body, p, err, ob, od, ou, oa, ot)
 WITH RECURSIVE
 a AS (SELECT coalesce(state, '') AS s FROM cx.judge_jevask WHERE id = ?1),
 sh AS (SELECT s, CASE WHEN NOT json_valid(s) THEN 'text'
@@ -88,24 +98,51 @@ af AS (SELECT k, pos, x, CASE
         OR length(x) <= pp + 1 OR substr(x, pp + 1, length(x) - pp - 1) GLOB '*[^A-Za-z0-9_.''+,-]*' OR substr(x, pp + 1, 1) = ',' OR substr(x, -2, 1) = ','
         OR instr(x, ',,') > 0)) THEN 'is not one atom: ' || json_quote(raw)
     WHEN x GLOB '*([A-Z_]*' OR x GLOB '*,[A-Z_]*' THEN 'has a variable; a clause is ground here: ' || x END AS e, what FROM ae),
-ke AS (SELECT k, what, e FROM (SELECT k, what, e, row_number() OVER (PARTITION BY k ORDER BY pos) AS rk FROM af WHERE e IS NOT NULL) WHERE rk = 1)
-SELECT ?1, r.k, r.rid, r.head,
-  (SELECT json_group_array(x) FROM (SELECT x FROM bp WHERE bp.k = r.k ORDER BY pos)), r.p, CASE
-    WHEN r.ty NOT IN ('object', 'text') THEN printf('row %d is neither an object nor a clause', r.k + 1)
-    WHEN r.v IS NOT NULL AND (json_type(r.v, '$.b') IS NOT NULL OR json_type(r.v, '$.d') IS NOT NULL OR json_type(r.v, '$.u') IS NOT NULL OR json_type(r.v, '$.trust') IS NOT NULL)
-      THEN printf('row %s is an opinion (b, d, u, trust): opinions are jev C7, not built in the judge brain yet', r.rid)
-    WHEN r.cl IS NOT NULL AND instr(r.c1, ';') > 0 THEN printf('row %s: an annotated disjunction is not built: %s', r.rid, r.cl)
-    WHEN r.cl IS NOT NULL AND instr(r.c1, '::') > 0 AND (r.ptxt = '' OR substr(r.ptxt, 1, 1) IN ('-', '+') OR NOT json_valid(r.pj) OR json_type(r.pj) NOT IN ('integer', 'real'))
-      THEN printf('the probability of %s is not a number', json_quote(r.cl))
-    WHEN r.head IS NULL OR r.head = '' THEN printf('row %s has no atom', r.rid)
-    WHEN r.p IS NULL THEN printf('p of row %s is not a number: %s', r.rid, r.pv)
-    WHEN r.p < 0 OR r.p > 1 THEN printf('p of row %s = %s is outside 0 to 1', r.rid, r.p)
-    WHEN ke.e IS NOT NULL THEN ke.what || r.rid || ' ' || ke.e END
-FROM r7 r LEFT JOIN ke ON ke.k = r.k
+ke AS (SELECT k, what, e FROM (SELECT k, what, e, row_number() OVER (PARTITION BY k ORDER BY pos) AS rk FROM af WHERE e IS NOT NULL) WHERE rk = 1),
+bj AS (SELECT k, json_group_array(x ORDER BY pos) AS body FROM bp GROUP BY k),
+vq AS (SELECT verb AS vb FROM cx.judge_jevask WHERE id = ?1),
+r8 AS (SELECT r.*, coalesce(bj.body, '[]') AS body, ke.what AS kwhat, ke.e AS kerr,
+    coalesce(r.v IS NOT NULL AND (json_type(r.v, '$.b') IS NOT NULL OR json_type(r.v, '$.d') IS NOT NULL OR json_type(r.v, '$.u') IS NOT NULL), 0) AS isop,
+    coalesce(r.v IS NOT NULL AND json_type(r.v, '$.trust') IS NOT NULL, 0) AS hastr,
+    CASE WHEN r.v IS NOT NULL THEN json_type(r.v, '$.b') END AS tb, CASE WHEN r.v IS NOT NULL THEN json_type(r.v, '$.d') END AS td, CASE WHEN r.v IS NOT NULL THEN json_type(r.v, '$.u') END AS tu,
+    CASE WHEN r.v IS NOT NULL THEN json_type(r.v, '$.a') END AS ta, CASE WHEN r.v IS NOT NULL THEN json_type(r.v, '$.trust') END AS tt
+  FROM r7 r LEFT JOIN ke ON ke.k = r.k LEFT JOIN bj ON bj.k = r.k),
+r9 AS (SELECT r8.*,
+    CASE WHEN tb IN ('integer', 'real') THEN json_extract(v, '$.b') ELSE 0.0 END AS xb, CASE WHEN td IN ('integer', 'real') THEN json_extract(v, '$.d') ELSE 0.0 END AS xd,
+    CASE WHEN tu IN ('integer', 'real') THEN json_extract(v, '$.u') ELSE 0.0 END AS xu, CASE WHEN ta IN ('integer', 'real') THEN json_extract(v, '$.a') ELSE 0.5 END AS xa,
+    CASE WHEN tt IN ('integer', 'real') THEN json_extract(v, '$.trust') ELSE 1.0 END AS xt FROM r8),
+r10 AS (SELECT r9.*, CASE
+    WHEN ty NOT IN ('object', 'text') THEN printf('row %d is neither an object nor a clause', k + 1)
+    WHEN (isop OR hastr) AND ((tb IS NOT NULL AND tb NOT IN ('integer', 'real')) OR (td IS NOT NULL AND td NOT IN ('integer', 'real')) OR (tu IS NOT NULL AND tu NOT IN ('integer', 'real'))
+        OR (ta IS NOT NULL AND ta NOT IN ('integer', 'real')) OR (tt IS NOT NULL AND tt NOT IN ('integer', 'real'))) THEN printf('row %s: an opinion''s b, d, u, a and trust are numbers', rid)
+    WHEN (isop OR hastr) AND (min(xb, xd, xu, xa, xt) < 0 OR max(xb, xd, xu, xa, xt) > 1) THEN printf('row %s: an opinion''s b, d, u, a and trust are each in 0 to 1', rid)
+    WHEN isop AND abs(xb + xd + xu - 1.0) > 1e-6 THEN printf('row %s: b + d + u = %s, an opinion needs 1', rid, xb + xd + xu)
+    WHEN cl IS NOT NULL AND instr(c1, ';') > 0 THEN printf('row %s: an annotated disjunction is not built: %s', rid, cl)
+    WHEN cl IS NOT NULL AND instr(c1, '::') > 0 AND (ptxt = '' OR substr(ptxt, 1, 1) IN ('-', '+') OR NOT json_valid(pj) OR json_type(pj) NOT IN ('integer', 'real'))
+      THEN printf('the probability of %s is not a number', json_quote(cl))
+    WHEN head IS NULL OR head = '' THEN printf('row %s has no atom', rid)
+    WHEN p IS NULL THEN printf('p of row %s is not a number: %s', rid, pv)
+    WHEN p < 0 OR p > 1 THEN printf('p of row %s = %s is outside 0 to 1', rid, p)
+    WHEN kerr IS NOT NULL THEN kwhat || rid || ' ' || kerr END AS err FROM r9),
+r11 AS (SELECT r10.*, (err IS NULL AND (isop OR hastr OR (SELECT vb FROM vq) = 'opinion')) AS mem,
+    CASE WHEN isop THEN xb / (xb + xd + xu) ELSE p END AS nb, CASE WHEN isop THEN xd / (xb + xd + xu) ELSE 1.0 - p END AS nd,
+    CASE WHEN isop THEN xu / (xb + xd + xu) ELSE 0.0 END AS nu, CASE WHEN isop OR hastr THEN xa ELSE 0.5 END AS na, CASE WHEN isop OR hastr THEN xt ELSE 1.0 END AS nt FROM r10),
+od AS (SELECT k, head, body, nt * nb AS b1, nt * nd AS d1, max(0.0, 1.0 - nt * (nb + nd)) AS u1, na AS a, nt AS t FROM r11 WHERE mem AND nt > 0),
+fu AS (SELECT head, body, min(k) AS k0, sum(u1 <= 0.0) AS ndog,
+    total(CASE WHEN u1 <= 0.0 THEN b1 END) AS bdog, total(CASE WHEN u1 <= 0.0 THEN d1 END) AS ddog,
+    total(CASE WHEN u1 > 0.0 THEN 2.0 * b1 / u1 END) AS er, total(CASE WHEN u1 > 0.0 THEN 2.0 * d1 / u1 END) AS es,
+    total(1.0 - u1) AS wa, total(a * (1.0 - u1)) AS aw, total(a * t) AS at_, total(t) AS tt_ FROM od GROUP BY head, body),
+fv AS (SELECT head, body, k0,
+    CASE WHEN ndog > 0 THEN bdog / ndog ELSE er / (2.0 + er + es) END AS b, CASE WHEN ndog > 0 THEN ddog / ndog ELSE es / (2.0 + er + es) END AS d,
+    CASE WHEN ndog > 0 THEN 0.0 ELSE 2.0 / (2.0 + er + es) END AS u, CASE WHEN wa > 0.0 THEN aw / wa ELSE at_ / tt_ END AS a FROM fu)
+SELECT ?1, k, rid, head, body, CASE WHEN mem THEN NULL ELSE p END, err, CASE WHEN mem THEN nb END, CASE WHEN mem THEN nd END, CASE WHEN mem THEN nu END, CASE WHEN mem THEN na END,
+  CASE WHEN mem THEN nt END FROM r11
 UNION ALL
-SELECT ?1, -1, NULL, NULL, NULL, NULL, 'a clauses file is ProbLog text (one clause a line) or JSON: a list of rows, {"rows": [...]} or {"<atom>": p}' FROM sh WHERE kind = 'other'
+SELECT ?1, 1000000 + k0, NULL, head, body, b + a * u, NULL, b, d, u, a, NULL FROM fv
 UNION ALL
-SELECT ?1, -2, NULL, NULL, NULL, NULL, 'the clauses file holds soft rules: problog reads clauses; soft rules are read by cortex jev mln (jev C6)' FROM sh
+SELECT ?1, -1, NULL, NULL, NULL, NULL, 'a clauses file is ProbLog text (one clause a line) or JSON: a list of rows, {"rows": [...]} or {"<atom>": p}', NULL, NULL, NULL, NULL, NULL FROM sh WHERE kind = 'other'
+UNION ALL
+SELECT ?1, -2, NULL, NULL, NULL, NULL, 'the clauses file holds soft rules: problog reads clauses; soft rules are read by cortex jev mln (jev C6)', NULL, NULL, NULL, NULL, NULL FROM sh
 WHERE kind IN ('$.rows', '$.clauses') AND nrules > 0 AND (SELECT verb FROM cx.judge_jevask WHERE id = ?1) = 'problog'
 -- ;; rule 104 the clauses' errors and a row id given twice
 INSERT INTO cx.judge_jevout (ask, qi, err)
