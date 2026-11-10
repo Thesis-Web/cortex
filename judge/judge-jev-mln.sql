@@ -129,24 +129,24 @@ SELECT mother(sql, ?1) FROM cx.judge_jevrule WHERE id = 10 AND verb = 'ask'
 SELECT mother(sql, ?1) FROM cx.judge_jevrule WHERE id = 113 AND verb = 'problog'
 -- ;; rule 221 the query's truth in every world as words: problog's rule 114, run by reference
 SELECT mother(sql, ?1) FROM cx.judge_jevrule WHERE id = 114 AND verb = 'problog'
--- ;; rule 222 the answer: each grounding's truth as words over the model's words, each world's energy sum w_i n_i(x), p = sum P(x) exp(E(x)) where the query holds over sum P(x) exp(E(x))
+-- ;; rule 222 the answer of each question: each grounding's truth as words over the question's model words, each world's energy sum w_i n_i(x), p = sum P(x) exp(E(x)) where the question holds over sum P(x) exp(E(x)) (one line p= a question; the ask's child carries several, jev C8)
 INSERT INTO cx.judge_jevout (ask, qi, p, line)
 WITH RECURSIVE
-ok AS (SELECT x.qi, (SELECT count(*) FROM cx.judge_jevpc pc WHERE pc.ask = ?1 AND pc.qi = x.qi AND pc.u IS NOT NULL) AS nv
+ok AS MATERIALIZED (SELECT x.qi, (SELECT count(*) FROM cx.judge_jevpc pc WHERE pc.ask = ?1 AND pc.qi = x.qi AND pc.u IS NOT NULL) AS nv
   FROM cx.judge_jevx x WHERE x.ask = ?1 AND x.qi >= 0 AND x.rpn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
 rl AS MATERIALIZED (SELECT -1000 - r.i AS rq, r.w, x.rpn FROM cx.judge_jevrl r JOIN cx.judge_jevx x ON x.ask = ?1 AND x.qi = -1000 - r.i
   WHERE r.ask = ?1 AND r.i >= 0 AND r.err IS NULL AND r.w <> 0 AND x.rpn IS NOT NULL AND EXISTS (SELECT 1 FROM ok)),
 fm AS MATERIALIZED (SELECT m.qi, m.c, m.m FROM cx.judge_jevm m JOIN ok ON ok.qi = m.qi WHERE m.ask = ?1),
-lf AS MATERIALIZED (SELECT gr.qi AS rq, gr.g, gr.t, pa.ix FROM cx.judge_jevgr gr JOIN ok LEFT JOIN cx.judge_jevpa pa ON pa.ask = ?1 AND pa.qi = ok.qi AND pa.atom = gr.atom WHERE gr.ask = ?1),
-gs AS (SELECT DISTINCT rq, g FROM lf),
+lf AS MATERIALIZED (SELECT ok.qi, gr.qi AS rq, gr.g, gr.t, pa.ix FROM cx.judge_jevgr gr JOIN ok LEFT JOIN cx.judge_jevpa pa ON pa.ask = ?1 AND pa.qi = ok.qi AND pa.atom = gr.atom WHERE gr.ask = ?1),
+gs AS (SELECT DISTINCT qi, rq, g FROM lf),
 it AS MATERIALIZED (SELECT rl.rq, CAST(je.key AS INTEGER) + 1 AS j, je.value AS v FROM rl, json_each(rl.rpn) je),
 nit AS (SELECT rq, count(*) AS n FROM it GROUP BY rq),
-ev(rq, g, c, m, j, st) AS (SELECT gs.rq, gs.g, fm.c, fm.m, 1, '[]' FROM gs JOIN rl ON rl.rq = gs.rq JOIN fm
+ev(qi, rq, g, c, m, j, st) AS (SELECT gs.qi, gs.rq, gs.g, fm.c, fm.m, 1, '[]' FROM gs JOIN rl ON rl.rq = gs.rq JOIN fm ON fm.qi = gs.qi
   UNION ALL
-  SELECT ev.rq, ev.g, ev.c, ev.m, ev.j + 1, CASE
+  SELECT ev.qi, ev.rq, ev.g, ev.c, ev.m, ev.j + 1, CASE
     WHEN it.v = '1' THEN json_insert(ev.st, '$[#]', -1)
     WHEN it.v = '0' THEN json_insert(ev.st, '$[#]', 0)
-    WHEN substr(it.v, 1, 1) = 'b' THEN json_insert(ev.st, '$[#]', coalesce(json_extract(ev.m, '$[' || (SELECT lf.ix FROM lf WHERE lf.rq = ev.rq AND lf.g = ev.g AND lf.t = CAST(substr(it.v, 2) AS INTEGER)) || ']'), 0))
+    WHEN substr(it.v, 1, 1) = 'b' THEN json_insert(ev.st, '$[#]', coalesce(json_extract(ev.m, '$[' || (SELECT lf.ix FROM lf WHERE lf.qi = ev.qi AND lf.rq = ev.rq AND lf.g = ev.g AND lf.t = CAST(substr(it.v, 2) AS INTEGER)) || ']'), 0))
     WHEN it.v = '!' THEN json_insert(json_remove(ev.st, '$[#-1]'), '$[#]', ~json_extract(ev.st, '$[#-1]'))
     ELSE json_insert(json_remove(json_remove(ev.st, '$[#-1]'), '$[#-1]'), '$[#]', CASE it.v
       WHEN '&' THEN json_extract(ev.st, '$[#-2]') & json_extract(ev.st, '$[#-1]')
@@ -154,18 +154,18 @@ ev(rq, g, c, m, j, st) AS (SELECT gs.rq, gs.g, fm.c, fm.m, 1, '[]' FROM gs JOIN 
       WHEN '=>' THEN (~json_extract(ev.st, '$[#-2]')) | json_extract(ev.st, '$[#-1]')
       ELSE (json_extract(ev.st, '$[#-2]') & json_extract(ev.st, '$[#-1]')) | ((~json_extract(ev.st, '$[#-2]')) & (~json_extract(ev.st, '$[#-1]'))) END) END
   FROM ev JOIN it ON it.rq = ev.rq AND it.j = ev.j),
-gw AS MATERIALIZED (SELECT ev.rq, ev.g, ev.c, json_extract(ev.st, '$[0]') AS r FROM ev JOIN nit ON nit.rq = ev.rq WHERE ev.j = nit.n + 1),
-qr AS MATERIALIZED (SELECT r.c, r.r FROM cx.judge_jevr r JOIN ok ON ok.qi = r.qi WHERE r.ask = ?1),
+gw AS MATERIALIZED (SELECT ev.qi, ev.rq, ev.g, ev.c, json_extract(ev.st, '$[0]') AS r FROM ev JOIN nit ON nit.rq = ev.rq WHERE ev.j = nit.n + 1),
+qr AS MATERIALIZED (SELECT r.qi, r.c, r.r FROM cx.judge_jevr r JOIN ok ON ok.qi = r.qi WHERE r.ask = ?1),
 bits(v) AS (VALUES (0), (1)),
-wd(i, m, w) AS (SELECT 0, 0, 1.0 FROM ok
+wd(qi, i, m, w) AS (SELECT qi, 0, 0, 1.0 FROM ok
   UNION ALL
-  SELECT wd.i + 1, wd.m + (bits.v << wd.i), wd.w * CASE bits.v WHEN 1 THEN pc.p ELSE 1.0 - pc.p END
-  FROM wd JOIN ok JOIN cx.judge_jevpc pc ON pc.ask = ?1 AND pc.qi = ok.qi AND pc.u = wd.i JOIN bits),
-en AS MATERIALIZED (SELECT wd.m, wd.w, (SELECT total(rl.w * ((gw.r >> (wd.m & 63)) & 1)) FROM gw JOIN rl ON rl.rq = gw.rq WHERE gw.c = (wd.m >> 6)) AS e
-  FROM wd JOIN ok ON wd.i = ok.nv),
-mx AS (SELECT max(e) AS e FROM en),
-sm AS (SELECT total(en.w * exp(en.e - mx.e)) AS den, total(CASE WHEN ((qr.r >> (en.m & 63)) & 1) = 1 THEN en.w * exp(en.e - mx.e) ELSE 0.0 END) AS num
-  FROM en JOIN mx JOIN qr ON qr.c = (en.m >> 6)),
-fp AS (SELECT ok.qi, CASE WHEN sm.den > 0 THEN sm.num / sm.den END AS p FROM ok, sm),
+  SELECT wd.qi, wd.i + 1, wd.m + (bits.v << wd.i), wd.w * CASE bits.v WHEN 1 THEN pc.p ELSE 1.0 - pc.p END
+  FROM wd JOIN cx.judge_jevpc pc ON pc.ask = ?1 AND pc.qi = wd.qi AND pc.u = wd.i JOIN bits),
+en AS MATERIALIZED (SELECT wd.qi, wd.m, wd.w, (SELECT total(rl.w * ((gw.r >> (wd.m & 63)) & 1)) FROM gw JOIN rl ON rl.rq = gw.rq WHERE gw.qi = wd.qi AND gw.c = (wd.m >> 6)) AS e
+  FROM wd JOIN ok ON ok.qi = wd.qi AND wd.i = ok.nv),
+mx AS (SELECT qi, max(e) AS e FROM en GROUP BY qi),
+sm AS (SELECT en.qi, total(en.w * exp(en.e - mx.e)) AS den, total(CASE WHEN ((qr.r >> (en.m & 63)) & 1) = 1 THEN en.w * exp(en.e - mx.e) ELSE 0.0 END) AS num
+  FROM en JOIN mx ON mx.qi = en.qi JOIN qr ON qr.qi = en.qi AND qr.c = (en.m >> 6) GROUP BY en.qi),
+fp AS (SELECT ok.qi, CASE WHEN sm.den > 0 THEN sm.num / sm.den END AS p FROM ok JOIN sm ON sm.qi = ok.qi),
 fs AS (SELECT qi, p, rtrim(printf('%.12f', min(1.0, max(0.0, p))), '0') AS s FROM fp WHERE p IS NOT NULL)
 SELECT ?1, qi, p, 'p=' || CASE WHEN substr(s, -1) = '.' THEN s || '0' ELSE s END FROM fs

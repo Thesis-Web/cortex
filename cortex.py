@@ -1102,14 +1102,16 @@ def v_prove(name, n=None, done_only=False, box_min=None, model=None):
     print("prove %s: %s in %.0f s" % (name, ", ".join("%s %d" % kv for kv in tally.items()) or "nothing to prove", time.time() - t0))
     return tally
 JEV_VERBS = ("ask", "problog", "mln", "opinion", "why", "retract", "verify", "calibrate", "help")
-def jev_brain(verb, text, qs, rules=None, count=True):
+def jev_brain(verb, text, qs, rules=None, count=True, path=None):
     # jev C4, C5: a request row typed in the judge's brain (cx.judge_jevask: the verb, the file's text, the questions as typed); its trigger runs the verb's rule rows
     # through the mother; the rows the brain wrote for it are read back. Nothing here decides. Returns (rc, lines).
     def lit(x): return "'" + str(x).replace("'", "''").replace("\r", "' || char(13) || '").replace("\n", "' || char(10) || '") + "'"   # the door reads one line
     if not q("SELECT count(*) FROM cx.sqlite_master WHERE type = 'trigger' AND name = 'judge_jevgo'")[0][0] or not q("SELECT count(*) FROM cx.judge_jevrule WHERE verb = %s" % lit(verb))[0][0]:
         print("jev: the judge brain on port %d holds no %s (lay it: CORTEX_PORT=%d python3 work/jev/lay.py %s)" % (PORT, verb, PORT, verb), file=sys.stderr); return 1, None
-    if rules is None: r = ask("q INSERT INTO cx.judge_jevask (verb, state, qs, ts) VALUES (%s, %s, %s, %d) RETURNING id" % (lit(verb), lit(text), lit(json.dumps(qs)), int(time.time())))
-    else: r = ask("q INSERT INTO cx.judge_jevask (verb, state, qs, ts, rules) VALUES (%s, %s, %s, %d, %s) RETURNING id" % (lit(verb), lit(text), lit(json.dumps(qs)), int(time.time()), lit(rules)))
+    cols, vals = ["verb", "state", "qs", "ts"], [lit(verb), lit(text), lit(json.dumps(qs)), "%d" % int(time.time())]
+    if rules is not None: cols.append("rules"); vals.append(lit(rules))
+    if path is not None: cols.append("path"); vals.append(lit(path))
+    r = ask("q INSERT INTO cx.judge_jevask (%s) VALUES (%s) RETURNING id" % (", ".join(cols), ", ".join(vals)))
     if r.get("error") or not r.get("rows"): print("jev: the judge brain: %s" % (r.get("error") or "no request row"), file=sys.stderr); return 1, None
     rid = int(r["rows"][0][0])
     bad = q("SELECT rule, said FROM cx.judge_jevsaid WHERE ask = %d AND said LIKE 'error%%' ORDER BY rule" % rid)
@@ -1137,7 +1139,7 @@ def v_jev_ask(a):
     if not state or not qs: print("cortex jev ask --state <file> --q <id>:<formula> [--q ...]", file=sys.stderr); return 2
     text = jev_read(state)
     if text is None: return 2
-    rc, lines = jev_brain("ask", text, qs)
+    rc, lines = jev_brain("ask", text, qs, path=os.path.abspath(state))   # jev C8: the path:line of a text state's rows
     if rc: return rc
     sys.stdout.write("".join("%s\n" % l for l in lines)); return 0
 def v_jev_problog(a):
@@ -1171,6 +1173,16 @@ def v_jev_opinion(a):
     text = jev_read(path)
     if text is None: return 2
     rc, lines = jev_brain("opinion", text, [], count=False)
+    if rc: return rc
+    sys.stdout.write("".join("%s\n" % l for l in lines)); return 0
+def v_jev_reason(verb, a):
+    # jev C8 (the owner 11-06 14:46 and 11-09 00:48, as the ask): reason maintenance in the judge's brain. why <id>: the record of the id's newest answer, the rows its line
+    # depends on with path:line (judge/judge-jev-why.sql); retract <row> [--undo]: the answers whose reasons list the row asked again from the record, without it
+    # (judge/judge-jev-retract.sql). This verb only types the request row and prints the brain's lines; jev.py is not read
+    args = [x for x in a if not x.startswith("--")]
+    if not args: print("cortex jev why <id>" if verb == "why" else "cortex jev retract <row id> [--undo]", file=sys.stderr); return 2
+    qs = args if verb == "why" else [args[0]] + (["--undo"] if "--undo" in a else [])
+    rc, lines = jev_brain(verb, "", qs, count=False)
     if rc: return rc
     sys.stdout.write("".join("%s\n" % l for l in lines)); return 0
 def jev_door():
@@ -3540,7 +3552,7 @@ USAGE = """cortex <verb> ...
   jev mln --rules <file> --state <file> --query <atom>   jev C6: p=<value>, the C5 worlds weighted by exp(sum w_i n_i(x)), in the judge brain
   jev psl --rules <file> --state <file> --query <atom>   jev C6: truth=<value>, the free atom's y in [0,1] of the least weighted total of max(0, l_j(y)), in the judge brain
   jev opinion --rows <file>                  jev C7: <atom> b= d= u= a= p= per fused opinion (trust discounted, cumulative fusion, p = b + a u), in the judge brain; problog, mln, psl read opinion rows fused
-  jev why <id> | jev retract <row id> [--undo]   jev C8: the path:line of the rows an answer depends on; a retracted row revises only the answers that listed it
+  jev why <id> | jev retract <row id> [--undo]   jev C8: the path:line of the rows an answer depends on; a retracted row revises only the answers that listed it, asked again from the record in the judge brain
   jev verify --claim <text> --source <db|file|source name>   jev C9: <fact> label=<supported|refuted|nei> row=<path:line|none> per fact, then score=
   jev calibrate --set <file> [--bins k]      jev C10: bucket=<lo-hi> n= mean_p= freq= per bucket, then ece=  (cortex jev help: the file formats)
   jev <project ...> [--n k] [--seed s]     rail C6: our own jev (the judge brain, rows of sql on the test kernel: the seven questions from evidence, the owner bands, the truth table) beside the python judge on k random judged claims; decides nothing
@@ -3607,6 +3619,8 @@ def main(argv):
         return v_jev_ask(a[1:])   # jev C4: the judge brain answers; jev.py is not imported
     elif v == "jev" and a and a[0] == "problog":
         return v_jev_problog(a[1:])   # jev C5: the judge brain answers; jev.py is not imported
+    elif v == "jev" and a and a[0] in ("why", "retract"):
+        return v_jev_reason(a[0], a[1:])   # jev C8: the judge brain answers from its record; jev.py is not imported
     elif v == "jev" and a and a[0] == "opinion":
         return v_jev_opinion(a[1:])   # jev C7: the judge brain answers; jev.py is not imported
     elif v == "jev" and a and a[0] in ("mln", "psl"):

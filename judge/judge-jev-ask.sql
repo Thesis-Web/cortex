@@ -6,6 +6,10 @@
 -- formula (and or not => <=>, & | ! ~ , ^ -> <-> \+, parentheses, true, false); p(question) is the summed weight of the worlds of its uncertain atoms
 -- where it holds, exact, at most 2^16 worlds, the formula run as 64-bit boolean words over the worlds, 64 worlds a word. Clauses with bodies are jev C5,
 -- soft rules C6, opinions C7: refused with their checkpoint named, not built here. Pattern: judge/judge-c1.sql and judge/judge-jev.sql (rail C6).
+-- jev C8 (11-10): a state that is not facts alone (ProbLog text, a clause with a body, an opinion, soft rules) is answered by a child request of verb mln (rule 0,
+-- the C5 to C7 rules) whose lines rule 12 copies; every answer keeps its reasons (rules 13 to 15): for each row that can matter, the same request without that row
+-- runs now (the kernel's recursive triggers), and the rows whose leaving out changes the answer's line are its reasons, with path:line, one record row
+-- (cx.judge_jevans) an answer; cx.judge_jevcur holds each id's newest answer; rows retracted (cx.judge_jevret) are left out of every ask (rule -1).
 -- ;; ddl
 CREATE TABLE IF NOT EXISTS cx.judge_jevask (id INTEGER PRIMARY KEY, verb TEXT NOT NULL, state TEXT, qs TEXT, ts INTEGER)
 -- ;; ddl
@@ -26,10 +30,50 @@ CREATE TABLE IF NOT EXISTS cx.judge_jevx (ask INTEGER NOT NULL, qi INTEGER NOT N
 CREATE TABLE IF NOT EXISTS cx.judge_jevout (ask INTEGER NOT NULL, qi INTEGER NOT NULL, p REAL, line TEXT, err TEXT)
 -- ;; ddl
 CREATE INDEX IF NOT EXISTS cx.judge_jevout_ask ON judge_jevout (ask, qi)
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevask ADD COLUMN parent INTEGER
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevask ADD COLUMN leave TEXT
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevask ADD COLUMN path TEXT
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevask ADD COLUMN nowhy INTEGER
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevask ADD COLUMN whyof INTEGER
+-- ;; ddl-add
+ALTER TABLE cx.judge_jevask ADD COLUMN whyrow TEXT
+-- ;; ddl
+CREATE INDEX IF NOT EXISTS cx.judge_jevask_parent ON judge_jevask (parent)
+-- ;; ddl
+CREATE INDEX IF NOT EXISTS cx.judge_jevask_whyof ON judge_jevask (whyof)
+-- ;; ddl
+CREATE TABLE IF NOT EXISTS cx.judge_jevans (ask INTEGER NOT NULL, qid TEXT NOT NULL, q TEXT, line TEXT, noul TEXT, why TEXT, ts INTEGER, PRIMARY KEY (ask, qid))
+-- ;; ddl
+CREATE TABLE IF NOT EXISTS cx.judge_jevcur (qid TEXT PRIMARY KEY, ask INTEGER NOT NULL, ts INTEGER)
+-- ;; ddl
+CREATE TABLE IF NOT EXISTS cx.judge_jevret (rid TEXT PRIMARY KEY, on_ INTEGER NOT NULL, ask INTEGER, ts INTEGER)
+-- ;; ddl
+CREATE TABLE IF NOT EXISTS cx.judge_jevrev (ret INTEGER NOT NULL, qid TEXT NOT NULL, old INTEGER, new INTEGER, PRIMARY KEY (ret, qid))
 -- ;; ddl
 DROP TRIGGER IF EXISTS cx.judge_jevgo
 -- ;; ddl
 CREATE TRIGGER cx.judge_jevgo AFTER INSERT ON judge_jevask BEGIN INSERT OR REPLACE INTO judge_jevsaid (ask, rule, said) SELECT NEW.id, r.id, mother(r.sql, NEW.id) FROM judge_jevrule r WHERE r.verb = NEW.verb ORDER BY r.id; END
+-- ;; rule -1 the rows this request leaves out (jev C8): its own leave and every row retracted now
+UPDATE cx.judge_jevask SET leave = (SELECT json_group_array(rid) FROM (SELECT value AS rid FROM json_each(coalesce((SELECT leave FROM cx.judge_jevask WHERE id = ?1), '[]'))
+  UNION SELECT rid FROM cx.judge_jevret WHERE on_ = 1)) WHERE id = ?1
+-- ;; rule 0 a state that is not facts alone (ProbLog text, a clause with a body, an opinion, soft rules: jev C5 to C7) is answered by the clauses' worlds: a child request of verb mln, the same state, questions and leave, its pipeline run now
+INSERT INTO cx.judge_jevask (verb, state, qs, ts, parent, leave, path, nowhy)
+SELECT 'mln', a.state, a.qs, a.ts, a.id, a.leave, a.path, 1 FROM cx.judge_jevask a
+WHERE a.id = ?1 AND CASE WHEN NOT json_valid(coalesce(a.state, '')) THEN 1
+  WHEN json_type(a.state) = 'object' AND json_type(a.state, '$.rules') = 'array' AND json_array_length(a.state, '$.rules') > 0 THEN 1
+  WHEN EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(a.state) = 'array' THEN a.state WHEN json_type(a.state) = 'object' AND json_type(a.state, '$.rows') = 'array' THEN json_extract(a.state, '$.rows')
+      WHEN json_type(a.state) = 'object' AND json_type(a.state, '$.rows') IS NULL AND json_type(a.state, '$.clauses') = 'array' THEN json_extract(a.state, '$.clauses') ELSE '[]' END) e
+    WHERE (e.type = 'text' AND instr(e.value, ':-') > 0)
+       OR (e.type = 'object' AND ((json_type(e.value, '$.clause') = 'text' AND instr(json_extract(e.value, '$.clause'), ':-') > 0)
+          OR CASE json_type(e.value, '$.if') WHEN 'array' THEN json_array_length(e.value, '$.if') WHEN 'text' THEN length(json_extract(e.value, '$.if')) ELSE 0 END > 0
+          OR CASE json_type(e.value, '$.body') WHEN 'array' THEN json_array_length(e.value, '$.body') WHEN 'text' THEN length(json_extract(e.value, '$.body')) ELSE 0 END > 0
+          OR json_type(e.value, '$.b') IS NOT NULL OR json_type(e.value, '$.d') IS NOT NULL OR json_type(e.value, '$.u') IS NOT NULL OR json_type(e.value, '$.trust') IS NOT NULL))) THEN 1
+  ELSE 0 END = 1
 -- ;; rule 1 the questions as typed: <id>:<formula>, a leading noul: is the type built
 INSERT INTO cx.judge_jevq (ask, qi, raw, qid, form)
 SELECT ?1, CAST(j.key AS INTEGER), j.value,
@@ -43,7 +87,8 @@ INSERT INTO cx.judge_jevout (ask, qi, err)
 SELECT ?1, qi, printf('a question is <id>:<formula>, not %s', json_quote(raw)) FROM cx.judge_jevq WHERE ask = ?1 AND (qid IS NULL OR qid = '' OR form IS NULL OR form = '')
 -- ;; rule 3 the state's rows: JSON {"<atom>": p}, a list of rows, or {"rows": [...]}; a row {"id", "atom" or "head", "p"} or a fact clause "p::atom."
 INSERT INTO cx.judge_jevfact (ask, k, rid, atom, p, err)
-WITH a AS (SELECT state AS s FROM cx.judge_jevask WHERE id = ?1),
+WITH a AS (SELECT state AS s FROM cx.judge_jevask WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM cx.judge_jevask c WHERE c.parent = ?1)),
+lv AS (SELECT value AS rid FROM json_each(coalesce((SELECT leave FROM cx.judge_jevask WHERE id = ?1), '[]'))),
 sh AS (SELECT s, CASE WHEN NOT json_valid(s) THEN 'text'
     WHEN json_type(s) = 'object' AND EXISTS (SELECT 1 FROM json_each(a.s)) AND NOT EXISTS (SELECT 1 FROM json_each(a.s) e WHERE e.type NOT IN ('integer', 'real')) THEN 'dict'
     WHEN json_type(s) = 'array' THEN '$'
@@ -83,13 +128,13 @@ SELECT ?1, k, rid, atom, p, CASE
     WHEN atom = '' OR atom GLOB '*[^A-Za-z0-9_(),.''+-]*' OR lower(atom) IN ('and', 'or', 'not', 'true', 'false') OR substr(atom, 1, 1) IN ('(', ')', ',')
          OR (instr(atom, '(') > 0 AND substr(atom, -1) <> ')') OR (instr(atom, ')') > 0 AND instr(atom, '(') = 0) THEN printf('the atom of row %s is not one atom: %s', rid, json_quote(raw))
     WHEN atom GLOB '*([A-Z_]*' OR atom GLOB '*,[A-Z_]*' THEN printf('the atom %s of row %s has a variable; a clause is ground here', atom, rid) END
-FROM r5
+FROM r5 WHERE rid NOT IN (SELECT rid FROM lv)
 UNION ALL
 SELECT ?1, k, 'r' || (k + 1), replace(replace(replace(replace(raw, ' ', ''), char(9), ''), char(10), ''), char(13), ''), p,
   CASE WHEN p < 0 OR p > 1 THEN printf('p of row r%d = %s is outside 0 to 1', k + 1, p)
        WHEN replace(raw, ' ', '') = '' OR replace(raw, ' ', '') GLOB '*[^A-Za-z0-9_(),.''+-]*' OR lower(raw) IN ('and', 'or', 'not', 'true', 'false') THEN printf('%s is not one atom', json_quote(raw))
        WHEN replace(raw, ' ', '') GLOB '*([A-Z_]*' OR replace(raw, ' ', '') GLOB '*,[A-Z_]*' THEN printf('the atom %s has a variable; a clause is ground here', raw) END
-FROM dr
+FROM dr WHERE 'r' || (k + 1) NOT IN (SELECT rid FROM lv)
 UNION ALL
 SELECT ?1, -1, NULL, NULL, NULL, CASE kind WHEN 'text' THEN 'the state is not JSON: a state in ProbLog text is clauses (jev C5, not built in the judge brain yet); give it as JSON rows {"atom": <atom>, "p": <p>} or {"<atom>": <p>}'
   ELSE 'a state is a list of rows or {"rows": [...]}' END FROM sh WHERE kind IN ('text', 'other')
@@ -192,7 +237,8 @@ INSERT INTO cx.judge_jevout (ask, qi, err) SELECT ?1, qi, err FROM cx.judge_jevx
 -- ;; rule 11 the answers: the formula run over 64 worlds a word (atom u < 6 a fixed pattern, u >= 6 the word's own bit), the worlds weighted in u order, p = the weight where it holds
 INSERT INTO cx.judge_jevout (ask, qi, p, line)
 WITH RECURSIVE
-ok AS (SELECT x.qi, x.nu, x.rpn FROM cx.judge_jevx x WHERE x.ask = ?1 AND x.rpn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
+ok AS (SELECT x.qi, x.nu, x.rpn FROM cx.judge_jevx x WHERE x.ask = ?1 AND x.rpn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)
+  AND NOT EXISTS (SELECT 1 FROM cx.judge_jevask c WHERE c.parent = ?1)),
 it AS (SELECT ok.qi, CAST(je.key AS INTEGER) + 1 AS j, je.value AS v FROM ok, json_each(ok.rpn) je),
 nit AS (SELECT qi, count(*) AS n FROM it GROUP BY qi),
 pat(u, b) AS (VALUES (0, 0xAAAAAAAAAAAAAAAA), (1, 0xCCCCCCCCCCCCCCCC), (2, 0xF0F0F0F0F0F0F0F0), (3, 0xFF00FF00FF00FF00), (4, 0xFFFF0000FFFF0000), (5, 0xFFFFFFFF00000000)),
@@ -221,3 +267,46 @@ tot AS (SELECT wd.qi, total(wd.w) AS p FROM wd JOIN ok ON ok.qi = wd.qi AND wd.i
   WHERE ((res.r >> (wd.m & 63)) & 1) = 1 GROUP BY wd.qi),
 fm AS (SELECT ok.qi, coalesce(tot.p, 0.0) AS p, rtrim(printf('%.12f', min(1.0, max(0.0, coalesce(tot.p, 0.0)))), '0') AS s FROM ok LEFT JOIN tot ON tot.qi = ok.qi)
 SELECT ?1, fm.qi, fm.p, q.qid || ' noul=' || CASE WHEN substr(fm.s, -1) = '.' THEN fm.s || '0' ELSE fm.s END FROM fm JOIN cx.judge_jevq q ON q.ask = ?1 AND q.qi = fm.qi
+-- ;; rule 12 a request answered by its child: the child's answers as this request's lines <id> noul=<p>, its errors once, its rules' failures
+INSERT INTO cx.judge_jevout (ask, qi, p, line, err)
+WITH ch AS (SELECT id FROM cx.judge_jevask WHERE parent = ?1)
+SELECT ?1, o.qi, o.p, CASE WHEN o.err IS NULL THEN q.qid || ' noul=' || substr(o.line, 3) END, o.err
+FROM ch JOIN cx.judge_jevout o ON o.ask = ch.id LEFT JOIN cx.judge_jevq q ON q.ask = ?1 AND q.qi = o.qi
+WHERE (o.err IS NULL AND q.qid IS NOT NULL) OR (o.err IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout p WHERE p.ask = ?1 AND p.err = o.err))
+UNION ALL
+SELECT ?1, -990, NULL, NULL, printf('the clauses'' worlds (request %d), rule %d: %s', ch.id, s.rule, s.said) FROM ch JOIN cx.judge_jevsaid s ON s.ask = ch.id WHERE s.said LIKE 'error%'
+-- ;; rule 13 the reasons of each answer (jev C8): for every row of the state that can matter (p > 0, an opinion with trust > 0), the same request without that row, its pipeline run now (a request with no reasons of its own)
+INSERT INTO cx.judge_jevask (verb, state, qs, ts, leave, path, nowhy, whyof, whyrow)
+WITH me AS MATERIALIZED (SELECT * FROM cx.judge_jevask WHERE id = ?1 AND coalesce(nowhy, 0) = 0 AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
+cand AS MATERIALIZED (SELECT rid, min(k) AS k FROM (
+    SELECT rid, k FROM cx.judge_jevfact WHERE ask = ?1 AND k >= 0 AND err IS NULL AND rid IS NOT NULL AND p > 0
+    UNION ALL SELECT c.rid, c.k FROM cx.judge_jevask ch JOIN cx.judge_jevclause c ON c.ask = ch.id
+      WHERE ch.parent = ?1 AND c.k >= 0 AND c.k < 1000000 AND c.err IS NULL AND c.rid IS NOT NULL AND (c.p > 0 OR (c.p IS NULL AND c.ot > 0))) GROUP BY rid)
+SELECT 'ask', me.state, me.qs, me.ts, json_insert(coalesce(me.leave, '[]'), '$[#]', cand.rid), me.path, 1, ?1, cand.rid FROM me, cand ORDER BY cand.k
+-- ;; rule 14 the record (jev C8): each answer and its reasons in one row of cx.judge_jevans, the reasons the rows whose leaving out changes its line, each with its path:line (a text state: the file and the line; a JSON row: its path, line, source)
+INSERT OR REPLACE INTO cx.judge_jevans (ask, qid, q, line, noul, why, ts)
+WITH RECURSIVE
+me AS MATERIALIZED (SELECT * FROM cx.judge_jevask WHERE id = ?1 AND coalesce(nowhy, 0) = 0 AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
+ln AS (SELECT o.qi, o.line FROM cx.judge_jevout o JOIN me WHERE o.ask = ?1 AND o.err IS NULL AND o.line IS NOT NULL),
+sub AS MATERIALIZED (SELECT s.id, s.whyrow FROM cx.judge_jevask s JOIN me WHERE s.whyof = ?1),
+chg AS (SELECT ln.qi, sub.whyrow AS rid FROM ln JOIN sub WHERE NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = sub.id AND o.qi = ln.qi AND o.err IS NULL AND o.line = ln.line)),
+sk AS (SELECT coalesce(state, '') AS s, path, CASE WHEN NOT json_valid(coalesce(state, '')) THEN 'text'
+    WHEN json_type(state) = 'object' AND EXISTS (SELECT 1 FROM json_each(me.state)) AND NOT EXISTS (SELECT 1 FROM json_each(me.state) e WHERE e.type NOT IN ('integer', 'real')) THEN 'dict'
+    WHEN json_type(state) = 'array' THEN '$' WHEN json_type(state) = 'object' AND json_type(state, '$.rows') = 'array' THEN '$.rows'
+    WHEN json_type(state) = 'object' AND json_type(state, '$.rows') IS NULL AND json_type(state, '$.clauses') = 'array' THEN '$.clauses' ELSE 'other' END AS kind FROM me),
+tx(n, rest, line) AS (SELECT 0, s || char(10), NULL FROM sk WHERE kind = 'text'
+  UNION ALL SELECT n + 1, substr(rest, instr(rest, char(10)) + 1), substr(rest, 1, instr(rest, char(10)) - 1) FROM tx WHERE rest <> ''),
+tl AS (SELECT n AS lineno, trim(replace(CASE WHEN instr(line, '%') > 0 THEN substr(line, 1, instr(line, '%') - 1) ELSE line END, char(13), ''), ' ' || char(9)) AS cl FROM tx WHERE line IS NOT NULL),
+meta AS (SELECT 'r' || lineno AS rid, (SELECT path FROM sk) AS path, lineno AS line, NULL AS source, lineno AS ord FROM tl WHERE cl <> ''
+  UNION ALL
+  SELECT coalesce(CASE WHEN e.type = 'object' AND json_type(e.value, '$.id') IS NOT NULL AND json_type(e.value, '$.id') <> 'null' THEN CAST(json_extract(e.value, '$.id') AS TEXT) END, 'r' || (CAST(e.key AS INTEGER) + 1)),
+    CASE WHEN e.type = 'object' THEN json_extract(e.value, '$.path') END, CASE WHEN e.type = 'object' THEN json_extract(e.value, '$.line') END,
+    CASE WHEN e.type = 'object' THEN json_extract(e.value, '$.source') END, CAST(e.key AS INTEGER)
+  FROM sk, json_each(CASE WHEN sk.kind IN ('$', '$.rows', '$.clauses') THEN sk.s ELSE '[]' END, CASE WHEN sk.kind IN ('$.rows', '$.clauses') THEN sk.kind ELSE '$' END) e WHERE sk.kind IN ('$', '$.rows', '$.clauses')
+  UNION ALL
+  SELECT 'r' || row_number() OVER (), NULL, NULL, NULL, row_number() OVER () FROM sk, json_each(CASE WHEN sk.kind = 'dict' THEN sk.s ELSE '{}' END) e WHERE sk.kind = 'dict')
+SELECT ?1, q.qid, q.form, ln.line, substr(ln.line, instr(ln.line, ' noul=') + 6),
+  coalesce((SELECT json_group_array(json_object('id', m.rid, 'path', m.path, 'line', m.line, 'source', m.source) ORDER BY m.ord) FROM chg JOIN meta m ON m.rid = chg.rid WHERE chg.qi = ln.qi), '[]'), me.ts
+FROM ln JOIN cx.judge_jevq q ON q.ask = ?1 AND q.qi = ln.qi JOIN me
+-- ;; rule 15 the newest answer of each id is this request's
+INSERT OR REPLACE INTO cx.judge_jevcur (qid, ask, ts) SELECT qid, ask, ts FROM cx.judge_jevans WHERE ask = ?1

@@ -14,7 +14,7 @@ for p in parts:
     if head.startswith("ddl-add"): stmts.append(("ddl-add", body))
     elif head.startswith("ddl"): stmts.append(("ddl", body))
     else:
-        m = re.match(r"rule (\d+) (.*)", head)
+        m = re.match(r"rule (-?\d+) (.*)", head)
         stmts.append(("rule %s" % m.group(1), "INSERT OR REPLACE INTO cx.judge_jevrule (id, verb, name, sql) VALUES (%d, %s, %s, %s)" % (int(m.group(1)), lit(verb), lit(m.group(2).strip()), lit(body))))
 if "--try" in sys.argv:
     import sqlite3
