@@ -114,8 +114,8 @@ do_scan() {   # writes $REPORT; returns 0 pass, 1 words (a word found anywhere i
     if [ $FOUND = 1 ]; then echo "FAIL: words in the brain"
     elif [ $UNREAD = 1 ]; then echo "UNREAD: the brain was not fully read"
     else echo "PASS: no words in the brain"; fi
-  } > "$REPORT.tmp" 2>&1
-  mv "$REPORT.tmp" "$REPORT"
+  } > "$REPORT.$$" 2>&1
+  mv "$REPORT.$$" "$REPORT"
   [ $FOUND = 1 ] && return 1
   [ $UNREAD = 1 ] && return 2
   return 0
@@ -249,7 +249,7 @@ verb_status() {
 
 case ${1:-} in
   check)   verb_check ;;
-  scan)    do_scan; rc=$?; cat "$REPORT"; exit $rc ;;
+  scan)    locked_section; do_scan; rc=$?; cat "$REPORT"; exit $rc ;;   # under the same flock as check: one report at a time
   status)  verb_status ;;
   unlock)  verb_unlock ;;
   _expire) verb_expire ;;
