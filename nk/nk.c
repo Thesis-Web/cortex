@@ -190,9 +190,51 @@ static void to_memory(Brain *b, i64 run){
 static void first_landing(Brain *b, i64 run){ Run *r = run_of(b, run); dedupe_check(b, run); if(r->nseq <= 0) return; if(r->same_as){ to_memory(b, run); return; } land(b, run, 0, r->arrival, 0, r->seq[0], 0); }
 
 /* a line arriving at a prompt: input (heard) or third (the other brain) */
+/* the repeat is a tick (the owner, 2026-10-03: "memories in a node that all should be the same until the truth changes, just get a timestamp and
+   counter +1 for each new, and then truth change new row. also the full context of the memory is never duped, anywhere else a memory lives not is
+   just a pointer to that memory"; 2026-10-06: "these long runs should be learned once... and never done again unless a step back is needed ... the
+   only reason to rerun long runs ever are to reason . or if the truth has changed"; 2026-11-10: "a repeat sentance should only be storing the time,
+   and project information ... it should be just another comma separated value in at most 3 cells"). A line at a prompt whose symbols and arrival
+   repeat a memory whose shards are unchanged since makes no run: the memory counts it (again), its clock cell takes the time, its source cell takes
+   the key (the marker run of typemark, 0 for none); the ear's mailbox and the timeline take a pointer to the memory. Nothing fires, nothing is laid,
+   mother is not called, the sixth is not told. A line that opens a BUILD span asks mother, so it runs every time; a shard of the memory's receipt
+   rewritten since is the truth changed, so the line runs and its run is the new row. */
+i64 nk_last_tick;   /* the memory the last line at a prompt ticked; 0 when the line ran */
+i64 nk_line_key;    /* the key the next line at a prompt carries (the marker run of typemark); line_in takes it and clears it */
+i64 nk_line_time;   /* the time the next line at a prompt carries (typemark @time, for the record typed again from the copy); 0 = now */
+static void cut_into(Brain *b, const char *text, int **out, int *n);
+static void cell_append(Run *r, int cell, i64 x){
+  Cell *c = 0; for(int i = 0; i < r->ncells; i++) if(r->cells[i].cell == cell){ c = &r->cells[i]; break; }
+  if(!c){ GROW(r->cells, r->ncells, r->ccells, Cell); c = &r->cells[r->ncells++]; c->cell = cell; memset(&c->v, 0, sizeof c->v); }
+  if(c->v.kind == 1){ i64 old = c->v.u.num; c->v.u.g = malloc(sizeof(int)); c->v.u.g[0] = (int)old; c->v.n = 1; c->v.kind = 2; }
+  else if(c->v.kind != 2){ val_free(&c->v); c->v.kind = 2; }
+  c->state = 1; c->v.u.g = realloc(c->v.u.g, sizeof(int) * (c->v.n + 1)); c->v.u.g[c->v.n++] = (int)x;
+}
+static i64 tick_of(Brain *b, int arrival, const int *seq, int n){
+  if(n <= 0) return 0;
+  for(int i = 0; i < n; i++) if(seq[i] <= 0 || seq[i] == BUILD) return 0;   /* a symbol with no gate: no memory holds the line; BUILD: the line asks mother */
+  i64 f = hmap_get(&b->memh, (i64)seqhash(seq, n), (i64)arrival << 40); if(!f) return 0;   /* memkey2 of a line: its arrival, cell 0, about 0 */
+  Run *cn = run_of(b, f); if(!cn || !cn->has_mem || cn->same_as || cn->kind != 0 || cn->nseq != n || !cn->seq || cn->nrc == 0) return 0;
+  if(memcmp(cn->seq, seq, sizeof(int) * n) != 0) return 0;
+  if(cn->ok_at <= b->rewrite_at){ for(int i = 0; i < cn->nrc; i++){ Rc *k = &cn->rcs[i]; Shard *s = shard_by_id(b, k->gate, k->shard); if(!s || s->changed_at > cn->mem_at) return 0; } cn->ok_at = b->clock; cn->ev_built = 0; }
+  return f;
+}
+static void tick(Brain *b, i64 f, int which, i64 key, i64 when){
+  Run *cn = run_of(b, f); b->clock++;
+  int src = label_gate(b, "source"); if(!src) src = label_new(b, "source");
+  int seeded = 0; for(int i = 0; i < cn->ncells; i++) if(cn->cells[i].cell == CLOCK_G){ seeded = 1; break; }
+  if(!seeded){ cell_append(cn, CLOCK_G, cn->moment); cell_append(cn, src, cn->mem_source != cn->arrival ? cn->mem_source : 0); }   /* the first arrival, then every repeat */
+  cell_append(cn, CLOCK_G, when ? when : (i64)time(0)); cell_append(cn, src, key);
+  cn->again++; cn->last_at = b->clock; cn->last_run = f; b->deduped++;
+  Mail **box = which == 0 ? &b->input : &b->third; i64 *n = which == 0 ? &b->ninput : &b->nthird; i64 *c = which == 0 ? &b->cinput : &b->cthird;
+  GROW(*box, *n, *c, Mail); Mail *m = &(*box)[*n]; m->id = *n + 1; m->text = 0; m->run = f; (*n)++;
+  GROW(b->tl, b->ntl, b->ctl, Tl); Tl *t = &b->tl[b->ntl++]; t->at = b->clock; t->run = f; t->key1 = cn->seq[0]; t->key2 = cn->seq[cn->nseq - 1];
+}
 void line_in(Brain *b, int which, const char *text){
   int arrival = which == 0 ? HEARD : b->arrival_of_third;
-  i64 run = new_run(b, arrival, 0, 0, 0, 0, 0); run_of(b, run)->kept = 1;
+  i64 key = nk_line_key, when = nk_line_time; nk_line_key = 0; nk_line_time = 0; nk_last_tick = 0;
+  { int *s, n; cut_into(b, text, &s, &n); i64 f = tick_of(b, arrival, s, n); if(f){ tick(b, f, which, key, when); nk_last_tick = f; return; } }
+  i64 run = new_run(b, arrival, 0, 0, 0, 0, 0); run_of(b, run)->kept = 1; if(key) run_of(b, run)->mem_source = (int)key; if(when) run_of(b, run)->moment = when;
   Mail **box = which == 0 ? &b->input : &b->third; i64 *n = which == 0 ? &b->ninput : &b->nthird; i64 *c = which == 0 ? &b->cinput : &b->cthird;
   GROW(*box, *n, *c, Mail); Mail *m = &(*box)[*n]; m->id = *n + 1; m->text = 0; m->run = run; (*n)++;   /* the text is let go */
   cut2(b, run, text); first_landing(b, run);

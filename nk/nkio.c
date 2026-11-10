@@ -145,6 +145,7 @@ static void do_type(Brain *b, const char *text, SB *o){
   i64 runs0 = b->nruns, hops0 = MAINB.hops_done + SIXTHB.hops_done, gates0 = MAINB.label.n, ref0 = MAINB.refused_n + SIXTHB.refused_n, outm = MAINB.nout, outs = SIXTHB.nout;
   double t0 = now_s();
   line_in(b, 0, text);
+  if(nk_last_tick){ Run *m = run_of(b, nk_last_tick); sb_fmt(o, "{\"schema\":\"%s\",\"run\":%lld,\"tick\":1,\"again\":%lld,\"runs\":%lld,\"hits\":0,\"hops\":%lld,\"born\":%lld,\"refused\":%lld,\"seconds\":%.3f,\"out\":[]}", b->name, (long long)nk_last_tick, (long long)(m ? m->again : 0), (long long)(b->nruns - runs0), (long long)(MAINB.hops_done + SIXTHB.hops_done - hops0), (long long)(MAINB.label.n - gates0), (long long)(MAINB.refused_n + SIXTHB.refused_n - ref0), now_s() - t0); return; }
   i64 rid = runs0 + 1;
   /* until the typed line's own run has ended and its sheet is whole, or nothing is left to run; what the line left (the sixth's sends) runs on between requests */
   for(;;){ Run *r = run_of(b, rid); if((r && r->ended && !sheet_open_pub(b, rid)) || (pending(&MAINB) == 0 && pending(&SIXTHB) == 0)) break; pump_all(64); }
@@ -161,15 +162,15 @@ static void do_typemark(Brain *b, const char *req, SB *o){
   const char *bar = strstr(req, " | ");
   if(!bar || bar == req || !bar[3]){ sb_str(o, "{\"error\":\"typemark main <marker> | <text>\"}"); return; }
   size_t ml = (size_t)(bar - req); char *mk = malloc(ml + 1); memcpy(mk, req, ml); mk[ml] = 0;
-  double t0 = now_s(); i64 m0 = b->nruns; line_in(b, 0, mk); free(mk); i64 mrun = m0 + 1;
-  for(;;){ Run *r = run_of(b, mrun); if((r && r->ended && !sheet_open_pub(b, mrun)) || (pending(&MAINB) == 0 && pending(&SIXTHB) == 0)) break; pump_all(64); }
-  Run *mr = run_of(b, mrun); i64 msame = mr ? mr->same_as : 0; i64 marker = msame ? msame : mrun;
-  i64 runs0 = b->nruns; line_in(b, 0, bar + 3); i64 rid = runs0 + 1;
-  { Run *cr = run_of(b, rid); if(cr) cr->mem_source = (int)marker; }
-  for(;;){ Run *r = run_of(b, rid); if((r && r->ended && !sheet_open_pub(b, rid)) || (pending(&MAINB) == 0 && pending(&SIXTHB) == 0)) break; pump_all(64); }
+  i64 when = 0; { char *at = strrchr(mk, '@'); if(at && at > mk && at[-1] == ' ' && at[1]){ char *e; long long w = strtoll(at + 1, &e, 10); if(!*e && w > 0){ when = w; at[-1] = 0; } } }   /* typemark main <marker> @<unix time> | <text>: a record typed again keeps its own time */
+  double t0 = now_s(); i64 m0 = b->nruns; line_in(b, 0, mk); free(mk); i64 mtick = nk_last_tick, mrun = mtick ? 0 : m0 + 1;
+  if(!mtick) for(;;){ Run *r = run_of(b, mrun); if((r && r->ended && !sheet_open_pub(b, mrun)) || (pending(&MAINB) == 0 && pending(&SIXTHB) == 0)) break; pump_all(64); }
+  Run *mr = mrun ? run_of(b, mrun) : 0; i64 msame = mr ? mr->same_as : 0; i64 marker = mtick ? mtick : (msame ? msame : mrun);
+  i64 runs0 = b->nruns; nk_line_key = marker; nk_line_time = when; line_in(b, 0, bar + 3); i64 ctick = nk_last_tick, rid = ctick ? ctick : runs0 + 1;
+  if(!ctick) for(;;){ Run *r = run_of(b, rid); if((r && r->ended && !sheet_open_pub(b, rid)) || (pending(&MAINB) == 0 && pending(&SIXTHB) == 0)) break; pump_all(64); }
   Run *cr = run_of(b, rid);
-  sb_fmt(o, "{\"marker\":%lld,\"marker_run\":%lld,\"marker_same_as\":%lld,\"run\":%lld,\"same_as\":%lld,\"ended\":%d,\"source\":%d,\"runs\":%lld,\"seconds\":%.3f}",
-    (long long)marker, (long long)mrun, (long long)msame, (long long)rid, (long long)(cr ? cr->same_as : 0), cr ? cr->ended : 0, cr ? cr->mem_source : 0, (long long)(b->nruns - m0), now_s() - t0);
+  sb_fmt(o, "{\"marker\":%lld,\"marker_run\":%lld,\"marker_same_as\":%lld,\"marker_tick\":%d,\"run\":%lld,\"same_as\":%lld,\"tick\":%d,\"again\":%lld,\"ended\":%d,\"source\":%d,\"runs\":%lld,\"seconds\":%.3f}",
+    (long long)marker, (long long)mrun, (long long)msame, mtick ? 1 : 0, (long long)rid, (long long)(cr ? cr->same_as : 0), ctick ? 1 : 0, (long long)(cr ? cr->again : 0), cr ? cr->ended : 0, cr ? cr->mem_source : 0, (long long)(b->nruns - m0), now_s() - t0);
 }
 static void do_q(const char *sql, SB *o){
   sqlite3_stmt *st = 0; if(sqlite3_prepare_v2(DB, sql, -1, &st, 0) != SQLITE_OK){ sb_str(o, "{\"error\":"); sb_json(o, sqlite3_errmsg(DB)); sb_str(o, "}"); return; }
@@ -183,7 +184,7 @@ static void brain_stats(Brain *b, SB *o){
   double hop_us = b->hops_run ? (b->hop_ns - b->paste_ns) / 1000.0 / b->hops_run : 0, paste_us = b->pastes ? b->paste_ns / 1000.0 / b->pastes : 0;
   sb_fmt(o, "{\"defined\":%lld,", (long long)b->dropped_runs); sb_fmt(o, "\"runs\":%lld,\"hops\":%lld,\"pending\":%d,\"gates\":%d,\"refused\":%lld,\"shards\":%lld,\"shard_rows\":%lld,\"hop_us\":%.3f,\"pastes\":%lld,\"paste_us\":%.1f,\"hop_s\":%.3f,\"paste_s\":%.3f,\"returns\":%lld,\"return_us\":%.1f,\"return_s\":%.3f,\"receipts\":%lld,\"hops_run\":%lld,\"deduped_runs\":%lld,\"stubs\":%lld,\"receipts_dropped\":%lld}", (long long)b->nruns, (long long)b->hops_done, pending(b), b->label.n, (long long)b->refused_n, (long long)b->shards, (long long)nk_shard_rows(b), hop_us, (long long)b->pastes, paste_us, (b->hop_ns - b->paste_ns) / 1e9, b->paste_ns / 1e9, (long long)b->secs, b->secs ? b->sec_ns / 1000.0 / b->secs : 0, b->sec_ns / 1e9, (long long)(b->hops_done - b->dropped_receipts), (long long)b->hops_run, (long long)b->deduped, (long long)b->dropped_runs, (long long)b->dropped_receipts);
 }
-static void do_stats(SB *o){ struct mallinfo2 mi = mallinfo2(); sb_str(o, "{\"main\":"); brain_stats(&MAINB, o); sb_str(o, ",\"sixth\":"); brain_stats(&SIXTHB, o); sb_fmt(o, ",\"heap_MB\":%.0f}", (mi.uordblks + mi.hblkhd) / 1048576.0); }
+static void do_stats(SB *o){ struct mallinfo2 mi = mallinfo2(); sb_str(o, "{\"main\":"); brain_stats(&MAINB, o); sb_str(o, ",\"sixth\":"); brain_stats(&SIXTHB, o); sb_fmt(o, ",\"heap_MB\":%.0f,\"map_used\":%llu}", (mi.uordblks + mi.hblkhd) / 1048576.0, (unsigned long long)nk_map_used()); }
 
 static int prof_cmp(const void *a, const void *b){ const Prof *x = *(Prof* const*)a, *y = *(Prof* const*)b; return y->ns > x->ns ? 1 : (y->ns < x->ns ? -1 : 0); }
 static void do_profile(SB *o, int top){

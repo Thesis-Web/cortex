@@ -117,7 +117,8 @@ i64    new_run(Brain *b, int arrival, i64 parent, int has_parent, int kind, int 
 void   val_set(Brain *b, Val *v, const char *s); void val_free(Val *v); void val_copy(Val *to, const Val *from); const char *val_text(Brain *b, const Val *v);
 void   cell_set(Brain *b, i64 run, int cell, int state, const char *value);   /* INSERT OR REPLACE, with sheet_fill */
 const char *cell_get(Brain *b, i64 run, int cell);                            /* state 1 and value not null, else NULL */
-void   line_in(Brain *b, int which, const char *text);     /* which: 0 input (heard), 1 third */
+void   line_in(Brain *b, int which, const char *text);
+extern i64 nk_last_tick, nk_line_key, nk_line_time;   /* the repeat is a tick (nk.c line_in) */     /* which: 0 input (heard), 1 third */
 void   secondary_in(Brain *b, i64 run, int cell, int gate, int about, const char *text, i64 src);
 const int *nk_seq(Brain *b, i64 run, int *n);
 int nk_learn_text(Brain *b, const char *s);                     /* C27 back population: every symbol of a text given a gate under the encoder as it stands (label_new); the count born */
