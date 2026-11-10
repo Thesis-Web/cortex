@@ -1102,13 +1102,14 @@ def v_prove(name, n=None, done_only=False, box_min=None, model=None):
     print("prove %s: %s in %.0f s" % (name, ", ".join("%s %d" % kv for kv in tally.items()) or "nothing to prove", time.time() - t0))
     return tally
 JEV_VERBS = ("ask", "problog", "mln", "opinion", "why", "retract", "verify", "calibrate", "help")
-def jev_brain(verb, text, qs):
+def jev_brain(verb, text, qs, rules=None):
     # jev C4, C5: a request row typed in the judge's brain (cx.judge_jevask: the verb, the file's text, the questions as typed); its trigger runs the verb's rule rows
     # through the mother; the rows the brain wrote for it are read back. Nothing here decides. Returns (rc, lines).
     def lit(x): return "'" + str(x).replace("'", "''").replace("\r", "' || char(13) || '").replace("\n", "' || char(10) || '") + "'"   # the door reads one line
     if not q("SELECT count(*) FROM cx.sqlite_master WHERE type = 'trigger' AND name = 'judge_jevgo'")[0][0] or not q("SELECT count(*) FROM cx.judge_jevrule WHERE verb = %s" % lit(verb))[0][0]:
         print("jev: the judge brain on port %d holds no %s (lay it: CORTEX_PORT=%d python3 work/jev/lay.py %s)" % (PORT, verb, PORT, verb), file=sys.stderr); return 1, None
-    r = ask("q INSERT INTO cx.judge_jevask (verb, state, qs, ts) VALUES (%s, %s, %s, %d) RETURNING id" % (lit(verb), lit(text), lit(json.dumps(qs)), int(time.time())))
+    if rules is None: r = ask("q INSERT INTO cx.judge_jevask (verb, state, qs, ts) VALUES (%s, %s, %s, %d) RETURNING id" % (lit(verb), lit(text), lit(json.dumps(qs)), int(time.time())))
+    else: r = ask("q INSERT INTO cx.judge_jevask (verb, state, qs, ts, rules) VALUES (%s, %s, %s, %d, %s) RETURNING id" % (lit(verb), lit(text), lit(json.dumps(qs)), int(time.time()), lit(rules)))
     if r.get("error") or not r.get("rows"): print("jev: the judge brain: %s" % (r.get("error") or "no request row"), file=sys.stderr); return 1, None
     rid = int(r["rows"][0][0])
     bad = q("SELECT rule, said FROM cx.judge_jevsaid WHERE ask = %d AND said LIKE 'error%%' ORDER BY rule" % rid)
@@ -1148,6 +1149,18 @@ def v_jev_problog(a):
     text = jev_read(path)
     if text is None: return 2
     rc, lines = jev_brain("problog", text, ["query:" + query])
+    if rc: return rc
+    sys.stdout.write("".join("%s\n" % l for l in lines)); return 0
+def v_jev_soft(verb, a):
+    # jev C6 (the owner 11-06 14:46 and 11-09 00:48, as the ask): weighted soft rules in the judge's brain. mln (judge/judge-jev-mln.sql): the C5 clauses' worlds
+    # weighted by exp(sum w_i n_i(x)), p= of the query; psl (judge/judge-jev-psl.sql): the rules read in Lukasiewicz logic, truth= of the one free atom, the y in
+    # [0,1] of the least weighted total of max(0, l_j(y)). This verb only types the request row (the state, the rules, the query) and prints the line; jev.py is not read
+    rpath, spath, query = jev_opt(a, "--rules"), jev_opt(a, "--state"), jev_opt(a, "--query")
+    if not rpath or not spath or not query or not query.strip():
+        print("cortex jev %s --rules <file> --state <file> --query <%s>" % (verb, "atom or formula" if verb == "mln" else "the free atom"), file=sys.stderr); return 2
+    rules, text = jev_read(rpath), jev_read(spath)
+    if rules is None or text is None: return 2
+    rc, lines = jev_brain(verb, text, ["query:" + query], rules)
     if rc: return rc
     sys.stdout.write("".join("%s\n" % l for l in lines)); return 0
 def jev_door():
@@ -3514,7 +3527,8 @@ USAGE = """cortex <verb> ...
   prove <name> [n] [--done] [--box min]    rail C4: write and audit the check of each checkpoint (or the done ones), run it: check ok keeps or closes, check wrong reopens, no check hands back
   jev ask --state <file> --q <id>:<formula> [--q ...]   jev C4: one line <id> noul=<p> per question, in the order given; each answer's reasons kept (C8)
   jev problog --clauses <file> --query <atom>   jev C5: p=<value> by the distribution semantics, in the judge brain (the clauses the query depends on, every world's least model)
-  jev mln --rules <file> --state <file> --query <atom>   jev C6: p=<value>, the worlds weighted by exp(sum w_i n_i(x))
+  jev mln --rules <file> --state <file> --query <atom>   jev C6: p=<value>, the C5 worlds weighted by exp(sum w_i n_i(x)), in the judge brain
+  jev psl --rules <file> --state <file> --query <atom>   jev C6: truth=<value>, the free atom's y in [0,1] of the least weighted total of max(0, l_j(y)), in the judge brain
   jev opinion --rows <file>                  jev C7: <atom> b= d= u= a= p= per fused opinion (trust discounted, cumulative fusion, p = b + a u)
   jev why <id> | jev retract <row id> [--undo]   jev C8: the path:line of the rows an answer depends on; a retracted row revises only the answers that listed it
   jev verify --claim <text> --source <db|file|source name>   jev C9: <fact> label=<supported|refuted|nei> row=<path:line|none> per fact, then score=
@@ -3583,6 +3597,8 @@ def main(argv):
         return v_jev_ask(a[1:])   # jev C4: the judge brain answers; jev.py is not imported
     elif v == "jev" and a and a[0] == "problog":
         return v_jev_problog(a[1:])   # jev C5: the judge brain answers; jev.py is not imported
+    elif v == "jev" and a and a[0] in ("mln", "psl"):
+        return v_jev_soft(a[0], a[1:])   # jev C6: the judge brain answers; jev.py is not imported
     elif v == "jev" and a and a[0] in JEV_VERBS:
         import jev as jev_c4   # jev C4 to C10: the outline verbs (the owner 11-09: stick to the outline .. proceed); jev.py beside this file
         return jev_c4.main(a, jev_door())

@@ -8,13 +8,18 @@
 -- The least model of every world at once: 64 worlds a word (clause u < 6 a fixed pattern, u >= 6 the word's own bit), the clauses run as a little program
 -- (load the clause's word, and each body atom's word, or into the head's word): the facts once, then the clauses with a body one pass for each head they have
 -- (a pass that changes some world adds a head to it); then the query's postfix over the
--- model's words. Negation in a body, annotated disjunctions, soft rules (C6) and opinions (C7) are refused, named. Lay: python3 work/jev/lay.py problog (after the ask).
+-- model's words (rules 113, 114, 115: the model's words in cx.judge_jevm and the query's in cx.judge_jevr, read again by mln). Negation in a body, annotated
+-- disjunctions and opinions (C7) are refused, named; soft rules in a clauses file are refused here and read by mln (C6). Lay: python3 work/jev/lay.py problog (after the ask).
 -- ;; ddl
 CREATE TABLE IF NOT EXISTS cx.judge_jevclause (ask INTEGER NOT NULL, k INTEGER NOT NULL, rid TEXT, head TEXT, body TEXT, p REAL, err TEXT, PRIMARY KEY (ask, k))
 -- ;; ddl
 CREATE TABLE IF NOT EXISTS cx.judge_jevpa (ask INTEGER NOT NULL, qi INTEGER NOT NULL, atom TEXT NOT NULL, ix INTEGER, PRIMARY KEY (ask, qi, atom))
 -- ;; ddl
 CREATE TABLE IF NOT EXISTS cx.judge_jevpc (ask INTEGER NOT NULL, qi INTEGER NOT NULL, j INTEGER NOT NULL, head INTEGER, body TEXT, u INTEGER, p REAL, PRIMARY KEY (ask, qi, j))
+-- ;; ddl
+CREATE TABLE IF NOT EXISTS cx.judge_jevm (ask INTEGER NOT NULL, qi INTEGER NOT NULL, c INTEGER NOT NULL, m TEXT, PRIMARY KEY (ask, qi, c))
+-- ;; ddl
+CREATE TABLE IF NOT EXISTS cx.judge_jevr (ask INTEGER NOT NULL, qi INTEGER NOT NULL, c INTEGER NOT NULL, r INTEGER, PRIMARY KEY (ask, qi, c))
 -- ;; rule 101 the query as typed: the ask's rule 1, run by reference
 SELECT mother(sql, ?1) FROM cx.judge_jevrule WHERE id = 1 AND verb = 'ask'
 -- ;; rule 102 a query that is not <id>:<formula>: the ask's rule 2, run by reference
@@ -100,7 +105,8 @@ FROM r7 r LEFT JOIN ke ON ke.k = r.k
 UNION ALL
 SELECT ?1, -1, NULL, NULL, NULL, NULL, 'a clauses file is ProbLog text (one clause a line) or JSON: a list of rows, {"rows": [...]} or {"<atom>": p}' FROM sh WHERE kind = 'other'
 UNION ALL
-SELECT ?1, -2, NULL, NULL, NULL, NULL, 'the file holds soft rules: weighted rules are jev C6, not built in the judge brain yet' FROM sh WHERE kind IN ('$.rows', '$.clauses') AND nrules > 0
+SELECT ?1, -2, NULL, NULL, NULL, NULL, 'the clauses file holds soft rules: problog reads clauses; soft rules are read by cortex jev mln (jev C6)' FROM sh
+WHERE kind IN ('$.rows', '$.clauses') AND nrules > 0 AND (SELECT verb FROM cx.judge_jevask WHERE id = ?1) = 'problog'
 -- ;; rule 104 the clauses' errors and a row id given twice
 INSERT INTO cx.judge_jevout (ask, qi, err)
 SELECT ?1, -1, e FROM (SELECT err AS e FROM cx.judge_jevclause WHERE ask = ?1 AND err IS NOT NULL
@@ -138,14 +144,14 @@ FROM cx.judge_jevpc pc JOIN cx.judge_jevq q ON q.ask = pc.ask AND q.qi = pc.qi W
 SELECT mother(sql, ?1) FROM cx.judge_jevrule WHERE id = 9 AND verb = 'ask'
 -- ;; rule 112 a query that does not parse: the ask's rule 10, run by reference
 SELECT mother(sql, ?1) FROM cx.judge_jevrule WHERE id = 10 AND verb = 'ask'
--- ;; rule 113 the answer: every world's least model as words (load, and the body, or into the head; the facts once, then the clauses with a body one pass for each of their heads), the query's postfix over the model's words, p = the summed weight of the worlds where it holds
-INSERT INTO cx.judge_jevout (ask, qi, p, line)
+-- ;; rule 113 every world's least model as words, 64 worlds a word (load the clause's word, and the body's words, or into the head's word; the facts once, then the clauses with a body one pass for each of their heads): a row a chunk of 64 worlds in cx.judge_jevm
+INSERT INTO cx.judge_jevm (ask, qi, c, m)
 WITH RECURSIVE
-ok AS (SELECT x.qi, x.rpn,
+ok AS (SELECT x.qi,
     (SELECT count(*) FROM cx.judge_jevpc pc WHERE pc.ask = ?1 AND pc.qi = x.qi AND pc.u IS NOT NULL) AS nv,
     (SELECT count(DISTINCT pc.head) FROM cx.judge_jevpc pc WHERE pc.ask = ?1 AND pc.qi = x.qi AND json_array_length(pc.body) > 0) AS nh,
     (SELECT json_group_array(0) FROM cx.judge_jevpa pa WHERE pa.ask = ?1 AND pa.qi = x.qi) AS m0
-  FROM cx.judge_jevx x WHERE x.ask = ?1 AND x.rpn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
+  FROM cx.judge_jevx x WHERE x.ask = ?1 AND x.qi >= 0 AND x.rpn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
 cs AS (SELECT pc.qi, pc.j, pc.head, pc.body, pc.u, json_array_length(pc.body) AS nb FROM cx.judge_jevpc pc WHERE pc.ask = ?1 AND pc.qi IN (SELECT qi FROM ok)),
 ci AS (SELECT qi, j, nb, 0 AS s, 'L' AS op, u AS arg FROM cs
   UNION ALL SELECT cs.qi, cs.j, cs.nb, CAST(je.key AS INTEGER) + 1, 'A', je.value FROM cs, json_each(cs.body) je
@@ -163,8 +169,13 @@ mv(qi, c, n, acc, m) AS (SELECT ch.qi, ch.c, 1, 0, ok.m0 FROM ch JOIN ok ON ok.q
               WHEN 'A' THEN mv.acc & json_extract(mv.m, '$[' || p.arg || ']')
               ELSE mv.acc END,
     CASE WHEN p.op = 'O' THEN json_set(mv.m, '$[' || p.arg || ']', json_extract(mv.m, '$[' || p.arg || ']') | mv.acc) ELSE mv.m END
-  FROM mv JOIN prog p ON p.qi = mv.qi AND p.n = mv.n),
-fm AS MATERIALIZED (SELECT mv.qi, mv.c, mv.m FROM mv JOIN np ON np.qi = mv.qi WHERE mv.n = np.n + 1),
+  FROM mv JOIN prog p ON p.qi = mv.qi AND p.n = mv.n)
+SELECT ?1, mv.qi, mv.c, mv.m FROM mv JOIN np ON np.qi = mv.qi WHERE mv.n = np.n + 1
+-- ;; rule 114 the query's truth in every world as words: its postfix run over the model's words, a row a chunk in cx.judge_jevr
+INSERT INTO cx.judge_jevr (ask, qi, c, r)
+WITH RECURSIVE
+ok AS (SELECT x.qi, x.rpn FROM cx.judge_jevx x WHERE x.ask = ?1 AND x.qi >= 0 AND x.rpn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
+fm AS (SELECT m.qi, m.c, m.m FROM cx.judge_jevm m JOIN ok ON ok.qi = m.qi WHERE m.ask = ?1),
 it AS (SELECT ok.qi, CAST(je.key AS INTEGER) + 1 AS j, je.value AS v FROM ok, json_each(ok.rpn) je),
 nit AS (SELECT qi, count(*) AS n FROM it GROUP BY qi),
 ev(qi, c, m, j, st) AS (SELECT qi, c, m, 1, '[]' FROM fm
@@ -179,8 +190,14 @@ ev(qi, c, m, j, st) AS (SELECT qi, c, m, 1, '[]' FROM fm
       WHEN '|' THEN json_extract(ev.st, '$[#-2]') | json_extract(ev.st, '$[#-1]')
       WHEN '=>' THEN (~json_extract(ev.st, '$[#-2]')) | json_extract(ev.st, '$[#-1]')
       ELSE (json_extract(ev.st, '$[#-2]') & json_extract(ev.st, '$[#-1]')) | ((~json_extract(ev.st, '$[#-2]')) & (~json_extract(ev.st, '$[#-1]'))) END) END
-  FROM ev JOIN it ON it.qi = ev.qi AND it.j = ev.j),
-res AS MATERIALIZED (SELECT ev.qi, ev.c, json_extract(ev.st, '$[0]') AS r FROM ev JOIN nit ON nit.qi = ev.qi WHERE ev.j = nit.n + 1),
+  FROM ev JOIN it ON it.qi = ev.qi AND it.j = ev.j)
+SELECT ?1, ev.qi, ev.c, json_extract(ev.st, '$[0]') FROM ev JOIN nit ON nit.qi = ev.qi WHERE ev.j = nit.n + 1
+-- ;; rule 115 the answer: p = the summed weight of the worlds where the query holds (world x: bit u of x is uncertain clause u, weighted p_u or 1 - p_u)
+INSERT INTO cx.judge_jevout (ask, qi, p, line)
+WITH RECURSIVE
+ok AS (SELECT x.qi, (SELECT count(*) FROM cx.judge_jevpc pc WHERE pc.ask = ?1 AND pc.qi = x.qi AND pc.u IS NOT NULL) AS nv
+  FROM cx.judge_jevx x WHERE x.ask = ?1 AND x.qi >= 0 AND x.rpn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cx.judge_jevout o WHERE o.ask = ?1 AND o.err IS NOT NULL)),
+res AS MATERIALIZED (SELECT r.qi, r.c, r.r FROM cx.judge_jevr r JOIN ok ON ok.qi = r.qi WHERE r.ask = ?1),
 bits(v) AS (VALUES (0), (1)),
 wd(qi, i, m, w) AS (SELECT qi, 0, 0, 1.0 FROM ok
   UNION ALL

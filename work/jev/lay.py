@@ -4,14 +4,15 @@
 import os, re, sys
 sys.path.insert(0, os.path.expanduser("~/cortex"))
 verb = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "ask"
-f = os.path.expanduser("~/cortex/judge/judge-jev-%s.sql" % verb)
+f = sys.argv[sys.argv.index("--sql") + 1] if "--sql" in sys.argv else os.path.expanduser("~/cortex/judge/judge-jev-%s.sql" % verb)
 parts = re.split(r"^-- ;; ", open(f).read(), flags=re.M)[1:]
 def flat(body): return " ".join(l.strip() for l in body.splitlines() if l.strip() and not l.strip().startswith("--"))
 def lit(x): return "'" + x.replace("'", "''") + "'"
 stmts = []
 for p in parts:
     head, body = p.split("\n", 1); body = flat(body)
-    if head.startswith("ddl"): stmts.append(("ddl", body))
+    if head.startswith("ddl-add"): stmts.append(("ddl-add", body))
+    elif head.startswith("ddl"): stmts.append(("ddl", body))
     else:
         m = re.match(r"rule (\d+) (.*)", head)
         stmts.append(("rule %s" % m.group(1), "INSERT OR REPLACE INTO cx.judge_jevrule (id, verb, name, sql) VALUES (%d, %s, %s, %s)" % (int(m.group(1)), lit(verb), lit(m.group(2).strip()), lit(body))))
@@ -30,5 +31,7 @@ else:
     run = lambda s: cortex.q(s)
 for kind, s in stmts:
     try: run(s); print("%s ok: %s" % (kind, s[:80]))
-    except Exception as e: print("%s FAILED: %s :: %s" % (kind, e, s[:120])); sys.exit(1)
+    except Exception as e:
+        if kind == "ddl-add" and "duplicate column" in str(e): print("ddl-add already laid: %s" % s[:80]); continue
+        print("%s FAILED: %s :: %s" % (kind, e, s[:120])); sys.exit(1)
 print("laid %s: %d statements" % (verb, len(stmts)))
