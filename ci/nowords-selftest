@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# ci/nowords-selftest (2026-11-10): the test of the no-words test, on throwaway dbs shaped like the brain (main, sixth, sources).
+# GitHub runs it on every push (.github/workflows/no-words.yml); the live brain is not in git, so the gate itself runs on hp2.
+# It proves: numbers pass; a word in the brain, a trigger in the brain, a non-source table in a source db fail; the source shape
+# and the kernel's nk virtual tables are not counted; a fail locks every write; unlock opens a timed window; the window's end
+# relocks when the words are still there and clears when they are gone; a passing check clears the lock and kills the timer.
+set -u
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+NW=$HERE/nowords
+T=$(mktemp -d)
+export NOWORDS_MAIN=$T/brain/main.db NOWORDS_SIXTH=$T/brain/sixth.db NOWORDS_SOURCES=$T/sources NOWORDS_STATE=$T/state
+export NOWORDS_WINDOW=3 NOWORDS_BUSY_MS=2000
+PASSED=0; FAILED=0
+cleanup() { NOWORDS_WINDOW=3 "$NW" status > /dev/null 2>&1; for p in "$T"/state/*.pid; do [ -f "$p" ] && kill -KILL -- "-$(cat "$p")" 2>/dev/null; done; rm -rf "$T"; }
+trap cleanup EXIT
+
+ok()   { PASSED=$((PASSED+1)); echo "ok   $*"; }
+bad()  { FAILED=$((FAILED+1)); echo "FAIL $*"; }
+expect() { local want=$1 what=$2; shift 2; "$@" > "$T/out" 2>&1; local rc=$?; if [ "$rc" = "$want" ]; then ok "$what (exit $rc)"; else bad "$what: exit $rc, wanted $want"; sed 's/^/     /' "$T/out"; fi; }
+has()    { if grep -q -- "$1" "$T/out"; then ok "$2"; else bad "$2: no '$1' in"; sed 's/^/     /' "$T/out"; fi; }
+hasnt()  { if grep -q -- "$1" "$T/out"; then bad "$2: '$1' found in"; sed 's/^/     /' "$T/out"; else ok "$2"; fi; }
+state()  { local s; s=$(sed -n 1p "$T/state/state" 2>/dev/null || echo CLEAR); if [ "$s" = "$1" ]; then ok "state $1 ($2)"; else bad "state is $s, wanted $1 ($2)"; fi; }
+w()      { sqlite3 -batch -cmd ".timeout 0" "$1" "$2" 2>&1; }   # a write as the kernel does it: no waiting
+writes() { local out; out=$(w "$1" "CREATE TABLE IF NOT EXISTS probe_t (n INTEGER); INSERT INTO probe_t VALUES (1); DELETE FROM probe_t; DROP TABLE probe_t;"); if [ -z "$out" ]; then ok "a write to $(basename "$1") goes through ($2)"; else bad "a write to $(basename "$1") refused ($2): $out"; fi; }
+refused() { local out; out=$(w "$1" "CREATE TABLE IF NOT EXISTS probe_t (n INTEGER);"); if [[ "$out" == *locked* ]]; then ok "a write to $(basename "$1") is refused: locked ($2)"; else bad "a write to $(basename "$1") was NOT refused ($2): ${out:-went through}"; w "$1" "DROP TABLE IF EXISTS probe_t" >/dev/null; fi; }
+reads()  { local out; out=$(sqlite3 -batch -cmd ".timeout 0" "$1" "SELECT count(*) FROM sqlite_schema" 2>&1); if [[ "$out" =~ ^[0-9]+$ ]]; then ok "a read of $(basename "$1") works ($2)"; else bad "a read of $(basename "$1") failed ($2): $out"; fi; }
+gone()   { if [ -f "$T/state/$1.pid" ] && kill -0 "$(cat "$T/state/$1.pid")" 2>/dev/null; then bad "the $1 still runs ($2)"; else ok "no $1 runs ($2)"; fi; }
+
+# ---- the fixtures: a brain of numbers, sources of the kernel's source shape
+mkdir -p "$T/brain" "$T/sources"
+sqlite3 -cmd ".dbconfig defensive off" "$NOWORDS_MAIN" > /dev/null "CREATE TABLE formula (id INTEGER, pull REAL, rest REAL); INSERT INTO formula VALUES (1, 0.5, 2.25);
+  CREATE TABLE rel (gate INTEGER, kind INTEGER, other INTEGER, run INTEGER); INSERT INTO rel VALUES (16, 3, 21, 7), (17, 3, NULL, 8);
+  PRAGMA writable_schema = ON; INSERT INTO sqlite_schema VALUES ('table', 'label', 'label', 0, 'CREATE VIRTUAL TABLE label USING nk(main, label)'); PRAGMA writable_schema = OFF;" \
+  || { echo "could not build the main fixture"; exit 1; }
+sqlite3 "$NOWORDS_SIXTH" "CREATE TABLE asked (id INTEGER, run INTEGER, cell INTEGER); INSERT INTO asked VALUES (1, 2, 3);"
+for s in wn cx; do
+  sqlite3 "$T/sources/$s.db" "CREATE TABLE me (gate INTEGER); INSERT INTO me VALUES (40);
+    CREATE TABLE corpus (id INTEGER PRIMARY KEY, word TEXT, text TEXT); INSERT INTO corpus (word, text) VALUES ('dog', 'a domesticated canine');
+    CREATE TABLE inbox (id INTEGER PRIMARY KEY, run INTEGER, word TEXT); CREATE TABLE outbox (id INTEGER PRIMARY KEY, run INTEGER, text TEXT);
+    CREATE TRIGGER carry AFTER INSERT ON outbox BEGIN DELETE FROM outbox WHERE id = NEW.id; END;"
+done
+sqlite3 "$T/sources/wn.db" "CREATE TRIGGER work AFTER INSERT ON inbox BEGIN INSERT INTO outbox (run, text) SELECT NEW.run, text FROM corpus WHERE word = NEW.word; END;"
+sqlite3 "$T/sources/cx.db" "CREATE TABLE words (word TEXT, id INTEGER, source TEXT); INSERT INTO words VALUES ('dog', 1, 'wn');
+  CREATE TRIGGER work_word AFTER INSERT ON inbox BEGIN SELECT 1; END;"
+echo "wn cx" > "$T/sources/LIST"
+
+echo "== 1. numbers only: pass"
+expect 0 "scan of a brain of numbers" "$NW" scan
+has "PASS" "the report says PASS"
+hasnt "label" "the kernel's nk virtual table (the encoder) is not counted"
+hasnt "corpus" "the source shape (corpus, words, inbox, outbox, work, carry) is not counted"
+expect 0 "check of a brain of numbers" "$NW" check
+state CLEAR "after a passing check"; gone holder "after a pass"
+expect 0 "unlock when nothing is locked says so" "$NW" unlock
+has "not locked" "unlock refuses when not locked"
+
+echo "== 2. words in: fail, and scan alone changes nothing"
+sqlite3 "$NOWORDS_MAIN" "INSERT INTO rel VALUES (18, 'like', 19, 9);"
+sqlite3 "$NOWORDS_SIXTH" "CREATE TRIGGER said AFTER INSERT ON asked BEGIN SELECT 1; END;"
+sqlite3 "$T/sources/cx.db" "CREATE TABLE judge_jevrule (id INTEGER, verb TEXT, sql TEXT); INSERT INTO judge_jevrule VALUES (1, 'ask', 'SELECT 1');
+  CREATE TABLE judge_nums (id INTEGER, p REAL); INSERT INTO judge_nums VALUES (1, 0.25);"
+expect 1 "scan with words in" "$NW" scan
+has "WORDS main table rel (3 rows), text or blob cells: kind=1" "a text cell in a brain table is found, by column"
+has "WORDS sixth trigger said" "a trigger in the brain is words"
+has "WORDS cx table judge_jevrule (1 rows), text or blob cells: verb=1 sql=1" "a non-source table in a source db is scanned"
+hasnt "judge_nums" "a non-source table of numbers passes"
+hasnt "WORDS wn" "the source shape still is not counted"
+state CLEAR "scan never changes the state"
+
+echo "== 3. check: fail -> locked"
+expect 1 "check with words in" "$NW" check
+has "FAIL -> LOCKED" "the check says locked"
+state LOCKED "after a failing check"
+refused "$NOWORDS_MAIN" "locked"; refused "$NOWORDS_SIXTH" "locked"; refused "$T/sources/cx.db" "locked, words were found there"
+writes "$T/sources/wn.db" "locked, but no words were found in wn"
+reads "$NOWORDS_MAIN" "locked"
+pid1=$(cat "$T/state/holder.pid")
+expect 1 "a second failing check" "$NW" check
+if [ "$(cat "$T/state/holder.pid")" = "$pid1" ]; then ok "the same holder keeps the lock (no gap)"; else bad "the holder was restarted"; fi
+expect 0 "status" "$NW" status
+has "holder: holds" "status shows the holder holds"
+
+echo "== 4. unlock, the window ends with the words still in: relocked"
+expect 0 "unlock" "$NW" unlock
+has "unlocked for 0 min 3 s" "unlock names the window"
+state WINDOW "after unlock"; writes "$NOWORDS_MAIN" "in the window"
+expect 0 "unlock again inside the window" "$NW" unlock
+has "not extended" "a window is not extended"
+expect 1 "a failing check inside the window" "$NW" check
+has "inside the unlock window" "a fail inside the window leaves the timer running"
+state WINDOW "a fail inside the window"
+sleep 5
+state LOCKED "the window ended with the words in"
+refused "$NOWORDS_MAIN" "relocked by the timer"; refused "$T/sources/cx.db" "relocked by the timer"
+
+echo "== 5. unlock, fix, check passes: clear, the timer is off"
+expect 0 "unlock" "$NW" unlock
+sqlite3 "$NOWORDS_MAIN" "DELETE FROM rel WHERE typeof(kind) = 'text';"
+sqlite3 "$NOWORDS_SIXTH" "DROP TRIGGER said;"
+sqlite3 "$T/sources/cx.db" "DROP TABLE judge_jevrule;"
+expect 0 "check after the fix" "$NW" check
+has "PASS -> CLEAR" "the passing check clears"
+state CLEAR "after the passing check"; gone timer "the pass turned the timer off"; gone holder "the pass released the lock"
+sleep 5
+state CLEAR "the old deadline passed and nothing relocked"
+writes "$NOWORDS_MAIN" "clear"; writes "$T/sources/cx.db" "clear"
+
+echo "== 6. the window ends after a fix nobody checked: the timer's own check clears"
+sqlite3 "$NOWORDS_MAIN" "INSERT INTO rel VALUES (20, 21, 22, X'00ff');"
+expect 1 "check with a blob in" "$NW" check
+has "run=1" "a blob is words too"
+state LOCKED "a blob"
+expect 0 "unlock" "$NW" unlock
+sqlite3 "$NOWORDS_MAIN" "DELETE FROM rel WHERE typeof(run) = 'blob';"
+sleep 5
+state CLEAR "the window's end found it clean"; gone holder "cleared at the deadline"
+
+echo "== 7. a file that cannot be read never passes and never changes the state"
+mv "$NOWORDS_SIXTH" "$T/sixth.away"
+expect 2 "scan with the sixth missing" "$NW" scan
+has "UNREAD" "the report says unread"
+expect 2 "check with the sixth missing" "$NW" check
+state CLEAR "unread keeps the state"
+sqlite3 "$NOWORDS_MAIN" "INSERT INTO rel VALUES (1, 2, 3, 'x');"
+expect 1 "words in main with the sixth missing still fail" "$NW" check
+state LOCKED "a word anywhere is a fail even with a file unread"
+if [ -e "$NOWORDS_SIXTH" ]; then bad "the lock made a missing file"; else ok "the lock did not make the missing file"; fi
+
+echo
+echo "selftest: $PASSED passed, $FAILED failed"
+[ $FAILED = 0 ]

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# ci/hooks/post-commit (2026-11-10): the no-words gate on every commit (the owner: "this is a test that is run on every commit").
+# Installed in hp2:~/cortex by: git config core.hooksPath ci/hooks; git config nowords.root "$PWD"
+# post-merge and post-rewrite are links to this file, so a pull, an amend or a rebase runs it too.
+# It runs only in the repo named by nowords.root: a copy of the repo (a rail check's work folder) carries the same config
+# but sits at another path, and never runs it.
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ "$root" = "$(git config --get nowords.root)" ] || exit 0
+echo "---- no-words gate ($(basename "$0"), $(git rev-parse --short HEAD 2>/dev/null)) ----"
+NOWORDS_WHY="$(basename "$0") $(git rev-parse --short HEAD 2>/dev/null)" "$root/ci/nowords" check
+exit 0

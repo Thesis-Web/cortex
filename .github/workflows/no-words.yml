@@ -1,0 +1,22 @@
+# .github/workflows/no-words.yml (2026-11-10): the no-words gate's own test on every push.
+# The owner, 2026-11-10: "make a ci/cd test that locks the db if there is any words inside the neuron data base ... this is a test
+# that is run on every commit". The brain (brain/, nk/sources/*.db) is kept out of git, so GitHub cannot read it: the gate itself
+# runs on hp2 at every commit (ci/hooks/post-commit -> ci/nowords check). Here GitHub proves the gate works, on throwaway dbs shaped
+# like the brain: words fail and lock, numbers pass, the unlock window relocks on its timer, a pass clears the lock and the timer.
+name: no-words
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: sqlite3
+        run: command -v sqlite3 || (sudo apt-get update && sudo apt-get install -y sqlite3)
+      - name: the test of the no-words gate
+        run: bash ci/nowords-selftest
