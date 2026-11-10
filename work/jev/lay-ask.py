@@ -1,5 +1,5 @@
-# lay-ask.py (2026-11-10, jev C4): lays judge/judge-jev-ask.sql into the judge's brain through the kernel's door (the test kernel's cx db):
-# the ddl statements, then each rule as a row of cx.judge_jevrule (verb ask). usage: CORTEX_PORT=7010 python3 work/jev/lay-ask.py
+# lay-ask.py (2026-11-10, jev C4): lays judge/judge-jev-ask.sql into the judge brain through the kernel door, the cx db of the kernel on CORTEX_PORT (7007 live, 7010 test):
+# the ddl statements, then each rule as a row of cx.judge_jevrule (verb ask). usage: [CORTEX_PORT=7010] python3 work/jev/lay-ask.py
 #   or, to try it outside the kernel: python3 work/jev/lay-ask.py --try <scratch main db> <scratch cx db>
 import os, re, sys
 sys.path.insert(0, os.path.expanduser("~/cortex"))
