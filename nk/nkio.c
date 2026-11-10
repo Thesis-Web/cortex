@@ -153,6 +153,24 @@ static void do_type(Brain *b, const char *text, SB *o){
   sb_fmt(o, "{\"schema\":\"%s\",\"run\":%lld,\"runs\":%lld,\"hits\":%lld,\"hops\":%lld,\"born\":%lld,\"refused\":%lld,\"seconds\":%.3f,\"out\":[", b->name, (long long)rid, (long long)(b->nruns - runs0), (long long)hits, (long long)(MAINB.hops_done + SIXTHB.hops_done - hops0), (long long)(MAINB.label.n - gates0), (long long)(MAINB.refused_n + SIXTHB.refused_n - ref0), now_s() - t0);
   int first = 1; out_rows(&MAINB, outm, o, &first); out_rows(&SIXTHB, outs, o, &first); sb_str(o, "]}");
 }
+/* typemark (the owner, 11-10: "the files... or projects, or markers for the content is supposed to be in a column in the memory table (yes that marker will
+   run through the encoder also.. you will see that sentances will no longer be duped"): typemark main <marker> | <text>. The marker is typed as its own line
+   (a marker typed again is a repeat of its first run), then the text as its own line with the marker's run in its memory source. The arrival stays heard,
+   so a text typed again dedupes whatever its marker; a repeat keeps its own marker on its own run. */
+static void do_typemark(Brain *b, const char *req, SB *o){
+  const char *bar = strstr(req, " | ");
+  if(!bar || bar == req || !bar[3]){ sb_str(o, "{\"error\":\"typemark main <marker> | <text>\"}"); return; }
+  size_t ml = (size_t)(bar - req); char *mk = malloc(ml + 1); memcpy(mk, req, ml); mk[ml] = 0;
+  double t0 = now_s(); i64 m0 = b->nruns; line_in(b, 0, mk); free(mk); i64 mrun = m0 + 1;
+  for(;;){ Run *r = run_of(b, mrun); if((r && r->ended && !sheet_open_pub(b, mrun)) || (pending(&MAINB) == 0 && pending(&SIXTHB) == 0)) break; pump_all(64); }
+  Run *mr = run_of(b, mrun); i64 msame = mr ? mr->same_as : 0; i64 marker = msame ? msame : mrun;
+  i64 runs0 = b->nruns; line_in(b, 0, bar + 3); i64 rid = runs0 + 1;
+  { Run *cr = run_of(b, rid); if(cr) cr->mem_source = (int)marker; }
+  for(;;){ Run *r = run_of(b, rid); if((r && r->ended && !sheet_open_pub(b, rid)) || (pending(&MAINB) == 0 && pending(&SIXTHB) == 0)) break; pump_all(64); }
+  Run *cr = run_of(b, rid);
+  sb_fmt(o, "{\"marker\":%lld,\"marker_run\":%lld,\"marker_same_as\":%lld,\"run\":%lld,\"same_as\":%lld,\"ended\":%d,\"source\":%d,\"runs\":%lld,\"seconds\":%.3f}",
+    (long long)marker, (long long)mrun, (long long)msame, (long long)rid, (long long)(cr ? cr->same_as : 0), cr ? cr->ended : 0, cr ? cr->mem_source : 0, (long long)(b->nruns - m0), now_s() - t0);
+}
 static void do_q(const char *sql, SB *o){
   sqlite3_stmt *st = 0; if(sqlite3_prepare_v2(DB, sql, -1, &st, 0) != SQLITE_OK){ sb_str(o, "{\"error\":"); sb_json(o, sqlite3_errmsg(DB)); sb_str(o, "}"); return; }
   int n = sqlite3_column_count(st); sb_str(o, "{\"cols\":["); for(int i = 0; i < n; i++){ if(i) sb_str(o, ","); sb_json(o, sqlite3_column_name(st, i)); } sb_str(o, "],\"rows\":[");
@@ -392,7 +410,8 @@ static void handle(const char *req, SB *o){
   if(strcmp(req, "memory") == 0){ sb_str(o, "["); do_memory(&MAINB, o); sb_str(o, ","); do_memory(&SIXTHB, o); sb_str(o, "]"); return; }
   if(strncmp(req, "profile", 7) == 0){ do_profile(o, atoi(req + 7) > 0 ? atoi(req + 7) : 15); return; }
   if(strcmp(req, "scans") == 0){ char t[4096]; nkvt_scans(t, sizeof t); sb_str(o, "["); sb_str(o, t); sb_str(o, "]"); return; }
-  if(strncmp(req, "type main ", 10) == 0) do_type(&MAINB, req + 10, o);
+  if(strncmp(req, "typemark main ", 14) == 0) do_typemark(&MAINB, req + 14, o);
+  else if(strncmp(req, "type main ", 10) == 0) do_type(&MAINB, req + 10, o);
   else if(strncmp(req, "type sixth ", 11) == 0) do_type(&SIXTHB, req + 11, o);
   else if(strncmp(req, "q ", 2) == 0) do_q(req + 2, o);
   else if(strncmp(req, "run main ", 9) == 0) do_run(&MAINB, atoll(req + 9), o);

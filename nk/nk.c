@@ -305,7 +305,7 @@ static void ended(Brain *b, i64 run, int gate, i64 shard){
     Run *cn = run_of(b, r->same_as); if(cn){ cn->last_at = r->at; cn->last_run = run; } r->has_mem = 1;
   } else {
     /* the memory: the line as gates, who it arrived from, the ending gate and shard, the clock */
-    r->mem_source = r->arrival; r->mem_gate = gate; r->mem_shard = shard; r->mem_at = r->at; r->has_mem = 1; r->last_at = r->at; r->last_run = run;
+    if(!r->mem_source) r->mem_source = r->arrival; r->mem_gate = gate;   /* typemark (11-10) sets the marker before the run ends */ r->mem_shard = shard; r->mem_at = r->at; r->has_mem = 1; r->last_at = r->at; r->last_run = run;
     r->clean = 1; for(int i = 0; i < r->nrc; i++) if(r->rcs[i].via){ r->clean = 0; break; }
     i64 sh = (i64)seqhash(r->seq, r->nseq);
     hmap_put(&b->memh, sh, memkey2(r), run);                                /* the newest run that ended with its own receipts: what a repeat points at */
