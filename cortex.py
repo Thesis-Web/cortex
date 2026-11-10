@@ -1022,9 +1022,12 @@ def v_audit_check(name, n, model=None):
 def prove_check(name, n, model=None):
     # rail C2, C3: write and audit the check of C n; audited | work wrong | no check | refused | audit failed, and why
     fb, why = None, ""
+    prev = (check_of(name, n) or {}).get("audited") or {}
+    if prev and not prev.get("ok") and prev.get("problems") and not any(str(x).startswith("audit failed") for x in prev["problems"]):
+        fb = why = "; ".join(prev["problems"])[:1200]   # jev 11-09: a check its last audit refused is written again with the refusal, never audited again as it was (fresh mutants could miss its hole by luck)
     for attempt in (1, 2):
         d = check_of(name, n) or {}
-        if attempt == 2 or not str(d.get("author") or "").startswith(("claude", "codex")):
+        if attempt == 2 or fb or not str(d.get("author") or "").startswith(("claude", "codex")):
             a = v_author(name, n, model, fb)
             if a["status"] == "no_check": return "no check", a["why"]
             if a["status"] == "not_wrong": return "disputed", "the author says a broken version of the auditor is not wrong: %s | the auditor: %s" % (a["why"][:300], (fb or "")[:300])
