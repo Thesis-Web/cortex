@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# ci/hooks/pre-commit (2026-11-11): no commit gets in whose kernel fails the prose (the owner: "setup ci/cd ... to make sure you build it correct").
+# Runs ci/kernel-test on the STAGED tree (a fresh brain, thrown away; the live brain is not touched). Only in the repo named by nowords.root.
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ "$root" = "$(git config --get nowords.root)" ] || exit 0
+T=$(mktemp -d /tmp/kernel-test-tree.XXXXXX) || exit 1
+git checkout-index -a --prefix="$T/" || { rm -rf "${T:?}"; exit 1; }
+echo "---- kernel-test (pre-commit, the staged tree) ----"
+python3 "$T/ci/kernel-test" > "$T.out" 2>&1; rc=$?
+grep -E "^(PASS|FAIL)|tests," "$T.out"; [ "$rc" = 0 ] || grep -A2 "^FAIL" "$T.out"
+rm -rf "${T:?}" "$T.out"
+[ "$rc" = 0 ] || { echo "kernel-test failed: the commit is refused"; exit 1; }
+exit 0

@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+# ci/kernel-test (2026-11-11): the kernel held to the owner's prose, by measured numbers, on every push.
+#
+# The owner, 2026-11-11: "setup ci/cd in github to make sure you build it correct. the prose outlines it all multiple times ... do it correct
+# without the bloat... turn the fucking hc on ... long way, then shortcut, then formula for every fucking run not wait later".
+#
+# What it does, from the repo alone (no brain, no dictionary is needed): builds the kernel from nk/*.c, lays the small sources of
+# nk/sources-egg (make_sources.py over sat172.json), starts the kernel on a fresh stored file, tells it the base lines (nk/LINES-nk.txt: the
+# born run, the standing questions, the first tools), then types lines and reads the brain's own numbers (stats, the sheet, the receipts).
+# Every test names the owner's words it holds the kernel to and prints what it measured. One FAIL fails the run.
+#
+#   ci/kernel-test                 build, test, print, exit 0 (all pass) or 1
+#   ci/kernel-test --bin PATH      test an already built kernel
+#   ci/kernel-test --keep          leave the test brain and the kernel running (prints the port and the folder)
+import json, os, random, shutil, socket, subprocess, sys, tempfile, time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NK = os.path.join(ROOT, "nk")
+SRCS = ["wn", "gcide", "mw", "mwt", "moby", "map", "sqldoc", "measured", "guess"]
+GATES = "wn=7,gcide=8,mw=9,mwt=10,moby=11,map=12,sqldoc=13,measured=14,guess=15"
+CFLAGS = ["-O2", "-Wall", "-Wno-unused-function", "-Wno-unused-parameter", "-Wno-misleading-indentation", "-I."]
+LIBS = ["-L/usr/lib/x86_64-linux-gnu", "-l:libsqlite3.so.0", "-lpthread", "-lm", "-ldl"]
+
+# the budgets (bytes of the stored file's use). Set from the kernel's own measured numbers with room; a change that costs more fails here.
+REPEAT_BYTES = 16          # a repeat under a key, each, over 2,000 (the owner: "like maybe 15 bytes total")
+FORMULA_BYTES = 16         # a formula's arrival, each, plus FORMULA_PER_VALUE per value
+FORMULA_PER_VALUE = 6
+NEW_LINE_BYTES = 8192      # a new short line (seven words), everything it leaves
+NEW_LINE_RUNS = 30         # the runs a new short line makes in both brains
+LONG_LINE_RECEIPTS = 16    # the receipts a new line of 400 known words writes, with everything under it (the kernel before 11-11: one for every hop, over 400)
+REPEAT_STEP_BYTES = 64     # one repeat alone may take one small block (the list's next size); over many repeats the average is REPEAT_BYTES
+
+def free_port():
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
+
+class Brain:
+    def __init__(self, port): self.port = port
+    def ask(self, req):
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=600); s.sendall((req + "\n").encode()); buf = b""
+        while True:
+            d = s.recv(1 << 20)
+            if not d: break
+            buf += d
+            if buf.endswith(b"\n"): break
+        s.close(); return json.loads(buf.decode())
+    def q(self, sql):
+        r = self.ask("q " + sql)
+        if r.get("error"): raise RuntimeError("brain: %s :: %s" % (r["error"], sql[:160]))
+        return r["rows"]
+    def stats(self):
+        s = self.ask("stats"); return {"main": s["main"]["runs"], "sixth": s["sixth"]["runs"], "pastes": s["main"]["pastes"], "used": s["map_used"],
+                                       "hops": s["main"]["hops"], "dropped": s["main"]["receipts_dropped"], "refused": s["main"]["refused"], "receipts": s["main"]["receipts"]}
+    def step(self, req):
+        a = self.stats(); r = self.ask(req); b = self.stats()
+        r["_d"] = {k: b[k] - a[k] for k in a}; return r
+    def gate(self, sym):
+        rows = self.q("SELECT gate FROM main.label WHERE symbol = '%s'" % sym.replace("'", "''")); return rows[0][0] if rows else 0
+    def cell(self, run, word):
+        g = self.gate(word)
+        if not g: return []
+        rows = self.q("SELECT value FROM main.run_sheet WHERE run = %d AND cell = %d AND state = 1" % (run, g))
+        return [int(x) for x in str(rows[0][0]).split()] if rows and rows[0][0] is not None else []
+    def cells(self, run):
+        return {r[0]: r[1] for r in self.q("SELECT l.symbol, s.value FROM main.run_sheet s JOIN main.label l ON l.gate = s.cell WHERE s.run = %d" % run)}
+    def seq(self, run): return [r[0] for r in self.q("SELECT gate FROM main.seq WHERE run = %d ORDER BY pos" % run)]
+    def text(self, run):
+        # a line read back through the encoder by its number; a formula's arrival has a number of its own (the memory + arrival * 2^32) and the kernel
+        # reads it back as the learned line with that arrival's values in its places
+        if not hasattr(self, "_sym"): self._sym = {}
+        out = []
+        for g in self.seq(run):
+            if g not in self._sym: self._sym[g] = self.q("SELECT symbol FROM main.label WHERE gate = %d" % g)[0][0]
+            out.append(self._sym[g])
+        return "".join(out)
+
+RESULTS = []
+def check(name, words, ok, measured):
+    RESULTS.append((name, bool(ok))); print("%s  %s\n      the owner: %s\n      measured: %s" % ("PASS" if ok else "FAIL", name, words, measured)); sys.stdout.flush()
+
+def main():
+    keep = "--keep" in sys.argv; binp = sys.argv[sys.argv.index("--bin") + 1] if "--bin" in sys.argv else None
+    work = tempfile.mkdtemp(prefix="kernel-test-")
+    if not binp:
+        binp = os.path.join(work, "nk")
+        r = subprocess.run(["gcc"] + CFLAGS + ["-o", binp, "nk.c", "nkvt.c", "nkio.c", "nkmap.c", "nkxyz.c"] + LIBS, cwd=NK, capture_output=True, text=True)
+        if r.returncode != 0: print(r.stderr); print("FAIL  the kernel does not build"); sys.exit(1)
+        if r.stderr.strip(): print("build warnings:\n" + r.stderr)
+    src = os.path.join(work, "src")
+    subprocess.run([sys.executable, os.path.join(NK, "sources-egg", "make_sources.py"), os.path.join(NK, "sources-egg", "sat172.json"), src, GATES], check=True, capture_output=True)
+    port = free_port(); env = dict(os.environ, NK_MAP=os.path.join(work, "brain.map"))
+    log = open(os.path.join(work, "nk.log"), "w")
+    proc = subprocess.Popen([binp, str(port), "egg-symbols.txt", src] + SRCS, cwd=NK, env=env, stdout=log, stderr=log)
+    try:
+        for _ in range(100):
+            try: socket.create_connection(("127.0.0.1", port), timeout=1).close(); break
+            except OSError: time.sleep(0.1)
+        else: print(open(os.path.join(work, "nk.log")).read()); print("FAIL  the kernel did not start"); sys.exit(1)
+        subprocess.run([sys.executable, os.path.join(NK, "nkbottom.py"), str(port), "--lines", os.path.join(NK, "LINES-nk.txt"), "--ledger", os.path.join(work, "ledger.md"), "--quiet"], check=True, capture_output=True)
+        b = Brain(port); s0 = b.stats()
+        print("the test brain: %d main runs, %d sixth runs, %d bytes used after the base lines (port %d, %s)\n" % (s0["main"], s0["sixth"], s0["used"], port, work))
+        tests(b)
+    finally:
+        if keep: print("\nkept: port %d, folder %s, pid %d" % (port, work, proc.pid))
+        else:
+            proc.terminate()
+            try: proc.wait(timeout=30)
+            except subprocess.TimeoutExpired: proc.kill()
+            shutil.rmtree(work, ignore_errors=True)
+    bad = [n for n, ok in RESULTS if not ok]
+    print("\n%d tests, %d passed, %d failed%s" % (len(RESULTS), len(RESULTS) - len(bad), len(bad), (": " + "; ".join(bad)) if bad else ""))
+    sys.exit(1 if bad else 0)
+
+def tests(b):
+    T1, T2 = 1700000000, 1700000500
+    # ---- 1. the long way: a new line runs once and is a memory
+    r = b.step("type main the dog is on the mat today"); f = r["run"]; d = r["_d"]
+    out1 = [(o[2], o[3]) for o in r.get("out", []) if o[0] == "main"]
+    mem = b.q("SELECT run FROM main.run_memory WHERE run = %d" % f)
+    check("1 the long way: a new line runs once, is answered, and is one memory",
+          '"If that run has never been ran before ... a memory node for that run is made, and that run becomes the first entry in that memory node" (09-30)',
+          not r.get("tick") and d["main"] >= 1 and mem and len(out1) >= 3 and d["used"] <= NEW_LINE_BYTES and d["main"] + d["sixth"] <= NEW_LINE_RUNS,
+          "run %d, %d main runs, %d sixth runs, %d bytes (budget %d bytes, %d runs), answer cells %s" % (f, d["main"], d["sixth"], d["used"], NEW_LINE_BYTES, NEW_LINE_RUNS, [c for c, _ in out1]))
+    # ---- 2. the shortcut: the same line again makes no run and is answered from the sheet the first run left
+    r = b.step("type main the dog is on the mat today"); d = r["_d"]; out2 = [(o[2], o[3]) for o in r.get("out", [])]
+    check("2 the shortcut: the same line again makes no run and is answered from its sheet",
+          '"next time it shows up the run data sheet is already done??? just have to reason over the answer" (11-11); "stays silent is a trap" (10-12)',
+          r.get("tick") == 1 and r["run"] == f and d["main"] == 0 and d["sixth"] == 0 and d["hops"] == 0 and d["pastes"] == 0 and out2 == out1,
+          "tick %s, memory %d, runs +%d, hops +%d, pastes +%d, answer equal to the first: %s" % (r.get("tick"), r["run"], d["main"] + d["sixth"], d["hops"], d["pastes"], out2 == out1))
+    # ---- 3. the tree: the three cells, each value a receipt number of a memory in the tree
+    r = b.ask("typemark main project probe | ingest probe"); P, K = r["marker"], r["run"]
+    r = b.ask("typemark main ingest probe @%d | the dog is on the mat today" % T1)
+    a = (r["run"] == f and r["tick"] == 1, b.cell(P, "receipt") == [K], b.cell(K, "key") == [P], b.cell(K, "receipt") == [f], b.cell(f, "key")[-1:] == [K], b.cell(f, "time")[-1:] == [T1])
+    r = b.ask("typemark main project probe | checkpoint probe 1"); K2 = r["run"]
+    r = b.ask("typemark main checkpoint probe 1 @%d | the dog is on the mat today" % T2)
+    a += (b.cell(f, "key")[-2:] == [K, K2], b.cell(f, "time")[-2:] == [T1, T2], b.cell(K2, "receipt") == [f], b.cell(P, "receipt") == [K, K2])
+    g = " ".join(str(x) for x in b.seq(f)); rows = b.q("SELECT run FROM main.run_memory WHERE input = '%s'" % g)
+    check("3 a sentence is one memory; its keys and times are cells; the keys are a tree",
+          '"the sentance is written on time, and just has multiple projects that it\'s attached to each with it\'s time" (11-03); "stored as data similar to a file tree just by changing a cell" (11-10 16:12)',
+          all(a) and len(rows) == 1 and rows[0][0] == f,
+          "project %d receipt %s; key %d key %s receipt %s; key %d receipt %s; the sentence %d key %s time %s; memory rows of the sentence: %d; the ten cell checks %s" % (P, b.cell(P, "receipt"), K, b.cell(K, "key"), b.cell(K, "receipt"), K2, b.cell(K2, "receipt"), f, b.cell(f, "key"), b.cell(f, "time"), len(rows), list(a)))
+    # ---- 4. a repeat under a key: only its cells, in step, a few bytes
+    r = b.ask("typemark main ingest probe @%d | the dog is on the mat today" % (T1 + 1)); before = b.stats(); klen = (len(b.cell(K, "time")), len(b.cell(K, "key")), len(b.cell(K, "receipt")))
+    r = b.step("typemark main ingest probe @%d | the dog is on the mat today" % (T1 + 2)); one = r["_d"]; fk, ft = b.cell(f, "key"), b.cell(f, "time")
+    check("4 a repeat stores the time and the key in its cells and nothing else",
+          '"a repeat sentance should only be storing the time, and project information ... just another comma separated value in at most 3 cells" (11-10); "a new dupe of that run is just a time stamp and kind data... like maybe 15 bytes total" (11-11)',
+          one["main"] == 0 and one["sixth"] == 0 and one["hops"] == 0 and one["used"] <= REPEAT_STEP_BYTES and ft[-2:] == [T1 + 1, T1 + 2] and fk[-2:] == [K, K] and len(fk) == len(ft)
+          and (len(b.cell(K, "time")), len(b.cell(K, "key")), len(b.cell(K, "receipt"))) == klen and b.cell(K, "receipt").count(f) == 1,
+          "one repeat: runs +%d, hops +%d, %d bytes (budget %d); the sentence's cells end time %s key %s; the key's own cells (time, key, receipt) stayed %s" % (one["main"] + one["sixth"], one["hops"], one["used"], REPEAT_STEP_BYTES, ft[-2:], fk[-2:], klen))
+    # ---- 4b. the hippocampus condenses: the same sentence under the same key keeps its newest times, the count stays, nothing grows
+    n = 2000; before = b.stats(); again0 = b.q("SELECT again FROM main.run_memory WHERE run = %d" % f)[0][0]; other = [(k, t) for k, t in zip(fk, ft) if k != K]
+    for i in range(n): b.ask("typemark main ingest probe @%d | the dog is on the mat today" % (T1 + 3 + i))
+    mid = b.stats()
+    for i in range(500): b.ask("typemark main ingest probe @%d | the dog is on the mat today" % (T1 + 3 + n + i))
+    after = b.stats(); fk, ft = b.cell(f, "key"), b.cell(f, "time"); mine = [t for k, t in zip(fk, ft) if k == K]; again1 = b.q("SELECT again FROM main.run_memory WHERE run = %d" % f)[0][0]
+    check("4b the hippocampus condenses a memory's repeats: the newest times stay, the count stays, the rest drops off",
+          '"condense and store runs that have many many runs so that a memory table doesn\'t have 10k timestamps" (10-09); "hc handles the the drop off at some point, such that we don\'t have memories with 50k rewrites" (10-03)',
+          after["main"] == before["main"] and after["hops"] == before["hops"] and len(mine) == 10 and mine == [T1 + 3 + n + 500 - 10 + i for i in range(10)] and again1 - again0 == n + 500
+          and [(k, t) for k, t in zip(fk, ft) if k != K] == other and after["used"] - mid["used"] == 0 and (after["used"] - before["used"]) / (n + 500) <= REPEAT_BYTES,
+          "%d repeats under one key: runs +%d, the times kept under the key %d (the newest: %s), the count +%d, the other keys' times untouched: %s, bytes for all %d, for the last 500: %d" % (n + 500, after["main"] - before["main"], len(mine), mine == [T1 + 3 + n + 500 - 10 + i for i in range(10)], again1 - again0, [(k, t) for k, t in zip(fk, ft) if k != K] == other, after["used"] - before["used"], after["used"] - mid["used"]))
+    # ---- 5. no drift: every value of a key or receipt cell is a memory of the tree
+    tree = {P, K, K2, f}; strays = [v for m in (P, K, K2, f) for c in ("key", "receipt") for v in b.cell(m, c) if v and v not in tree]
+    check("5 no drift: every key and receipt value is a memory in the tree",
+          '"could be similar to a dropdown menu, or comma separate which ever prevents drift" (11-10 16:12)', not strays, "strays: %d" % len(strays))
+    # ---- 6. silence is a trap: a tool line asked again runs again and answers again
+    r1 = b.step("type main print sheet : 1"); r2 = b.step("type main print sheet : 1"); r3 = b.step("type main print sheet : 1")
+    say = [[o[3] for o in r.get("out", []) if o[2] == "say"] for r in (r1, r2, r3)]
+    check("6 a line that asks a tool is asked every time",
+          '"I think stays silent is a trap... I think it\'s always a question" (10-12); the shortcut is for "runs that don\'t have reasoning on them .... deterministic runs" (11-11)',
+          all(say) and not r2.get("tick") and not r3.get("tick") and r3["_d"]["pastes"] >= 1 and r3["_d"]["used"] <= NEW_LINE_BYTES,
+          "answers %d of 3; the third: %d runs, %d pastes, %d hops (the first: %d hops), %d bytes" % (sum(1 for s in say if s), r3["_d"]["main"], r3["_d"]["pastes"], r3["_d"]["hops"], r1["_d"]["hops"], r3["_d"]["used"]))
+    # ---- 7. records are data: under a key the same words call nothing and open no span
+    canary = "INSERT OR REPLACE INTO run_sheet ( run , cell , state , value ) VALUES ( 2 , 23 , 1 , %d )"
+    r = b.step("typemark main ingest probe @%d | print sheet : 1 BUILD %s ; BUILD" % (T2 + 1, canary % 424242))
+    got = b.q("SELECT value FROM main.run_sheet WHERE run = 2 AND cell = 23"); c7 = b.cells(r["run"])
+    held = not got or str(got[0][0]) != "424242"
+    b.ask("type main BUILD %s ; BUILD" % (canary % 515151)); got2 = b.q("SELECT value FROM main.run_sheet WHERE run = 2 AND cell = 23")
+    check("7 a line under a key is content: its words call no tool and open no span",
+          '"how you arrive determines which dna row are availible to pick from" (10-11); the encoder "delivers the data and the sensory metadata ... the pertaining to what" (09-25)',
+          held and "say" not in c7 and got2 and str(got2[0][0]) == "515151",
+          "under a key: the span was not pasted (%s), no say cell (%s); the same span at the bare prompt was pasted (%s): the test can see a paste" % (held, "say" not in c7, bool(got2 and str(got2[0][0]) == "515151")))
+    # ---- 8. the receipt once: a plain pass writes nothing; the whole receipt is read back from the string of numbers
+    words = ["dog", "mat", "the", "is", "on", "today"]; rnd = random.Random(20261111)
+    long_line = " ".join(rnd.choice(words) for _ in range(400)); nsym = 799
+    r = b.step("type main " + long_line); L = r["run"]; d = r["_d"]
+    rc = b.q("SELECT pos, gate FROM main.run_receipt WHERE run = %d" % L); sq = b.seq(L); space = b.gate(" ")
+    want = [(0, 1)] + [(i + 1, gt) for i, gt in enumerate(sq) if gt != space]
+    check("8 the receipt is written once: the string of numbers; a plain pass writes no receipt of its own",
+          '"the fucking memory is a fucking run reciept... one long string of numbers" (10-01); "the receipt is the dupe... it\'s only written at the end of a run" (11-11)',
+          [tuple(x) for x in rc] == want and 1 <= d["receipts"] <= LONG_LINE_RECEIPTS,
+          "a new line of 400 known words (%d symbols, %d hops): %d receipts written with everything under it (budget %d), %d bytes; %d hops read back, equal to the line's symbols in order: %s" % (nsym, len(want), d["receipts"], LONG_LINE_RECEIPTS, d["used"], len(rc), [tuple(x) for x in rc] == want))
+    # ---- 9. the hippocampus: a process pattern that is replaced lets go of its receipts
+    b.ask("type main ping"); G = b.gate("ping")
+    X = b.ask("type main BUILD SELECT 4242 ; BUILD")["run"]
+    b.ask("type main BUILD UPDATE dna SET call = %d WHERE gate = %d AND before = 1 AND trigger = 68 ; BUILD" % (X, G))
+    ra = b.step("type main ping : a")
+    c1 = [x[0] for x in b.q("SELECT id FROM main.run WHERE parent = %d" % ra["run"]) if b.q("SELECT replay_src FROM main.run WHERE id = %d" % x[0])[0][0] == X]
+    n1 = b.q("SELECT count(*) FROM main.run_receipt WHERE run = %d" % c1[0])[0][0] if c1 else -1
+    # the truth of that pattern changes: a row its run hit is rewritten (and put back), so the next replay cannot repeat it and runs the long way
+    b.ask("type main BUILD UPDATE dna SET spawn = %d WHERE gate = 2 AND before IS NULL AND trigger IS NULL ; UPDATE dna SET spawn = NULL WHERE gate = 2 AND before IS NULL AND trigger IS NULL ; BUILD" % X)
+    s0 = b.stats(); rc_ = b.step("type main ping : c"); s1 = b.stats()
+    n2 = b.q("SELECT count(*) FROM main.run_receipt WHERE run = %d" % c1[0])[0][0] if c1 else -1
+    rd = b.step("type main ping : d")
+    check("9 the hippocampus is on: process receipts go when their pattern is replaced",
+          '"the hc is important to control bloat at scale, it decides what becomes what type of memory, and how it\'s store, what is pruned" (10-06); "5+ gb means the hc is not doing it\'s job" (11-10)',
+          n1 > 0 and n2 == 0 and s1["dropped"] > s0["dropped"] and rc_["_d"]["pastes"] >= 1 and rd["_d"]["pastes"] >= 1 and rd["_d"]["hops"] < rc_["_d"]["hops"],
+          "the tool's first run %s held %d receipts, 0 after its pattern was replaced (now %d); receipts let go +%d; the tool still answers (pastes +%d, +%d) and the next asking repeats the new pattern (%d hops against %d)" % (c1[:1], n1, n2, s1["dropped"] - s0["dropped"], rc_["_d"]["pastes"], rd["_d"]["pastes"], rd["_d"]["hops"], rc_["_d"]["hops"]))
+    # ---- 10. the truth changes: the line runs again and is a new row
+    r = b.step("type main the bird sat today"); V = r["run"]; r = b.step("type main the bird sat today"); t_before = r.get("tick")
+    gb, gs_, gt = b.gate("bird"), b.gate("sat"), b.gate("today")
+    b.ask("type main BUILD UPDATE dna SET call = %d WHERE gate = %d AND before = %d AND trigger = %d ; BUILD" % (X, gs_, gb, gt))
+    r = b.step("type main the bird sat today")
+    check("10 a changed trigger on a shard the line passes: the line runs again and is a new row",
+          '"add two flags to the encoder that trip it a trigger changes on a dna shard.. that means the meaning of that shard has changed.. and the run data sheet will be different on that run. so the run has to be fucking re run" (11-11); "truth change new row" (10-03)',
+          t_before == 1 and not r.get("tick") and r["run"] != V and r["_d"]["main"] >= 1 and r["_d"]["pastes"] >= 1,
+          "before the change the line ticked (%s); after it: tick %s, a new run %d (was %d), %d runs, %d pastes (the new function row fired)" % (t_before, r.get("tick"), r["run"], V, r["_d"]["main"], r["_d"]["pastes"]))
+    # ---- 11. the formula: a line under a key that is a learned line with a few other values makes no run and is read back exactly
+    for w in ("cat", "mouse", "bed", "rug", "floor", "horse"): b.ask("type main " + w)
+    base = "one cat is by the mat now"; r = b.step("typemark main ingest probe @%d | %s" % (T2 + 10, base)); F = r["run"]; longway = r["_d"]["main"]
+    r = b.step("typemark main ingest probe @%d | one cat is by the bed now" % (T2 + 11)); d = r["_d"]
+    A1 = r["run"]
+    ok11 = longway >= 1 and A1 & 0xffffffff == F and A1 >> 32 == r["arrival"] + 1 and r.get("formula") == 1 and d["main"] == 0 and d["sixth"] == 0 and d["hops"] == 0 and b.text(A1) == "one cat is by the bed now"
+    r = b.step("typemark main checkpoint probe 1 @%d | one mouse is by the rug now" % (T2 + 12))   # a place more: the formula grows, the earlier arrivals keep their lines
+    ok11 = ok11 and r["run"] & 0xffffffff == F and r.get("formula") == 1 and b.text(r["run"]) == "one mouse is by the rug now" and b.text(F) == base and b.text(A1) == "one cat is by the bed now" and len(b.q("SELECT id FROM main.run WHERE id = %d" % A1)) == 1 and len(b.q("SELECT value FROM main.run_sheet WHERE run = %d AND cell = %d" % (A1, b.gate("formula")))) == 1
+    animals, places = ["cat", "mouse", "dog", "horse"], ["mat", "bed", "rug", "floor"]; n = 1000; s0 = b.stats(); sent = []
+    for i in range(n):
+        line = "one %s is by the %s now" % (rnd.choice(animals), rnd.choice(places)); r = b.ask("typemark main ingest probe @%d | %s" % (T2 + 100 + i, line)); sent.append((r["run"], r.get("formula"), r.get("arrival"), line))
+    s1 = b.stats(); per = (s1["used"] - s0["used"]) / n; k = len(b.cell(F, "formula"))
+    back = sum(1 for (run, fo, arr, line) in sent if b.text(run) == line)
+    nform = sum(1 for x in sent if x[1]); steps = (len(b.cell(F, "time")), len(b.cell(F, "key")), len(b.cell(F, "variable")))
+    check("11 the formula: a learned line with a few other values is the formula's memory and its variables",
+          '"an entire sentance can be reduced to the formula gate and the varibles ... it can just have a few values representing the entire sentance" (11-10); "Substitution theory ... You already know the formula" (10-01)',
+          ok11 and s1["main"] == s0["main"] and s1["sixth"] == s0["sixth"] and s1["hops"] == s0["hops"] and back == n and per <= FORMULA_BYTES + FORMULA_PER_VALUE * k and steps[0] == steps[1] and steps[2] == steps[0] * k,
+          "the learned line ran the long way once (%d runs); then %d lines with other values: runs +%d, hops +%d, %d were the formula's arrivals, %.1f bytes each (budget %d + %d x %d values), %d of %d read back exactly; time, key, variable in step %s" % (longway, n, s1["main"] + s1["sixth"] - s0["main"] - s0["sixth"], s1["hops"] - s0["hops"], nform, per, FORMULA_BYTES, FORMULA_PER_VALUE, k, back, n, steps))
+    r0 = b.ask("type main two cat sat by the mat now"); r1 = b.ask("typemark main ingest probe @%d | two cat sat by the bed now" % (T2 + 1500))
+    check("11b a formula learned from a line first heard at the bare prompt reads back its arrivals, not the learned line",
+          '"Substitution theory is that I have a variable that I have to substitute into this formula. That\'s it. You already know the formula" (10-01)',
+          r1.get("formula") == 1 and r1["run"] & 0xffffffff == r0["run"] and b.text(r1["run"]) == "two cat sat by the bed now" and b.text(r0["run"]) == "two cat sat by the mat now",
+          "learned line %d read back %r; its arrival %d read back %r" % (r0["run"], b.text(r0["run"]), r1["run"], b.text(r1["run"])))
+    # ---- 12. a word the brain has never held is born and defined the long way first; a bare line is always answered; a tool line is never a formula
+    r = b.step("typemark main ingest probe @%d | one zebra is by the mat now" % (T2 + 2000))
+    r2 = b.step("type main the horse is on the floor today")
+    r3 = b.step("type main print sheet : 2"); say3 = [o[3] for o in r3.get("out", []) if o[2] == "say"]
+    check("12 a new word runs the long way first; a bare line is always answered; a line that asks a tool always runs",
+          '"all unknown words we defined first automaticatly" (11-10); "every reply is an answer or a question" (10-12); "You already know the formula ... The compute\'s already been done" (10-01)',
+          not r.get("tick") and r["_d"]["main"] >= 1 and b.gate("zebra") > 0 and len(r2.get("out", [])) >= 3 and not r3.get("tick") and r3["_d"]["main"] >= 1 and bool(say3),
+          "the line with the new word: %d runs, the word\'s gate %d; the bare line: tick %s formula %s, %d runs, %d answer cells; the tool line with another value: tick %s, %d runs, it said: %s" % (r["_d"]["main"], b.gate("zebra"), r2.get("tick"), r2.get("formula"), r2["_d"]["main"], len(r2.get("out", [])), r3.get("tick"), r3["_d"]["main"], bool(say3)))
+    # ---- 13. a key is always a memory of its own: two keys that differ in one word are two memories, each under its own project
+    b.ask("typemark main receipt alpha 9 @%d | the dog is on the mat today" % (T2 + 3000)); b.ask("typemark main project alpha | receipt alpha 9")
+    b.ask("typemark main receipt beta 9 @%d | the dog is on the mat today" % (T2 + 3001)); b.ask("typemark main project beta | receipt beta 9")
+    PA = b.ask("typemark main project alpha | receipt alpha 9"); PB = b.ask("typemark main project beta | receipt beta 9")
+    ka, kb = PA["run"], PB["run"]; ra, rb = b.cell(PA["marker"], "receipt"), b.cell(PB["marker"], "receipt")
+    check("13 a key is a memory of its own, filed under its own project (a line used as a key is never taken as another line\'s formula)",
+          '"anywhere else a memory lives not is just a pointer to that memory" (10-03); "similar to a file tree" (11-10 16:12)',
+          ka != kb and ka < (1 << 32) and kb < (1 << 32) and ra == [ka] and rb == [kb] and b.text(ka) == "receipt alpha 9" and b.text(kb) == "receipt beta 9" and f in b.cell(ka, "receipt") and f in b.cell(kb, "receipt"),
+          "key memories %d and %d; project alpha receipt %s, project beta receipt %s; each key holds the sentence %d: %s" % (ka, kb, ra, rb, f, f in b.cell(ka, "receipt") and f in b.cell(kb, "receipt")))
+    # ---- 14. nothing was refused along the way, and the brain comes back from its file as it was
+    s = b.stats()
+    check("14 no step was refused", '"report only what was observed as live output" (handler)', s["refused"] <= 1, "refused %d (the base lines leave 1: the born run's first reply, before ok has a gate)" % s["refused"])
+
+if __name__ == "__main__": main()

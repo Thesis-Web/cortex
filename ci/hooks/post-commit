@@ -8,4 +8,6 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ "$root" = "$(git config --get nowords.root)" ] || exit 0
 echo "---- no-words gate ($(basename "$0"), $(git rev-parse --short HEAD 2>/dev/null)) ----"
 NOWORDS_WHY="$(basename "$0") $(git rev-parse --short HEAD 2>/dev/null)" "$root/ci/nowords" check
+echo "---- size gate ($(basename "$0")) ----"
+"$root/ci/size" check
 exit 0

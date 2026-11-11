@@ -1,0 +1,26 @@
+# .github/workflows/kernel.yml (2026-11-11): the kernel held to the owner's prose on every push.
+# The owner, 2026-11-11: "setup ci/cd in github to make sure you build it correct. the prose outlines it all multiple times".
+# The brain is kept out of git, so GitHub builds the kernel from nk/*.c, lays a fresh small brain from the repo alone (the small
+# sources of nk/sources-egg, the base lines of nk/LINES-nk.txt) and runs ci/kernel-test on it: every test names the owner's words it
+# holds the kernel to and prints the number it measured (a repeat makes no run and costs a few bytes; the receipt is written once;
+# the hippocampus lets process receipts go; a tool line is asked every time; a formula's arrival reads back exactly; ...).
+# The same test runs on hp2 before every commit (ci/hooks/pre-commit); the live brain's own growth is read by ci/size.
+name: kernel
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: the tools
+        run: |
+          command -v gcc >/dev/null || (sudo apt-get update && sudo apt-get install -y gcc)
+          ls /usr/lib/x86_64-linux-gnu/libsqlite3.so.0 || (sudo apt-get update && sudo apt-get install -y libsqlite3-0)
+      - name: the kernel held to the prose, by measured numbers
+        run: python3 ci/kernel-test

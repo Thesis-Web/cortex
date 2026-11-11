@@ -97,8 +97,8 @@ static i64 node_rowid(Cur *c){ return (c->e << 32) | (c->i + 1); }
 static int node_update(Brain *b, int argc, sqlite3_value **argv, sqlite3_int64 *rowid, char **err){ if(argc == 1 || sqlite3_value_type(argv[0]) != SQLITE_NULL) return SQLITE_OK; int g = (int)V(argv[2]); Neuron *n = neuron_of(b, g); if(!n) return SQLITE_ERROR; if(n->nnode >= n->cnode){ n->cnode = n->cnode ? n->cnode * 2 : 8; n->node = realloc(n->node, n->cnode * sizeof(NodeRow)); } n->node[n->nnode].source = (int)V(argv[4]); n->node[n->nnode].run = V(argv[5]); n->nnode++; return SQLITE_OK; }
 /* run (id, arrival, parent, root, kind, cell, about, at, moment): keys id, parent (the kids list), about (the neuron's list), arrival (scan) */
 static void run_begin(Cur *c, int idx, sqlite3_value **argv){
-  c->idx = idx; c->started = 0; c->i = -1;
-  if(idx == 1){ i64 id = V(argv[0]); ENT_BEGIN(c, id, id); }
+  c->idx = idx; c->started = 0; c->i = -1; c->k3 = 0;
+  if(idx == 1){ c->k3 = V(argv[0]); i64 id = NK_MEM(c->k3); ENT_BEGIN(c, id, id); }
   else if(idx == 2){ c->k1 = V(argv[0]); ENT_BEGIN(c, 0, 0); }
   else if(idx == 3){ c->k1 = V(argv[0]); ENT_BEGIN(c, 0, 0); }
   else if(idx == 4){ c->k1 = V(argv[0]); ENT_BEGIN(c, 0, 0); }
@@ -111,18 +111,18 @@ static int run_step(Cur *c){
   if(!c->started) c->started = 1; else c->e++;
   return c->e >= 1 && c->e <= c->e_end && c->e <= c->b->nruns;
 }
-static void run_col(Cur *c, sqlite3_context *x, int col){ Run *r = run_of(c->b, c->e); switch(col){ case 0: R(x, c->e); break; case 1: R(x, r->arrival); break; case 2: if(r->parent_set) R(x, r->parent); else sqlite3_result_null(x); break; case 3: R(x, r->root); break; case 4: R(x, r->kind); break; case 5: RN(x, r->cell); break; case 6: RN(x, r->about); break; case 7: R(x, r->at); break; case 8: R(x, r->moment); break; case 9: RN(x, r->from_run); break; case 10: if(r->build_pos >= 0) R(x, r->build_pos); else sqlite3_result_null(x); break; case 11: RN(x, r->same_as); break; case 12: R(x, r->again); break; case 13: R(x, r->last_at); break; case 14: R(x, r->last_run); break; case 15: R(x, r->ended); break; case 16: R(x, r->from_ord); break; case 17: RN(x, r->src); break; case 18: RN(x, r->srcgate); break; case 19: RN(x, r->replay_src); break; case 20: R(x, r->kept); break; } }
+static void run_col(Cur *c, sqlite3_context *x, int col){ Run *r = run_of(c->b, c->e); switch(col){ case 0: R(x, (c->idx == 1 && c->k3) ? c->k3 : c->e); break; case 1: R(x, r->arrival); break; case 2: if(r->parent_set) R(x, r->parent); else sqlite3_result_null(x); break; case 3: R(x, r->root); break; case 4: R(x, r->kind); break; case 5: RN(x, r->cell); break; case 6: RN(x, r->about); break; case 7: R(x, r->at); break; case 8: R(x, r->moment); break; case 9: RN(x, r->from_run); break; case 10: if(r->build_pos >= 0) R(x, r->build_pos); else sqlite3_result_null(x); break; case 11: RN(x, r->same_as); break; case 12: R(x, r->again); break; case 13: R(x, r->last_at); break; case 14: R(x, r->last_run); break; case 15: R(x, r->ended); break; case 16: R(x, r->from_ord); break; case 17: RN(x, r->src); break; case 18: RN(x, r->srcgate); break; case 19: RN(x, r->replay_src); break; case 20: R(x, r->kept); break; } }
 static i64 run_rowid(Cur *c){ return c->e; }
 static int run_update(Brain *b, int argc, sqlite3_value **argv, sqlite3_int64 *rowid, char **err){ if(argc > 1 && sqlite3_value_type(argv[0]) != SQLITE_NULL){ Run *r = run_of(b, V(argv[0])); if(r){ r->root = V(argv[5]); } } return SQLITE_OK; }
 /* seq (run, pos, gate) */
-static void seq_begin(Cur *c, int idx, sqlite3_value **argv){ c->idx = idx; if(idx >= 1){ i64 r = V(argv[0]); ENT_BEGIN(c, r, r); if(idx == 2) c->k1 = V(argv[1]); } else ENT_BEGIN(c, 1, c->b->nruns); }
+static void seq_begin(Cur *c, int idx, sqlite3_value **argv){ c->idx = idx; c->k3 = 0; if(idx >= 1){ i64 r = V(argv[0]); c->k3 = r; r = NK_MEM(r); ENT_BEGIN(c, r, r); if(idx == 2) c->k1 = V(argv[1]); } else ENT_BEGIN(c, 1, c->b->nruns); }   /* k3: the number asked for (an arrival's number reads that arrival's line) */
 static int *SEQP; static int SEQN, SEQCAPV; static i64 SEQRUN = -1;
 static void seq_of(Cur *c, i64 run){ if(run != SEQRUN){ int n; const int *p = nk_seq(c->b, run, &n); if(n > SEQCAPV){ SEQCAPV = n * 2 + 16; SEQP = realloc(SEQP, SEQCAPV * sizeof(int)); } if(p && n) memcpy(SEQP, p, n * sizeof(int)); SEQN = p ? n : 0; SEQRUN = run; } }
 static int seq_step(Cur *c){
-  if(c->idx == 2){ if(c->started) return 0; c->started = 1; seq_of(c, c->e); if(!SEQP || c->k1 < 1 || c->k1 > SEQN) return 0; c->i = c->k1 - 1; return 1; }
-  for(;;){ if(!c->started){ c->started = 1; c->i = -1; } if(!(c->e >= 1 && c->e <= c->e_end && c->e <= c->b->nruns)) return 0; seq_of(c, c->e); c->i++; if(SEQP && c->i < SEQN) return 1; c->e++; c->i = -1; if(c->e > c->e_end) return 0; }
+  if(c->idx == 2){ if(c->started) return 0; c->started = 1; seq_of(c, c->k3 ? c->k3 : c->e); if(!SEQP || c->k1 < 1 || c->k1 > SEQN) return 0; c->i = c->k1 - 1; return 1; }
+  for(;;){ if(!c->started){ c->started = 1; c->i = -1; } if(!(c->e >= 1 && c->e <= c->e_end && c->e <= c->b->nruns)) return 0; seq_of(c, c->k3 ? c->k3 : c->e); c->i++; if(SEQP && c->i < SEQN) return 1; c->e++; c->i = -1; if(c->e > c->e_end) return 0; }
 }
-static void seq_col(Cur *c, sqlite3_context *x, int col){ seq_of(c, c->e); switch(col){ case 0: R(x, c->e); break; case 1: R(x, c->i + 1); break; case 2: R(x, SEQP ? SEQP[c->i] : 0); break; } }
+static void seq_col(Cur *c, sqlite3_context *x, int col){ seq_of(c, c->k3 ? c->k3 : c->e); switch(col){ case 0: R(x, c->k3 ? c->k3 : c->e); break; case 1: R(x, c->i + 1); break; case 2: R(x, SEQP ? SEQP[c->i] : 0); break; } }
 static i64 seq_rowid(Cur *c){ return (c->e << 24) | (c->i + 1); }
 static int seq_update(Brain *b, int argc, sqlite3_value **argv, sqlite3_int64 *rowid, char **err){ if(argc == 1 || sqlite3_value_type(argv[0]) != SQLITE_NULL) return SQLITE_OK; Run *r = run_of(b, V(argv[2])); if(!r) return SQLITE_ERROR; int pos = (int)V(argv[3]); if(pos != r->nseq + 1) { *err = sqlite3_mprintf("seq is written in order"); return SQLITE_ERROR; } if(r->nseq % 8 == 0) r->seq = realloc(r->seq, (r->nseq + 8) * sizeof(int)); r->seq[r->nseq++] = (int)V(argv[4]); return SQLITE_OK; }
 
@@ -146,12 +146,12 @@ static int defwords_step(Cur *c){ if(c->idx != 1) return 0; c->i++; return c->i 
 static void defwords_col(Cur *c, sqlite3_context *x, int col){ switch(col){ case 0: R(x, c->k1); break; case 1: R(x, DWW[c->i]); break; case 2: R(x, DWD[c->i]); break; } }
 static i64 defwords_rowid(Cur *c){ return (c->k1 << 24) | (c->i + 1); }
 /* run_sheet (run, cell, state, value) */
-static void sheet_begin(Cur *c, int idx, sqlite3_value **argv){ c->idx = idx; if(idx >= 1){ i64 r = V(argv[0]); ENT_BEGIN(c, r, r); if(idx == 2) c->k1 = V(argv[1]); } else ENT_BEGIN(c, 1, c->b->nruns); }
+static void sheet_begin(Cur *c, int idx, sqlite3_value **argv){ c->idx = idx; c->k3 = 0; if(idx >= 1){ c->k3 = V(argv[0]); i64 r = NK_MEM(c->k3); ENT_BEGIN(c, r, r); if(idx == 2) c->k1 = V(argv[1]); } else ENT_BEGIN(c, 1, c->b->nruns); }
 static int sheet_step(Cur *c){
   if(c->idx == 2){ if(c->started) return 0; c->started = 1; Run *r = run_of(c->b, c->e); if(!r) return 0; for(int i = 0; i < r->ncells; i++) if(r->cells[i].cell == c->k1){ c->i = i; return 1; } return 0; }
   for(;;){ if(!c->started){ c->started = 1; c->i = -1; } Run *r = (c->e >= 1 && c->e <= c->e_end && c->e <= c->b->nruns) ? run_of(c->b, c->e) : 0; if(!r) return 0; c->i++; if(c->i < r->ncells) return 1; c->e++; c->i = -1; if(c->e > c->e_end) return 0; }
 }
-static void sheet_col(Cur *c, sqlite3_context *x, int col){ Run *r = run_of(c->b, c->e); Cell *k = &r->cells[c->i]; switch(col){ case 0: R(x, c->e); break; case 1: R(x, k->cell); break; case 2: R(x, k->state); break; case 3: RT(x, val_text(c->b, &k->v)); break; } }
+static void sheet_col(Cur *c, sqlite3_context *x, int col){ Run *r = run_of(c->b, c->e); Cell *k = &r->cells[c->i]; switch(col){ case 0: R(x, c->k3 ? c->k3 : c->e); break; case 1: R(x, k->cell); break; case 2: R(x, k->state); break; case 3: RT(x, val_text(c->b, &k->v)); break; } }
 static i64 sheet_rowid(Cur *c){ return (c->e << 16) | (c->i + 1); }
 static int sheet_update(Brain *b, int argc, sqlite3_value **argv, sqlite3_int64 *rowid, char **err){
   if(argc == 1) return SQLITE_OK;
@@ -172,7 +172,7 @@ static int rc_step(Cur *c){
 static void rc_col(Cur *c, sqlite3_context *x, int col){ Rc *k = &RCP[c->i]; switch(col){ case 0: R(x, c->e * 1000000 + c->i); break; case 1: R(x, c->e); break; case 2: R(x, k->pos); break; case 3: R(x, k->gate); break; case 4: R(x, k->shard); break; case 5: R(x, RCKEPT); break; } }
 static i64 rc_rowid(Cur *c){ return c->e * 1000000 + c->i; }
 /* run_memory (run, input, source, gate, shard, at): keys run, gate (the neuron's ended list), input (the newest with that input) */
-static void mem_begin(Cur *c, int idx, sqlite3_value **argv){ c->idx = idx; c->i = -1; c->started = 0; if(idx == 1){ i64 r = V(argv[0]); ENT_BEGIN(c, r, r); } else if(idx == 2){ c->k1 = V(argv[0]); ENT_BEGIN(c, 0, 0); }
+static void mem_begin(Cur *c, int idx, sqlite3_value **argv){ c->idx = idx; c->i = -1; c->started = 0; c->k3 = 0; if(idx == 1){ c->k3 = V(argv[0]); i64 r = NK_MEM(c->k3); ENT_BEGIN(c, r, r); } else if(idx == 2){ c->k1 = V(argv[0]); ENT_BEGIN(c, 0, 0); }
   else if(idx == 3){ /* the symbols as text "g g g": hashed as a seq, then the chain of memory rows with those symbols */ const char *s = (const char*)sqlite3_value_text(argv[0]); int buf[4096], n = 0; if(s){ const char *q = s; while(*q && n < 4096){ while(*q == ' ') q++; if(!*q) break; buf[n++] = atoi(q); while(*q && *q != ' ') q++; } } i64 head = n ? hmap_get(&c->b->memt, (i64)seqhash(buf, n), 0) : 0; ENT_BEGIN(c, head, head); }
   else ENT_BEGIN(c, 1, c->b->nruns); }
 static int mem_step(Cur *c){
@@ -182,7 +182,7 @@ static int mem_step(Cur *c){
 }
 static char *MEMTXT; static size_t MEMCAP;
 static const char *mem_text(Brain *b, i64 run){ int n; const int *q = nk_seq(b, run, &n); if(!q) return 0; size_t need = 16 + (size_t)n * 12; if(need > MEMCAP){ MEMCAP = need * 2; MEMTXT = realloc(MEMTXT, MEMCAP); } size_t len = 0; MEMTXT[0] = 0; for(int i = 0; i < n; i++) len += snprintf(MEMTXT + len, MEMCAP - len, i ? " %d" : "%d", q[i]); return MEMTXT; }
-static void mem_col(Cur *c, sqlite3_context *x, int col){ Run *r = run_of(c->b, c->e); switch(col){ case 0: R(x, c->e); break; case 1: RT(x, r->kept ? mem_text(c->b, c->e) : 0); break; case 2: { char t[24]; snprintf(t, sizeof t, "%d", r->mem_source); RT(x, t); } break; case 3: R(x, r->mem_gate); break; case 4: R(x, r->mem_shard); break; case 5: R(x, r->mem_at); break; case 6: R(x, r->again); break; case 7: R(x, r->last_at); break; case 8: R(x, r->last_run); break; } }
+static void mem_col(Cur *c, sqlite3_context *x, int col){ Run *r = run_of(c->b, c->e); switch(col){ case 0: R(x, (c->idx == 1 && c->k3) ? c->k3 : c->e); break; case 1: RT(x, r->kept ? mem_text(c->b, (c->idx == 1 && c->k3) ? c->k3 : c->e) : 0); break; case 2: { char t[24]; snprintf(t, sizeof t, "%d", r->mem_source); RT(x, t); } break; case 3: R(x, r->mem_gate); break; case 4: R(x, r->mem_shard); break; case 5: R(x, r->mem_at); break; case 6: R(x, r->again); break; case 7: R(x, r->last_at); break; case 8: R(x, r->last_run); break; } }
 static i64 mem_rowid(Cur *c){ return c->e; }
 /* timeline (id, at, run, key1, key2) */
 static void tl_begin(Cur *c, int idx, sqlite3_value **argv){ ENT_BEGIN(c, 0, c->b->ntl - 1); }

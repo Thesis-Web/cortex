@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# ci/size (2026-11-11): the size gate on the live Cortex brain, beside the no-words gate (ci/nowords).
+#
+# The no-words gate caught words; nothing caught bloat: on 11-10/11-11 a re-entry ran for 21 hours at 19 KB a repeated line and 570 KB a record
+# before the builder stopped it. The owner, 2026-11-11: "do it correct without the bloat"; 2026-11-10: "5+ gb means the hc is not doing it's job";
+# "a repeat sentance should only be storing the time, and project information"; "this system is fast, light" (the handler).
+#
+# What it reads (nothing is typed, nothing is changed): the live kernel's own counters (stats: the lines heard at the main prompt, the runs of both
+# brains, the bytes of the stored file in use) and the disk blocks the stored file really holds. Against its last passing reading it divides the
+# growth by the lines heard since: bytes on disk a line, bytes in use a line, runs a line.
+#   check   PASS (and the reading becomes the last) when a line heard costs at most SIZE_LINE_BYTES on disk and SIZE_LINE_RUNS runs, or too few lines
+#           were heard to measure (under SIZE_MIN_LINES); FAIL (exit 1, the last passing reading stays) when it costs more.
+#   status  the last passing reading and the growth since, nothing written.
+set -u
+SELF=$(readlink -f "${BASH_SOURCE[0]}"); ROOT=${SIZE_ROOT:-$(cd "$(dirname "$SELF")/.." && pwd)}
+MAP=${SIZE_MAP:-$ROOT/brain/brain.map}; PORT=${CORTEX_PORT:-7007}
+STATE_DIR=${SIZE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/cortex-size/$(printf "%s" "$MAP" | tr "/" "_")}; mkdir -p "$STATE_DIR"; LAST=$STATE_DIR/last
+BYTES=${SIZE_LINE_BYTES:-8192}; RUNS=${SIZE_LINE_RUNS:-30}; MINL=${SIZE_MIN_LINES:-20}
+verb=${1:-check}
+now=$(python3 - "$PORT" "$MAP" <<"PY"
+import json, os, socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=120); s.sendall(b"stats\n"); b = b""
+    while not b.endswith(b"\n"):
+        d = s.recv(1 << 16)
+        if not d: break
+        b += d
+    j = json.loads(b.decode()); st = os.stat(sys.argv[2])
+    print(j["main"].get("heard", -1), j["main"]["runs"] + j["sixth"]["runs"], j["map_used"], st.st_blocks * 512)
+except Exception as e: print("unread", e)
+PY
+)
+set -- $now
+if [ "$1" = unread ] || [ "$1" = -1 ]; then echo "size gate: UNREAD (the kernel on port $PORT did not answer with its lines heard: $now)"; exit 2; fi
+heard=$1; runs=$2; used=$3; disk=$4
+if [ ! -f "$LAST" ]; then
+  [ "$verb" = check ] && echo "$heard $runs $used $disk $(date +%s)" > "$LAST"
+  echo "size gate: PASS (the first reading: $heard lines heard, $runs runs, $used bytes in use, $disk bytes on disk)"; exit 0
+fi
+read h0 r0 u0 d0 t0 < "$LAST"
+dh=$((heard - h0)); dr=$((runs - r0)); du=$((used - u0)); dd=$((disk - d0))
+echo "size gate: since the last passing reading ($(date -d @"$t0" "+%m-%d %H:%M")): $dh lines heard, $dr runs, $du bytes in use, $dd bytes on disk"
+if [ "$dh" -lt "$MINL" ]; then echo "size gate: PASS (under $MINL lines heard: too few to measure)"; exit 0; fi
+pb=$((dd / dh)); pu=$((du / dh)); pr=$((dr / dh))
+echo "size gate: a line heard costs $pb bytes on disk (budget $BYTES), $pu bytes in use, $pr runs (budget $RUNS)"
+if [ "$pb" -gt "$BYTES" ] || [ "$pr" -gt "$RUNS" ]; then echo "size gate: FAIL (the brain grows faster than a line may cost: bloat)"; exit 1; fi
+[ "$verb" = check ] && echo "$heard $runs $used $disk $(date +%s)" > "$LAST"
+echo "size gate: PASS"; exit 0

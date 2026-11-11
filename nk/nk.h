@@ -39,7 +39,8 @@ typedef struct { int born; Shard *sh; int nsh, csh; HMap h; NodeRow *node; int n
 /* a value on a sheet: a number, a list of numbers, or gates. Text lives in the encoder only (the owner, 2026-11-01); a value is read back through it */
 typedef struct { int kind, n; union { i64 num; int *g; } u; } Val;   /* kind 0 null, 1 a number, 2 numbers (u.g[n]), 3 gates (u.g[n]) */
 typedef struct { int cell, state; Val v; } Cell;
-typedef struct { int pos, gate; i64 shard; unsigned char via, had; } Rc;   /* a receipt, one hop of a run; before/next follow from the run's seq */
+typedef struct { int pos, gate; i64 shard; unsigned char via, had; int ord; } Rc;   /* a receipt, one hop of a run; before/next follow from the run's seq. 11-11: a plain pass (the hop shard, nothing fired) is not written; ord is the hop's ordinal in the run, so the whole receipt is re-stepped from the seq on a read (nk_receipts) */
+_Static_assert(sizeof(Rc) == 24, "the receipt is 24 bytes: the stored file's layout");
 typedef struct { int ord, pos, gate, via; i64 shard; } Ev;   /* what a closed run fires, in order: a call, a spawn, a BUILD. Draft 3.2: "one hop to the memory" */
 typedef struct {
   int arrival, parent_set; i64 parent, root; int kind, cell, about; i64 at, moment;
@@ -88,7 +89,7 @@ typedef struct Brain {
   struct Brain *tell;                       /* the brain told when a prompt's run ends (main -> sixth) */
   int arrival_of_third;                     /* what a line in third arrives from: the sixth (5) in main, main (6) in the sixth */
   HMap hith;                                /* (run, ordinal) -> index+1 into hit, for the hits that carried a call or spawn */
-  i64 last_compacted, dropped_runs, dropped_receipts; i64 *deferred; int ndef, cdef;   /* runs the compaction passed while they were still running; looked at again next pass */   /* the cut: sub-runs made stubs when their main run completed */
+  i64 last_compacted /* 11-11: the plain passes, which write no receipt */, dropped_runs, dropped_receipts; i64 *deferred; int ndef, cdef;   /* runs the compaction passed while they were still running; looked at again next pass */   /* the cut: sub-runs made stubs when their main run completed */
   i64 hops_done, refused_n;
   i64 hop_ns, paste_ns, pastes, hops_run;  /* hops_run: hops done since this start (the mean is over these) */             /* where the time goes: inside the hops, inside mother's pastes */
   i64 cur_run; int cur_ord;                 /* the receipt whose span mother is pasting now (the returns it brings are made from it) */
@@ -118,9 +119,12 @@ void   val_set(Brain *b, Val *v, const char *s); void val_free(Val *v); void val
 void   cell_set(Brain *b, i64 run, int cell, int state, const char *value);   /* INSERT OR REPLACE, with sheet_fill */
 const char *cell_get(Brain *b, i64 run, int cell);                            /* state 1 and value not null, else NULL */
 void   line_in(Brain *b, int which, const char *text);
-extern i64 nk_last_tick, nk_line_key, nk_line_time;   /* the repeat is a tick (nk.c line_in) */     /* which: 0 input (heard), 1 third */
+void nk_out_of(Brain *b, i64 run, int **cells, int *n);
+extern i64 nk_last_tick, nk_line_key, nk_line_time; extern int nk_last_arrival, nk_last_formula;   /* the repeat is a tick (nk.c line_in) */     /* which: 0 input (heard), 1 third */
 void   secondary_in(Brain *b, i64 run, int cell, int gate, int about, const char *text, i64 src);
 const int *nk_seq(Brain *b, i64 run, int *n);
+#define NK_MEM(x) ((i64)(x) & 0xffffffffLL)   /* the memory of an arrival's number */
+#define NK_ARR(x) ((int)((i64)(x) >> 32))      /* which arrival of it, from 1 (0: the memory's own line) */
 int nk_learn_text(Brain *b, const char *s);                     /* C27 back population: every symbol of a text given a gate under the encoder as it stands (label_new); the count born */
 int nk_merge(Brain *b, int h, int t, char *out, size_t cap);    /* C28 (the owner, 11-04 05:00): the hand laid neuron h merges into the neuron t of its word: shards (ids kept), node rows, memories, about, hits, arrived; the symbol of h names t */               /* a run's symbols: held, or a replay's source, or re-cut from the source row */
 int    nk_receipts(Brain *b, i64 run, Rc **out, int *kept);   /* a run's receipts: held, or re-hopped from its symbols (kept = 0) */
