@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # cortex.py (2026-11-02): the Cortex front door on hp2. One file, stdlib only. The brain (nk on 127.0.0.1:7007) stores; jev judges; this code
 # decides by the truth table in CORTEX-HANDLER.md section 7; a worker (claude -p / codex exec) works one turn on the hydration and nothing else.
-# Every Cortex record is one line typed at the brain's main prompt (a run, a clock, a memory row, a dedupe tick); main.cx is the keyed index of
-# those lines (one row per kind/name/n, replaced in place), because the kernel refuses a read without a key. No log table, no timer, no sweep.
+# Every Cortex record is a line typed at the brain's main prompt under its key line (typemark): the encoder files it at its arrival in the project's
+# tree (key up, receipt down, a repeat one more time cell: nk.c, 11-11); the door reads the tree by key. No index table, no log table, no timer, no sweep.
 import socket, json, sys, os, re, time, hashlib, subprocess, shutil, urllib.request, urllib.error, math, difflib
 PORT = int(os.environ.get("CORTEX_PORT", "7007"))
 HOME = os.path.expanduser("~")
@@ -37,24 +37,370 @@ def typed(text, prompt="main"):
     if "error" in r: raise RuntimeError("brain refused: " + r["error"])
     return r
 
-# ---- the keyed index beside the brain ----
-def ensure_cx():
-    q("CREATE TABLE IF NOT EXISTS main.cx (kind TEXT NOT NULL, name TEXT NOT NULL, n INTEGER NOT NULL, run INTEGER, at INTEGER, ts INTEGER, value TEXT, PRIMARY KEY (kind, name, n))")
-def cx_put(kind, name, n, run, at, value):
-    q("INSERT OR REPLACE INTO main.cx (kind, name, n, run, at, ts, value) VALUES (?, ?, ?, ?, ?, ?, ?)", kind, name, n, run, at, int(time.time()), value)
-TEXT_KINDS = ("project", "checkpoint", "expected")   # C27: these rows keep no text; the typed line replays from its run
-def cx_get(kind, name, n):
-    rows = q("SELECT run, at, ts, value FROM main.cx WHERE kind = ? AND name = ? AND n = ?", kind, name, n)
-    if not rows: return None
-    r = rows[0]
-    if kind in TEXT_KINDS and r[0] and not r[3]: return (r[0], r[1], r[2], line_text(r[0]))
+# ---- the record in the brain (the door plan, 2026-11-10; the owner 11-03: storage is inside the graph; 11-10: a repeat is a cell changed, like a file tree) ----
+# No index table. A project is a tree of memories the encoder files at every line's arrival under a key (the kernel's typemark door, nk.c 11-11):
+# the project line is the root (its receipt cell lists its keys), a key line `<kind> <name> [n]` points up (key) and down (receipt), and a record
+# line under a key carries the keys it was recorded under (key) and when (time), one entry per arrival (the ten newest per key: the hippocampus).
+# The door types a record as `typemark main <key line> @<time> | <line>` and, the first time, the key under its project line (file_line);
+# it reads the tree by key with q (run_memory by the line's gates, run_sheet by run and cell, seq and label to decode) and decides nothing.
+TEXT_KINDS = ("project", "checkpoint", "expected")
+LINE_KINDS = ("project", "checkpoint", "expected", "state", "ingest", "receipt", "need", "prove", "schedule", "question", "remainder", "source")
+DERIVED = ("restate", "line", "receipts", "voice", "vgate", "paired", "keyed", "pair", "spair", "sword", "gate", "states", "jevwhy", "jevdep", "jevretract")
+FACT_EXCLUDE = ("sheet.receipt_cmds", "sheet.receipt_newest", "sheet.ground.by_source", "sheet.pair_ground.held_by", "ground.by_source")
+_GATE, _TEXT, _MEM, _CELL, _KEYS, _RECS, _ROWS, _NAMES = {}, {}, {}, {}, {}, {}, {}, {}
+def forget():
+    # after a write: what the door held of the tree in this process is read again
+    _MEM.clear(); _CELL.clear(); _KEYS.clear(); _RECS.clear(); _ROWS.clear(); _NAMES.clear(); _SAID.clear()
+def kernel_cut(text):
+    # the kernel's own cut (nk.c letter_len): a word is a run of letters or underscores in any script; every other character is a symbol of its own
+    out, cur = [], ""
+    for ch in text:
+        o = ord(ch)
+        if (ch.isalpha() or ch == "_") if o < 0x80 else (not (0x80 <= o <= 0xBF) and not (0x2000 <= o <= 0x207F)): cur += ch
+        else:
+            if cur: out.append(cur); cur = ""
+            out.append(ch)
+    if cur: out.append(cur)
+    return out
+def gate_sym(s):
+    if s not in _GATE:
+        rows = q("SELECT gate FROM main.label WHERE symbol = ?", s); _GATE[s] = rows[0][0] if rows else 0
+    return _GATE[s]
+def gates_text(text):
+    gs = [gate_sym(s) for s in kernel_cut(text)]
+    return None if (not gs or 0 in gs) else " ".join(str(g) for g in gs)
+def mem_of_text(text):
+    # the newest memory whose line is exactly this text (run_memory by the line's gates, a keyed read); 0 when no line of these words was ever heard
+    if text not in _MEM:
+        gs = gates_text(text); rows = q("SELECT run FROM main.run_memory WHERE input = ?", gs) if gs else []
+        _MEM[text] = rows[0][0] if rows else 0
+    return _MEM[text]
+def cell_list(run, cell):
+    # a list cell of a memory's sheet (key, receipt, time, the index lists): the numbers it holds, in order
+    k = (run, cell)
+    if k not in _CELL:
+        rows = q("SELECT value FROM main.run_sheet WHERE run = ? AND cell = ? AND state = 1", run, cell)
+        v = rows[0][0] if rows and rows[0][0] is not None else ""
+        _CELL[k] = [int(x) for x in str(v).split() if x.lstrip("-").isdigit()]
+    return _CELL[k]
+def decode(run):
+    # a memory's line read back through the label (the owner, 11-03: words do not live in the brain; the space is a gate too, so the replay is exact)
+    if run not in _TEXT:
+        rows = q("SELECT group_concat(symbol, '') FROM (SELECT l.symbol AS symbol FROM main.seq s JOIN main.label l ON l.gate = s.gate WHERE s.run = ? ORDER BY s.pos)", run)
+        _TEXT[run] = (rows[0][0] or "") if rows else ""
+    return _TEXT[run]
+def typemark(marker, text, ts=None):
+    r = ask("typemark main %s%s | %s" % (marker, (" @%d" % int(ts)) if ts else "", text))
+    if "error" in r: raise RuntimeError("brain refused: " + r["error"])
     return r
+_FILED = set()
+def file_line(kind, name, n, line, ts=None, root=None, value=None, kl=None):
+    # one record through the encoder: the line under its key line. The key line is heard as the marker, so it is always a memory of its own; the first
+    # time, the key is filed under its project line and the project under the root of roots (project projects, project sources). A repeat of the
+    # line under the key is one more time in its cells; a line that is a learned line with a few other values is that memory's arrival (its number
+    # is the memory + arrival * 2^32 and reads back as its own line).
+    kl = kl or key_line(kind, name, key_n(kind, n, value)); pl = "project " + (root or name); under = "project sources" if kind == "source" else "project projects"
+    r = typemark(kl, line, ts); forget()
+    if (pl, kl) not in _FILED:
+        p = mem_of_text(pl)
+        if not p or p not in cell_list(r["marker"], gate_sym("key")): typemark(pl, kl, ts); forget()
+        _FILED.add((pl, kl))
+    if (under, pl) not in _FILED:
+        p, u = mem_of_text(pl), mem_of_text(under)
+        if p and (not u or u not in cell_list(p, gate_sym("key"))): typemark(under, pl, ts); forget()
+        _FILED.add((under, pl))
+    return r
+def key_n(kind, n, value=None):
+    # the N of a key: a checkpoint or hand-back number (0 < n < 100000); else the value's own n; else none
+    if n is not None and 0 < n < 100000: return n
+    if isinstance(value, dict) and isinstance(value.get("n"), int) and 0 < value["n"] < 100000: return value["n"]
+    return None
+def key_line(kind, name, n): return "%s %s%s" % (kind, name, (" %d" % n) if n is not None else "")
+def safe_line(text):
+    # one line, the span mark never opened by a value (BUILD is the brain's build mark)
+    return re.sub(r"\s+", " ", str(text).replace("BUILD", "build")).strip()
+def record(kind, name, n, body, root=None, ts=None):
+    # one record: the line under its key (file_line); a repeat of a sentence makes no new memory, only one more entry in its key and time cells
+    # (the owner, 11-10: a repeat is a cell changed)
+    line = safe_line(body)
+    if isinstance(n, int) and n >= 100000 and kind not in ("ingest", "receipt", "source", "verdict"): line = fact_line(kind, {"_n": n, "value": line})   # the record's own number (a run), which the key line does not carry
+    r = file_line(kind, name, n, line, ts, root)
+    return (r.get("same_as") or r.get("run")), clock(), r
+def prune(v, path=""):
+    # the fields the plan does not keep (copies of other records, counts derived from the sources) are left out
+    if isinstance(v, dict): return {k: prune(x, (path + "." + str(k)).lstrip(".")) for k, x in v.items() if (path + "." + str(k)).lstrip(".") not in FACT_EXCLUDE}
+    return v
+def fact_line(kind, value):
+    # a record whose value had fields: one line through the encoder, the kind word then the value as it is (one line of JSON: the types are
+    # exact and the line reads back as it was typed; starting with the kind word it never begins with a tool word)
+    return kind + " " + json.dumps(prune(value), ensure_ascii=False)
+def cx_put(kind, name, n, run, at, value, ts=None):
+    # a value with fields becomes a fact line under the key; a plain value was the line itself (typed by record); a derived kind is never typed
+    if kind in DERIVED or kind in ("ingest", "receipt"): return
+    if isinstance(value, str) and value and value[:1] in "{[":
+        try: d = json.loads(value)
+        except ValueError: return
+        if d == {}: return
+        if kind == "source" and isinstance(d, dict) and "db" in d and not d.get("band"): return   # a db row: cx.db holds it with its path and line
+        if isinstance(d, dict) and isinstance(n, int) and key_n(kind, n) is None and "_n" not in d: d = dict(d, _n=n)   # the record's own number, when the key line does not carry it
+        file_line(kind, name, n, fact_line(kind, d), ts, value=d if isinstance(d, dict) else None)
+    elif kind not in LINE_KINDS and value not in (None, ""):
+        file_line(kind, name, n, fact_line(kind, str(value)), ts)
+def parse_fact(kind, text):
+    # the value of a fact line: what follows the kind word, read as it was written; a line that is not one gives None
+    if not text.startswith(kind + " ") or text[len(kind) + 1:len(kind) + 2] not in ("{", "[", '"'): return None
+    try: return json.loads(text[len(kind) + 1:])
+    except ValueError: return None
+def root_of(name): return mem_of_text("project " + name)
+KEY_RE = re.compile(r"^([a-z]+) (\S+)(?: (\d+))?$")
+VOICE_RE = re.compile(r"^(voice|guess) (\S+)(?: (\S+))?$")
+_SAID = {}
+def said_of(name):
+    # (memory, time) -> who said it, and the set that were guesses: read from the voice and guess keys of the project
+    if name not in _SAID:
+        who, guess = {}, set()
+        for (kd, x), k in keys_of(name)[0].items():
+            if kd not in ("voice", "guess"): continue
+            for (m, text, times) in records_of(k):
+                for t in times:
+                    if kd == "voice": who[(text, t)] = x
+                    else: guess.add((text, t))
+        _SAID[name] = (who, guess)
+    return _SAID[name]
+def keys_of(name):
+    # the project's keys from its root's receipt: (kind, n) -> the key memory; a line in the receipt that is not a key is the project's own record
+    if name not in _KEYS:
+        d, extra = {}, []; root = root_of(name)
+        for k in (cell_list(root, gate_sym("receipt")) if root else []):
+            t = decode(k); m = KEY_RE.match(t); vm = VOICE_RE.match(t)
+            if vm and vm.group(2) == name: d[(vm.group(1), vm.group(3))] = k   # voice <name> <who>, guess <name>: who said a line of the project, and that it was a guess
+            elif m and m.group(2) == name and m.group(1) != "project": d[(m.group(1), int(m.group(3)) if m.group(3) else None)] = k
+            elif re.match(r"^project \S+$", t): continue   # a root listed under this root (project projects, project sources)
+            else: extra.append(k)
+        _KEYS[name] = (d, extra)
+    return _KEYS[name]
+def records_of(keyrun):
+    # the memories under a key, each with the times it was recorded under it (one per repeat), oldest first
+    if keyrun not in _RECS:
+        out = []; kc, tc, fc = gate_sym("key"), gate_sym("time"), gate_sym("formula")
+        for m in cell_list(keyrun, gate_sym("receipt")):
+            ks, ts = cell_list(m, kc), cell_list(m, tc)
+            idx = [i for i, k in enumerate(ks) if k == keyrun and i < len(ts)]
+            if fc and cell_list(m, fc):
+                # a formula: each arrival under this key is its own line (the learned line with that arrival's values), read back by the arrival's number
+                own = decode(m); by = {}
+                for i in idx:
+                    h = m | ((i + 1) << 32); t = decode(h); e = by.setdefault(t, [m if t == own else h, []]); e[1].append(ts[i])
+                for t, (h, times) in by.items(): out.append((h, t, times))
+            else: out.append((m, decode(m), [ts[i] for i in idx] or [0]))
+        _RECS[keyrun] = out
+    return _RECS[keyrun]
+def NK_MEM(run): return run & 0xffffffff   # the memory of a record's number (an arrival of a formula is the memory + arrival * 2^32)
+def old_line(kind, name, text):
+    # the old typed form of a record line, `cortex <kind> [<name>] [<n>] : <body>`: (its number or None, its body); a bare line is itself
+    m = re.match(r"^cortex %s(?: %s)?(?: (\d+))? : (.*)$" % (re.escape(kind), re.escape(name)), text, re.S)
+    return ((int(m.group(1)) if m.group(1) else None), m.group(2)) if m else (None, text)
+def body_of(kind, name, text): return old_line(kind, name, text)[1]
+MANY = ("schedule", "ask", "lesson", "retire", "lecture", "plan", "problems", "reteach", "test", "quiz")   # kinds whose every line is a record of its own under one key
+def identity(kind, n, body, d, ln=None):
+    # the old index's n of a record: a text hash for a sentence; a record with fields carries its own number (_n) when its key line does not; else
+    # the key's n; else the number the old typed line names; a kind whose every line is its own record: the line's text hash; else 0 (one record)
+    if kind in ("ingest", "receipt", "source"): return text_key(body) if body else 0
+    if isinstance(d, dict) and "_n" in d: return int(d["_n"])
+    if n is not None: return n
+    if d is None and ln is not None: return ln
+    if d is None and kind in MANY: return text_key(body) if body else 0
+    return 0
+def cx_rows(kind, name):
+    # every record of the kind under the project as the old index gave it: (n, run, at, ts, value); a kind with fields gives its newest fact line per identity, a sentence its text and times
+    key = (kind, name)
+    if key not in _ROWS:
+        rows = {}
+        keys, extra = keys_of(name)
+        items = [(n, k) for (kd, n), k in keys.items() if kd == kind]
+        if kind == "project" and root_of(name): items = [(0, root_of(name))]
+        for (n, krun) in items:
+            recs = records_of(krun) if kind != "project" else [(m, decode(m), [0]) for m in extra]
+            for (m, text, times) in recs:
+                d = parse_fact(kind, text) if kind not in TEXT_KINDS else None
+                ln, body = (None, None) if d is not None else old_line(kind, name, text)
+                if kind == "project" and d is not None: continue
+                ident = identity(kind, n, body, d, ln)
+                ts = max(times) if times else 0
+                if d is not None:
+                    value = d if isinstance(d, str) else d["value"] if (isinstance(d, dict) and set(d) == {"_n", "value"}) else json.dumps({k: v for k, v in d.items() if k != "_n"} if isinstance(d, dict) else d)
+                    row = (ident, m, m, ts, value)
+                    prev = rows.get(("f", ident))
+                    if not prev or (ts, NK_MEM(m)) >= (prev[3], NK_MEM(prev[1])): rows[("f", ident)] = row
+                else:
+                    if kind == "ingest":
+                        who, gs = said_of(name); value = json.dumps({"t": body, "times": len(times), "voice": who.get((text, ts), "hand"), "guess": bool(GUESS.search(body)) or (text, ts) in gs})
+                    elif kind in ("question", "need", "remainder") : value = None   # the line of a kind whose record is its fact line: the fact row carries it
+                    else: value = body
+                    if value is None: continue
+                    row = (ident, m, m, ts, value)
+                    prev = rows.get(("t", ident))
+                    if not prev or (ts, NK_MEM(m)) >= (prev[3], NK_MEM(prev[1])): rows[("t", ident)] = row
+        if kind not in LINE_KINDS and any(k[0] == "f" for k in rows): rows = {k: v for k, v in rows.items() if k[0] == "f"}
+        _ROWS[key] = sorted(rows.values(), key=lambda r: (r[3], r[1]))
+    return _ROWS[key]
+_VOICES = {}
+_IDX = {}
+def tree_count():
+    # the record tree's size in one keyed read: the roots under project projects, their keys, the distinct records under the keys (what the old index rows counted)
+    pr = mem_of_text("project projects")
+    if not pr: return (0, 0, 0)
+    rc = gate_sym("receipt")
+    lst = lambda run: "'[' || replace ( coalesce ( ( SELECT value FROM main.run_sheet WHERE run = %s AND cell = %d AND state = 1 ) , '' ) , ' ' , ',' ) || ']'" % (run, rc)
+    sql = ("WITH ps ( run ) AS ( SELECT CAST ( j.value AS INTEGER ) FROM json_each ( %s ) j ) , ks ( run ) AS ( SELECT CAST ( j.value AS INTEGER ) FROM ps , json_each ( %s ) j ) "
+           "SELECT ( SELECT count ( * ) FROM ps ) , ( SELECT count ( * ) FROM ks ) , ( SELECT count ( DISTINCT j.value ) FROM ks , json_each ( %s ) j )") % (lst(pr), lst("ps.run"), lst("ks.run"))
+    try: r = q(sql); return tuple(int(x or 0) for x in r[0]) if r else (0, 0, 0)
+    except RuntimeError: return (0, 0, 0)
+def index_of(name):
+    # the judge's word index read from the brain itself: the project's record runs are the tree (root receipt -> keys -> their receipts), their
+    # gates are the kernel's own seq; the content gates after the line's prefix (words not in STOP, negations kept, digits as values), per gate
+    # the lines holding it with the first and last, per adjacent word pair the lines and the first (what key_gates and key_pairs kept in main.cx)
+    if name in _IDX: return _IDX[name]
+    root = root_of(name); gates, pairs = {}, {}
+    if root:
+        rc = gate_sym("receipt"); colon = gate_of(":")
+        stop = " , ".join("'%s'" % w for w in sorted(STOP) if w not in NEG_WORDS)
+        tree = ("WITH ks ( run ) AS ( SELECT CAST ( j.value AS INTEGER ) FROM json_each ( '[' || replace ( coalesce ( ( SELECT value FROM main.run_sheet WHERE run = %d AND cell = %d AND state = 1 ) , '' ) , ' ' , ',' ) || ']' ) j ) , "
+                "rs ( run ) AS ( SELECT DISTINCT CAST ( j.value AS INTEGER ) FROM ks , json_each ( '[' || replace ( coalesce ( ( SELECT value FROM main.run_sheet WHERE run = ks.run AND cell = %d AND state = 1 ) , '' ) , ' ' , ',' ) || ']' ) j ) , "
+                "cp ( run , cpos ) AS ( SELECT q.run , min ( q.pos ) FROM rs JOIN main.seq q ON q.run = rs.run WHERE q.gate = %d GROUP BY q.run ) , "
+                "c ( run , pos , gate , s ) AS ( SELECT q.run , q.pos , q.gate , l.symbol FROM rs JOIN main.seq q ON q.run = rs.run JOIN main.label l ON l.gate = q.gate LEFT JOIN cp ON cp.run = q.run WHERE q.pos > coalesce ( cp.cpos , 0 ) AND ( ( l.symbol GLOB '[0-9]*' AND l.symbol NOT GLOB '*[^0-9]*' ) OR ( length ( l.symbol ) >= 2 AND l.symbol GLOB '*[A-Za-z]*' AND l.symbol NOT IN ( %s ) ) ) )") % (root, rc, rc, colon, stop)
+        try:
+            for (g, n, first, last) in q(tree + " SELECT gate , count ( DISTINCT run ) , min ( run ) , max ( run ) FROM c GROUP BY gate"): gates[g] = (n, first, last)
+            for (x, y, n, first) in q(tree + " , w ( run , pos , gate ) AS ( SELECT run , pos , gate FROM c WHERE NOT ( s GLOB '[0-9]*' AND s NOT GLOB '*[^0-9]*' ) ) , p ( run , a , b ) AS ( SELECT run , gate , lead ( gate ) OVER ( PARTITION BY run ORDER BY pos ) FROM w ) SELECT a , b , count ( DISTINCT run ) , min ( run ) FROM p WHERE b IS NOT NULL GROUP BY a , b"): pairs[(x, y)] = (n, first)
+        except RuntimeError as e: sys.stderr.write("index of %s not read: %s\n" % (name, str(e)[:120]))
+    _IDX[name] = (gates, pairs); return _IDX[name]
+def index_row(name, g, pair=False):
+    # the old gate and pair rows (first, times, last; a, b, first, times), read from the brain by index_of
+    gates, pairs = index_of(name)
+    if pair:
+        a, b = g >> 20, g & 1048575; r = pairs.get((a, b))
+        if not r: return None
+        n, first = r; return (first, first, 0, json.dumps({"a": a, "b": b, "first": first, "times": n}))
+    r = gates.get(g)
+    if not r: return None
+    n, first, last = r; return (first, first, 0, json.dumps({"first": first, "times": n, "last": last}))
 def cx_list(kind, name, desc=False, limit=1000):
-    rows = q("SELECT n, run, at, ts, value FROM main.cx WHERE kind = ? AND name = ? ORDER BY n %s LIMIT %d" % ("DESC" if desc else "ASC", limit), kind, name)
-    if kind in TEXT_KINDS: rows = [(n, run, at, ts, (line_text(run) if run and not v else v)) for (n, run, at, ts, v) in rows]
-    return rows
+    rows = sorted(cx_rows(kind, name), key=lambda r: r[0], reverse=desc)
+    return rows[:limit]
+def cx_names(kind):
+    # the names that hold the kind: the project roots (under project projects) or the source roots (under project sources), each read by key
+    if kind not in _NAMES:
+        out = []
+        root = root_of("sources" if kind == "source" else "projects")
+        for k in (cell_list(root, gate_sym("receipt")) if root else []):
+            m = re.match(r"^project (\S+)$", decode(k))
+            if m and (kind == "source" or kind == "project" or any(kd == kind for (kd, n) in keys_of(m.group(1))[0])): out.append(m.group(1))
+        _NAMES[kind] = sorted(set(out))
+    return _NAMES[kind]
+def states_row(name, n):
+    # the history of a checkpoint's state: every record under state <name> <n> in time order (the plan: every run in its history is recorded under the key)
+    keys, extra = keys_of(name); krun = keys.get(("state", n))
+    if not krun: return None
+    hist = []
+    for (m, text, times) in records_of(krun):
+        for t in times: hist.append({"state": body_of("state", name, text), "run": m, "at": m, "ts": t})
+    hist.sort(key=lambda h: (h["ts"], h["run"]))
+    return (hist[-1]["run"], hist[-1]["at"], hist[-1]["ts"], json.dumps(hist)) if hist else None
+def register_root(name, under="projects"):
+    # a project (or a source) listed once under the root of roots, so the door can list them by key. The project line is heard as a marker first
+    # (file_line does that for every record), so it is a memory of its own before it is filed here.
+    if name in cx_names("project" if under == "projects" else "source"): return
+    pl = "project " + name
+    if not mem_of_text(pl): return   # no record of it yet: its first record files it
+    typemark("project " + under, pl); forget()
 def clock():
     return q("SELECT n FROM main.clock")[0][0]
+def cxq(sql, *params):
+    # the old index's reads answered from the tree: SELECT <cols> FROM record WHERE kind .. AND name .. [AND n|run|ts ..] [ORDER BY ..] [LIMIT ..]; a write is nothing (the neuron files)
+    ps = list(params); m = re.match(r"SELECT (.+?) FROM record WHERE (.+?)(?: ORDER BY (\w+)( DESC| ASC)?)?(?: LIMIT (\S+))?$", sql.strip(), re.S)
+    if not m: return []
+    def val(tok):
+        tok = tok.strip()
+        if tok == "?": return ps.pop(0)
+        if tok.startswith("'"): return tok.strip("'")
+        return int(tok)
+    cols = [c.strip() for c in m.group(1).split(",")]; f = {}
+    for c in [c.strip() for c in m.group(2).split(" AND ")]:
+        cm = re.match(r"(\w+)\s*(>=|<=|=|>|<|IN)\s*(.+)$", c)
+        if not cm: continue
+        k, op, v = cm.groups()
+        if op == "IN": f[(k, "IN")] = [x.strip().strip("'") for x in v.strip("()").split(",")]
+        else: f[(k, op)] = val(v)
+    order, desc, limit = m.group(3), (m.group(4) or "").strip() == "DESC", m.group(5)
+    limit = (ps.pop(0) if limit == "?" else int(limit)) if limit else None
+    kinds = f.get(("kind", "IN")) or [f[("kind", "=")]]
+    names = [f[("name", "=")]] if ("name", "=") in f else cx_names(kinds[0])
+    out = []
+    for kind in kinds:
+        for nm in names:
+            for (n, run, at, ts, value) in cx_rows(kind, nm):
+                ok = True
+                for (k, op), v in f.items():
+                    if k in ("kind", "name"): continue
+                    x = {"n": n, "run": run, "at": at, "ts": ts}[k]
+                    ok = ok and {"=": x == v, ">": x > v, "<": x < v, ">=": x >= v, "<=": x <= v}[op]
+                if ok: out.append({"n": n, "run": run, "at": at, "ts": ts, "value": value, "name": nm})
+    if order: out.sort(key=lambda r: (r[order], r["run"]), reverse=desc)
+    if limit is not None: out = out[:limit]
+    if cols == ["count(*)"]: return [(len(out),)]
+    return [tuple(r[c] for c in cols) for r in out]
+_VOICES = {}
+def voice_table():
+    # C25, C31 as a reading of the record: every voice's claims, confirmed, false, guesses (and per project, per word) from the newest verdict of each judged run; nothing stored
+    if "t" not in _VOICES:
+        V, G = {}, {}
+        for nm in projects():
+            newest = {}
+            for (run, m, at, ts, v) in cx_rows("verdict", nm):
+                d = jload(v); newest[run] = (ts, d)
+            for run, (ts, d) in newest.items():
+                vc = d.get("voice", "hand"); by = d.get("judge") if d.get("judge") in ("receipt", "shape", "sources") else "judgment"
+                oc = outcome_of(d.get("kind"), by, bool(d.get("guess")))
+                t = V.setdefault(vc, {"claims": 0, "confirmed": 0, "false": 0, "guesses": 0, "by_project": {}}); t["claims"] += 1
+                bp = t["by_project"].setdefault(nm, {"claims": 0, "confirmed": 0, "false": 0, "guesses": 0}); bp["claims"] += 1
+                if oc: t[oc] += 1; bp[oc] += 1
+                if oc in ("confirmed", "false"):
+                    for g in set(x for x in content_gates(run) if not is_value(x)):
+                        e = G.setdefault((vc, g), {"confirmed": 0, "false": 0}); e[oc] += 1
+        _VOICES["t"] = (V, G)
+    return _VOICES["t"]
+def cx_get(kind, name, n):
+    if kind == "states": return states_row(name, n)
+    if kind == "gate": return index_row(name, n)
+    if kind == "pair": return index_row(name, n, pair=True)
+    if kind == "voice":
+        V, G = voice_table(); d = V.get(name); return (0, 0, 0, json.dumps(d)) if d else None
+    if kind == "vgate":
+        V, G = voice_table(); e = G.get((name, n)); return (0, 0, 0, json.dumps(e)) if e else None
+    if kind == "receipts": return (0, 0, 0, json.dumps(receipts_tree(name, n)))
+    if kind == "restate":
+        if ("restate", name) not in _ROWS:
+            _ROWS[("restate", name)] = {wordset_key(jload(value).get("t", "")): (run, at, ts, str(k)) for (k, run, at, ts, value) in cx_rows("ingest", name)}
+        return _ROWS[("restate", name)].get(n)
+    if kind in DERIVED: return None
+    for r in reversed(cx_rows(kind, name)):
+        if r[0] == (n if n is not None else 0): return r[1:]   # (run, at, ts, value), as the old index answered
+    return None
+def receipts_tree(name, n):
+    # the prints of a checkpoint from the tree: every record under receipt <name> <n>, grouped by its command (the part before =>); per command the
+    # newest print's lines first, each print's lines in the order they were typed (a line printed again stays with its first print), the newest
+    # print and sixty lines before it
+    keys, extra = keys_of(name); krun = keys.get(("receipt", n)); rc = {}
+    if not krun: return rc
+    by = {}
+    for i, (m, text, times) in enumerate(records_of(krun)):
+        body = body_of("receipt", name, text); cmd = body.split(" => ", 1)[0] if " => " in body else "command"
+        by.setdefault(cmd, []).append((min(times), i, m))
+    for cmd, ls in by.items():
+        newest = max(t for (t, i, m) in ls); ls.sort(key=lambda x: (-x[0], x[1]))
+        got = [x for x in ls if x[0] == newest]; old = [x for x in ls if x[0] != newest][:60]
+        rc[cmd] = {"ts": newest, "lines": [{"run": m} for (t, i, m) in got + old]}
+    return rc
 
 # ---- lines into the brain ----
 def clean(text):
@@ -123,13 +469,6 @@ def filter_lines(name, sents):
         if cx_get("restate", name, wk) or (len(cw) >= 3 and any(cw <= e for e in seen_sets)): counts["restated"] += 1; out.append((s, "restated", "")); continue
         seen_sets.append(cw); counts["keep"] += 1; out.append((s, "keep", ""))
     return out, counts
-def record(kind, name, n, body):
-    # one Cortex line typed at the main prompt; its run and the brain's clock go into the index
-    line = "cortex %s %s%s : %s" % (kind, name, (" %d" % n) if n is not None else "", body)
-    r = typed(line)
-    run = r["run"]; at = clock()
-    cx_put(kind, name, n if n is not None else run, run, at, "" if kind in TEXT_KINDS else body)
-    return run, at, r
 def run_row(run):
     rows = q("SELECT id, same_as, again, ended, at, arrival FROM main.run WHERE id = ?", run)
     return rows[0] if rows else None
@@ -310,12 +649,8 @@ def pairs_of(run):
     ws = [g for g in content_gates(run) if not is_value(g)]
     return list(zip(ws, ws[1:]))
 def key_pairs(name, run):
-    # the (project or source, pair) key: how many lines of this project cross from gate a to gate b (C23, build time)
-    for (a, b) in set(pairs_of(run)):
-        k = pair_key(a, b); had = cx_get("pair", name, k)
-        if had:
-            d = json.loads(had[3]); d["times"] = d.get("times", 1) + 1; cx_put("pair", name, k, had[0], had[1], json.dumps(d))
-        else: cx_put("pair", name, k, run, clock(), json.dumps({"a": a, "b": b, "first": run, "times": 1}))
+    # the (project or source, pair) key is the neuron's: its index program fills the root's pair cells at every record's arrival (the door plan, D5)
+    return
 def pair_ground(name, run):
     # per pair of the claim: the sources and projects that hold it; the pairs held nowhere are where the run leaves known ground
     held, memory, none = {}, {}, []
@@ -384,12 +719,8 @@ def source_check(run):
             if nm not in [d["source"] for d in disagree]: disagree.append({"source": nm, "run": r0, "line": line_text(r0)[:140], "differs": sorted(set(sym_of(g) for g in diff))})
     return {"confirm": confirm, "disagree": disagree}
 def key_gates(name, run):
-    # the (project, gate) key: the first run of this project that crossed the gate and how many times since (the owner: the project's metadata on the gate)
-    for g in set(content_gates(run)):
-        had = cx_get("gate", name, g)
-        if had:
-            d = json.loads(had[3]); d["times"] = d.get("times", 1) + 1; d["last"] = run; cx_put("gate", name, g, had[0], had[1], json.dumps(d))
-        else: cx_put("gate", name, g, run, clock(), json.dumps({"first": run, "times": 1, "last": run}))
+    # the (project, gate) key is the neuron's: its index program fills the root's gate cells at every record's arrival (the door plan, D5)
+    return
 # ---- C16 (the owner, 11-03): the grounds. the receipt is the machine's own print piped in; the owner's words and reference material are sources, projects of typed lines;
 #      every content gate of a claim is checked against them; a value is settled against the receipt; a gate with no ground is a question the cortex asks, not a guess ----
 BANDS = ("owner", "reference")
@@ -449,12 +780,12 @@ def is_self_print(cmd):
     return cmd.startswith("cortex ") or "/cortex " in cmd or cmd.startswith("cortex")
 _PJ = []
 def projects():
-    if not _PJ: _PJ.extend(sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0"))))
+    if not _PJ: _PJ.extend(sorted(set(r[0] for r in cxq("SELECT name FROM record WHERE kind = 'project' AND name >= '' AND n = 0"))))
     return _PJ
 _SRC = []
 def sources():
     if not _SRC:
-        for (nm, v) in q("SELECT name, value FROM main.cx WHERE kind = 'source' AND n = 0 AND name >= ''"):
+        for (nm, v) in cxq("SELECT name, value FROM record WHERE kind = 'source' AND n = 0 AND name >= ''"):
             try:
                 d = json.loads(v)
                 if d.get("retired"): continue   # the owner, 11-04 18:2x: a source typed in breach of the code block grounds nothing; its runs stay as history
@@ -512,9 +843,10 @@ def routed_sources(name):
     rs = [(nm, b) for (nm, b) in sources() if b == "owner" or (want & set(source_info(nm).get("domain") or []))]
     return rs if any(b == "reference" for (nm, b) in rs) else sources()
 def v_sources():
-    ensure_cx(); print("%-44s %-9s %-26s %7s  %s" % ("source", "band", "domains", "lines", "what, where from, as of"))
+    print("%-44s %-9s %-26s %7s  %s" % ("source", "band", "domains", "lines", "what, where from, as of"))
     for (nm, b) in sources():
-        d = source_info(nm); cnt = q("SELECT count(*) FROM main.cx WHERE kind = 'source' AND name = ? AND n > 0", nm)[0][0]
+        d = source_info(nm); cnt = cxq("SELECT count(*) FROM record WHERE kind = 'source' AND name = ? AND n > 0", nm)[0][0]
+        if d.get("db") and not cnt: cnt = (q("SELECT count(DISTINCT k) FROM cx.corpus WHERE source = ?", nm) or [[0]])[0][0]   # a source held only by the db: its lines are the db's
         print("%-44s %-9s %-26s %7d  %s%s%s" % (nm, b, ",".join(d.get("domain") or []) or "-", cnt, (d.get("text") or "")[:100], (" | path " + d["path"]) if d.get("path") else "", (" | db %d lines" % d.get("db_lines", 0)) if d.get("db") else ""))
     dom, nb = {}, {"reference": 0, "owner": 0}
     for (nm, b) in sources():
@@ -552,7 +884,7 @@ def windows_of(text, ts):
         except ValueError: pass
     return out[:4]
 def timeline_lines(name, t0, t1, limit=400):
-    return q("SELECT n, run, ts, value FROM main.cx WHERE kind = 'ingest' AND name = ? AND n > 0 AND ts >= ? AND ts <= ? ORDER BY ts LIMIT ?", name, t0, t1, limit)
+    return cxq("SELECT n, run, ts, value FROM record WHERE kind = 'ingest' AND name = ? AND n > 0 AND ts >= ? AND ts <= ? ORDER BY ts LIMIT ?", name, t0, t1, limit)
 def timeline_cells(name, run, text, ts):
     # C38: for each window the claim names, the project's own record in it: how many of the claim's words and pairs those lines hold
     wins = windows_of(text, ts or int(time.time()))
@@ -570,7 +902,7 @@ def timeline_cells(name, run, text, ts):
     return out
 def v_at(name, words):
     # C38 (the owner, 11-04: last tuesday what was the state of neuron): the state of a project at a time of the graph's own, and the lines that held a word
-    ensure_cx(); pr = cx_get("project", name, 0)
+    pr = cx_get("project", name, 0)
     if not pr: raise SystemExit("no project " + name)
     text = " ".join(words); now = int(time.time()); wins = windows_of(text, now)
     rest = re.sub(WHEN_RE + r"|\byesterday\b|\btoday\b|\btonight\b|\blast week\b|\b\d{4}-\d{2}-\d{2}\b|(?<![\d-])\d{1,2}-\d{2}(?![\d-])", " ", text.lower())
@@ -579,7 +911,7 @@ def v_at(name, words):
     if not wins: wins = [("all time", 0, now)]
     for (label, t0, t1) in wins:
         print("AT %s, %s (%s to %s):" % (name, label, time.strftime("%Y-%m-%d %H:%M", time.localtime(t0)) if t0 else "the first line", time.strftime("%Y-%m-%d %H:%M", time.localtime(t1))))
-        snaps = q("SELECT value FROM main.cx WHERE kind = 'formula' AND name = ? AND n > 0 AND ts <= ? ORDER BY n DESC LIMIT 1", name, t1)
+        snaps = cxq("SELECT value FROM record WHERE kind = 'formula' AND name = ? AND n > 0 AND ts <= ? ORDER BY n DESC LIMIT 1", name, t1)
         if snaps:
             sn = json.loads(snaps[0][0]); cps = sn["checkpoints"]
             done = sorted(int(k) for k, c in cps.items() if c["state"] == "done"); work = sorted(int(k) for k, c in cps.items() if c["state"] == "working"); opn = sorted(int(k) for k, c in cps.items() if c["state"] == "open")
@@ -603,10 +935,10 @@ def v_at(name, words):
             except ValueError: vc = "hand"
             voices[vc] = voices.get(vc, 0) + 1
         vk = {}
-        for (v,) in q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1):
+        for (v,) in cxq("SELECT value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1):
             d = json.loads(v); vk[d.get("kind")] = vk.get(d.get("kind"), 0) + 1
-        qs = q("SELECT count(*) FROM main.cx WHERE kind = 'question' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1)[0][0]
-        pa = [json.loads(v) for (v,) in q("SELECT value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1)]
+        qs = cxq("SELECT count(*) FROM record WHERE kind = 'question' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1)[0][0]
+        pa = [json.loads(v) for (v,) in cxq("SELECT value FROM record WHERE kind = 'part' AND name = ? AND n > 0 AND ts >= ? AND ts <= ?", name, t0, t1)]
         acc = [p for p in pa if not (p.get("superseded_by") or p.get("rejected_by"))]; ret = [p for p in pa if p.get("superseded_by") or p.get("rejected_by")]
         print("  lines typed: %d (%s); verdicts: %s; questions asked: %d; parts accepted then and still standing: %d; parts of that time since retired: %d" % (len(rows), ", ".join("%s %d" % kv for kv in sorted(voices.items(), key=lambda kv: -kv[1])) or "none", ", ".join("%s %d" % kv for kv in sorted(vk.items(), key=lambda kv: -kv[1])) or "none", qs, len(acc), len(ret)))
         for p in ret[:6]: print("    retired: C%s run %d (%s) %s: %s" % (p.get("n"), p.get("run"), time.strftime("%m-%d %H:%M", time.localtime(p.get("ts", 0))), ("superseded by run %s" % p["superseded_by"]) if p.get("superseded_by") else "rejected by the owner", line_text(p["run"])[:80]))
@@ -624,12 +956,8 @@ def v_at(name, words):
                 print("    %s run %d %s %s: %s" % (time.strftime("%m-%d %H:%M", time.localtime(ts0)), r0, (d.get("kind") or "unjudged") if d else "unjudged", st, line_text(r0)[:100]))
 def rebuild_voices():
     # the voice rows and the per-word rows recomputed from the newest verdict of every judged run (after a re-judge or a rule change)
-    ensure_cx(); q("DELETE FROM main.cx WHERE kind IN ('voice', 'vgate')"); n = 0
-    for nm in projects():
-        for (run, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n", nm):
-            d = json.loads(v); by = d.get("judge") if d.get("judge") in ("receipt", "shape", "sources") else "judgment"
-            tally_voice(d.get("voice", "hand"), d.get("kind"), by, bool(d.get("guess")), nm, run); n += 1
-    print("voices rebuilt from %d verdicts" % n)
+    _VOICES.clear(); V, G = voice_table()
+    print("voices read from the tree: %d voices over %d verdicts (nothing stored: the verdict lines are the record)" % (len(V), sum(d["claims"] for d in V.values())))
 def measure_of(text, name=None):
     # C34: the words of a claim that name a measure, and the prints that settle them (the owner: if date and today had actions, meaning, this would be possible)
     M = measures(name); ws = set(re.findall(r"[a-z][a-z']+", text.lower())); hit = {}
@@ -637,14 +965,13 @@ def measure_of(text, name=None):
         if w in M: hit.setdefault(M[w], []).append(w)
     return hit
 def receipts_of(name, n):
-    had = cx_get("receipts", name, n)
-    return json.loads(had[3]) if had else {}
+    return receipts_tree(name, n)
 _SPECN = {}
 def spec_numbers(spec):
     # the numbers a project's spec source states, read from its replayed lines (a number is digit gates in the brain, so the gate key cannot hold it whole)
     if spec not in _SPECN:
         out = set()
-        for (k, run) in q("SELECT n, run FROM main.cx WHERE kind = ? AND name = ? AND n > 0 LIMIT 400", "source", spec):
+        for (k, run) in cxq("SELECT n, run FROM record WHERE kind = ? AND name = ? AND n > 0 LIMIT 400", "source", spec):
             if run: out |= set(numbers(line_text(run)))
         _SPECN[spec] = out
     return _SPECN[spec]
@@ -717,18 +1044,16 @@ def ground_str(g):
     return " ".join(items) or "no ground"
 def v_receipt(name, n, cmd):
     # the machine's own print, piped in (df -h / | cortex receipt audit 1 df -h /): typed as receipt lines and kept as the checkpoint's ground; a model's hand never retypes it
-    ensure_cx()
     if not cx_get("checkpoint", name, n): raise SystemExit("no such checkpoint: %s %d" % (name, n))
     lines = [clean(l) for l in sys.stdin.read().splitlines() if clean(l)]
     if not lines: raise SystemExit("receipt: nothing on stdin; pipe the command's output in")
     rc = receipts_of(name, n); got = []; t0 = time.time()
     for l in lines[:80]:
         body = "%s => %s" % (cmd, l)
-        try: r = typed("cortex receipt %s %d : %s" % (name, n, body))
+        try: run, at, r = record("receipt", name, n, body)
         except RuntimeError as e: print("receipt line refused: %s" % e); continue
-        run = r["run"]; cx_put("receipt", name, text_key(body), run, clock(), json.dumps({"n": n, "cmd": cmd, "ts": int(time.time())})); key_gates(name, run); got.append({"run": run})
-    rc[cmd] = {"ts": int(time.time()), "lines": got + (rc.get(cmd, {}).get("lines") or [])[:60]}   # the newest print first; the older prints of the same command stay on the checkpoint (C47d), so an older claim keeps the print it was made against
-    cx_put("receipts", name, n, got[-1]["run"] if got else 0, clock(), json.dumps(rc))
+        got.append({"run": run})
+    rc = receipts_of(name, n)   # the newest print first; the older prints of the same command stay on the checkpoint (C47d), so an older claim keeps the print it was made against
     for x in got: print("receipt run %d %s C%d: %s => %s" % (x["run"], name, n, cmd, receipt_line(x)[:100]))
     print("receipt: %d lines typed in %.0f ms; %s C%d has receipts of: %s" % (len(got), (time.time() - t0) * 1000, name, n, ", ".join(sorted(rc))))
 def type_receipt(name, n, cmd, lines):
@@ -737,13 +1062,11 @@ def type_receipt(name, n, cmd, lines):
     for l in [clean(x) for x in lines if clean(x)][:40]:
         body = "%s => %s" % (cmd, l)
         if cx_get("receipt", name, text_key(body)): continue
-        try: r = typed("cortex receipt %s %d : %s" % (name, n, body))
+        try: run, at, r = record("receipt", name, n, body)
         except RuntimeError: continue
-        cx_put("receipt", name, text_key(body), r["run"], clock(), json.dumps({"n": n, "cmd": cmd, "ts": int(time.time())})); key_gates(name, r["run"]); got.append({"run": r["run"]})
-    if got: rc[cmd] = {"ts": int(time.time()), "lines": got + (rc.get(cmd, {}).get("lines") or [])[:60]}; cx_put("receipts", name, n, got[-1]["run"], clock(), json.dumps(rc))
+        got.append({"run": run})
     return len(got)
 def v_check_set(name, n, cmd):
-    ensure_cx()
     if not cx_get("checkpoint", name, n): raise SystemExit("no such checkpoint: %s %d" % (name, n))
     cx_put("check", name, n, 0, clock(), json.dumps({"cmd": cmd, "ts": int(time.time())})); print("check of %s C%d: %s" % (name, n, cmd))
 def run_check(name, n, cwd=None):
@@ -951,7 +1274,7 @@ def fill(t, **kw):
     return t
 def v_author(name, n, model=None, feedback=None):
     # rail C2: a claude exec turn writes the check of C n on a copy of the work; the cortex installs a new program once, reads the citations, stores the check row
-    ensure_cx(); pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
+    pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
     if not ck: raise SystemExit("no checkpoint %s %d" % (name, n))
     model = model or AUTHOR_MODEL; scratch = work_copy(name, os.path.join(RAILDIR, "%s-C%d-author" % (name, n)))
     report = not repo_of(name) and not os.path.isdir(os.path.join(WORKDIR, name, ".git")) and name in ("audit", "probe")
@@ -993,7 +1316,7 @@ def v_author(name, n, model=None, feedback=None):
     return {"status": "written", "cmd": cmd, "program": prog, "installed": installed, "cites": len(cites), "work_wrong": d["work_wrong"]}
 def v_audit_check(name, n, model=None):
     # rail C3: the check on the real work twice (fresh inputs), then on the broken copies another maker made without seeing it; every copy caught or refused
-    ensure_cx(); d = check_of(name, n)
+    d = check_of(name, n)
     if not d: raise SystemExit("no check on %s C%d" % (name, n))
     pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
     cmd = d["cmd"]; real = work_root(name); probs, killed, survived, maker = [], [], [], None
@@ -1062,7 +1385,7 @@ def prove_check(name, n, model=None):
     return "refused", why
 def v_prove(name, n=None, done_only=False, box_min=None, model=None):
     # rail C4: each checkpoint (or the done ones) gets a check written and audited, then run: check ok keeps or closes, check wrong reopens, no check hands back
-    ensure_cx(); t0 = time.time()
+    t0 = time.time()
     try: sys.stdout.reconfigure(line_buffering=True)
     except (AttributeError, ValueError): pass
     tally = {}
@@ -1234,24 +1557,24 @@ def v_jev_calibrate(a):
     if rc: return rc
     sys.stdout.write("".join("%s\n" % l for l in lines)); return 0
 def jev_door():
-    # jev C8: the reasons of each answer and the retracted rows, kept in the brain's keyed index (main.cx: jevwhy by question id, jevdep and jevretract by row id)
+    # jev C8: the reasons of each answer and the retracted rows (jevwhy by question id, jevdep and jevretract by row id); dead since the 11-10 clear (the door plan, section 7)
     ready = []
     def lit(x): return "'" + str(x).replace("'", "''") + "'"
     def door_q(sql):
-        if not ready: ensure_cx(); ready.append(1)
+        if not ready: ready.append(1)
         r = ask("q " + sql)
         if r.get("error"): raise RuntimeError("brain: " + r["error"])
         return r.get("rows") or []
     def get(kind, name):
-        rows = door_q("SELECT value FROM main.cx WHERE kind = %s AND name = %s AND n = 0" % (lit(kind), lit(name)))
+        rows = cxq("SELECT value FROM record WHERE kind = %s AND name = %s AND n = 0" % (lit(kind), lit(name)))
         return rows[0][0] if rows else None
     def put(kind, name, value):
-        door_q("INSERT OR REPLACE INTO main.cx (kind, name, n, run, at, ts, value) VALUES (%s, %s, 0, 0, 0, %d, %s)" % (lit(kind), lit(name), int(time.time()), lit(value)))
+        return   # jev C8's reasons: dead since the 11-10 clear (the door plan, section 7); nothing is written outside the encoder
     def retracted(ids):
         out, ids = set(), list(ids)
         for i in range(0, len(ids), 200):
             ch = ids[i:i + 200]
-            for (nm, v) in door_q("SELECT name, value FROM main.cx WHERE kind = 'jevretract' AND n = 0 AND name IN (%s)" % ", ".join(lit(x) for x in ch)):
+            for (nm, v) in cxq("SELECT name, value FROM record WHERE kind = 'jevretract' AND n = 0 AND name IN (%s)" % ", ".join(lit(x) for x in ch)):
                 try:
                     if json.loads(v).get("retracted"): out.add(nm)
                 except (ValueError, AttributeError): pass
@@ -1271,7 +1594,7 @@ def v_jev(names, k=8, seed=None):
     # a request row fires rules 1 to 6 through the mother; this verb only asks and prints, beside the python judge's verdict; nothing here decides
     import random
     if PORT != 7010: raise SystemExit("the judge brain lives on the test kernel: CORTEX_PORT=7010 cortex jev <project ...> [--n k] [--seed s]")
-    ensure_cx(); pool = []
+    pool = []
     for nm in names:
         for (n0, run0, at0, ts0, v0) in cx_list("verdict", nm):
             try: d0 = json.loads(v0)
@@ -1280,7 +1603,7 @@ def v_jev(names, k=8, seed=None):
     rnd = random.Random(seed); pick = rnd.sample(pool, min(k, len(pool)))
     same = llm_only = llm_over = 0; t0 = time.time()
     for (nm, run, d0) in pick:
-        cn = int(d0["n"]); q("INSERT INTO cx.judge_ask (run, name, n, ts) VALUES (?, ?, ?, ?)", run, nm, cn, int(time.time()))
+        cn = int(d0["n"])   # the judge brain's ask row is not written here: rail C6 stays on the test kernel until its check passes; nothing is written outside the encoder
         rows = q("SELECT completes, progresses, regresses, supersedes, off_scope, invents, contradicts, verdict, evidence FROM cx.judge_jev WHERE run = ? AND name = ? AND n = ?", run, nm, cn)
         cell = q("SELECT voice, check_state, values_held, pair_sources, pairs_held, pairs FROM cx.judge_cell WHERE run = ? AND name = ? AND n = ?", run, nm, cn)
         errs = [r for r in q("SELECT id, said FROM cx.judge_rule WHERE id IN (1, 2, 3, 4, 5, 6)") if str(r[1] or "").startswith("error")]
@@ -1297,14 +1620,13 @@ def v_jev(names, k=8, seed=None):
     print("jev beside the python judge: %d claims, the same verdict on %d; %d held only by an llm voice, of them above 0.80 on completes or progresses: %d; %.0f s" % (len(pick), same, llm_only, llm_over, time.time() - t0))
 def v_source(name, band=None, text=None, domain=None):
     if band is None and text is None and domain is not None:   # C36: cortex source <name> --domain a,b sets the domains of a registered source
-        ensure_cx(); had = cx_get("source", name, 0)
+        had = cx_get("source", name, 0)
         if not had: raise SystemExit("no source " + name)
         d = json.loads(had[3]); d["domain"] = domain; cx_put("source", name, 0, had[0], had[1], json.dumps(d)); _SRCD.pop(name, None); print("source %s domains: %s" % (name, ",".join(domain))); return
     # a source is a project of typed lines: cortex source <name> owner|reference : <what it is, where from, as of>; then cortex source <name> - types its lines from stdin (build time, no judge)
-    ensure_cx()
     if band:
         if band not in BANDS: raise SystemExit("a source band is owner or reference (a receipt comes from cortex receipt)")
-        run, at, _ = record("source", name, 0, "%s : %s" % (band, text)); cx_put("source", name, 0, run, at, json.dumps({"band": band, "text": text, "ts": int(time.time()), "domain": domain or []}))
+        cx_put("source", name, 0, 0, 0, json.dumps({"band": band, "text": text, "ts": int(time.time()), "domain": domain or []}))
         print("source %s (%s%s) run %d: %s" % (name, band, (", " + ",".join(domain)) if domain else "", run, text[:120])); return
     if not cx_get("source", name, 0): raise SystemExit("register the source first: cortex source %s owner|reference : <what it is, where from, as of>" % name)
     source_type(name, sys.stdin.read())
@@ -1331,16 +1653,16 @@ def source_type(name, raw):
         if is_noise(sent): noise += 1; continue
         k = text_key(sent)
         if cx_get("source", name, k): dupes += 1; continue
-        try: r = typed("cortex source %s : %s" % (name, sent))
+        try: run, at, r = record("source", name, None, sent)
         except RuntimeError: refused += 1; continue
-        run = r["run"]; cx_put("source", name, k, run, clock(), "{}"); key_gates(name, run); key_pairs(name, run); n_typed += 1   # the words are not stored again (the owner, 11-03: words do not live in the brain); the run's gates replay the sentence
+        n_typed += 1   # the words are not stored again (the owner, 11-03: words do not live in the brain); the run's gates replay the sentence
         if n_typed % 500 == 0: print("  %d typed, %.0f s" % (n_typed, time.time() - t0), flush=True)
     print("source %s: %d sentences typed, %d repeats, %d noise, %d refused, %.1f s" % (name, n_typed, dupes, noise, refused, time.time() - t0)); return n_typed
 def ask_question(name, n, run, words, vrun):
     # the meaning question: the words of a claim that no receipt, owner line, reference or project line holds; asked once, recorded, answered by the owner (mark, accept, reject) or by a source
     if cx_get("question", name, run): return
     body = "C%d run %d: %s" % (n, run, ", ".join(words))
-    try: qrun = typed("cortex question %s %d : %s" % (name, n, body))["run"]
+    try: qrun = record("question", name, n, body)[0]
     except RuntimeError: qrun = 0
     cx_put("question", name, run, qrun, clock(), json.dumps({"n": n, "words": words, "ts": int(time.time()), "verdict_run": vrun, "answered": None}))
     print("  question asked, no ground for: %s | answer: cortex mark %s %d <kind>, accept or reject it, or type a source that holds the words" % (", ".join(words), name, run))
@@ -1354,13 +1676,13 @@ def answer_question(name, run, how, found=None):
     cx_put("question", name, run, had[0], had[1], json.dumps(d))
 def open_questions(name, n=None, limit=20):
     out = []
-    for (run, v) in q("SELECT n, value FROM main.cx WHERE kind = 'question' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name):
+    for (run, v) in cxq("SELECT n, value FROM record WHERE kind = 'question' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name):
         d = json.loads(v)
         if d.get("answered") or (n is not None and d.get("n") != n): continue
         d["run"] = run; out.append(d)
     return out[:limit]
 def v_questions(name, n=None, prune=False):
-    ensure_cx(); qs = open_questions(name, n, 300)
+    qs = open_questions(name, n, 300)
     if prune:   # C40: a question asked of a sentence that is not a candidate for state is retired
         gone = 0
         for d in list(qs):
@@ -1466,15 +1788,15 @@ def decide(a):
 
 # ---- the verbs ----
 def v_project(name, scope):
-    ensure_cx(); run, at, r = record("project", name, 0, clean(scope)); key_gates(name, run)
-    print("project %s run %d clock %d born %d" % (name, run, at, r["born"]))
+    run, at, r = record("project", name, 0, clean(scope))
+    print("project %s run %d clock %d%s" % (name, run, at, " (a repeat of the scope line)" if r.get("same_as") else ""))
 def v_checkpoint(name, n, text, expected=None, kind=None):
-    ensure_cx(); run, at, r = record("checkpoint", name, n, clean(text)); key_gates(name, run); print("checkpoint %s %d run %d clock %d" % (name, n, run, at))
+    run, at, r = record("checkpoint", name, n, clean(text)); key_gates(name, run); print("checkpoint %s %d run %d clock %d" % (name, n, run, at))
     if expected: run2, at2, _ = record("expected", name, n, clean(expected)); key_gates(name, run2); print("expected %s %d run %d" % (name, n, run2))
     if kind: record("kind", name, n, kind); print("kind %s %d %s" % (name, n, kind))
     if not cx_get("state", name, n): v_state(name, n, "open")
 def v_state(name, n, state):
-    ensure_cx(); assert state in ("open", "working", "done"), state
+    assert state in ("open", "working", "done"), state
     if state == "done" and RAIL and not _CLOSING[0]:   # rail C1 (the owner, 11-09: ok do it): only the cortex own check closes a checkpoint
         print(("state %s %d: done refused, " % (name, n)) + (met_waits(name, n, "the state verb").strip(" |") or "already done")); return
     run, at, _ = record("state", name, n, state); print("state %s %d %s run %d clock %d" % (name, n, state, run, at))
@@ -1483,7 +1805,7 @@ def v_state(name, n, state):
 def states_backfill(name):
     # C42, once: a checkpoint with no history gets the state changes the formula snapshots saw (approximate, marked) and its current state row (exact)
     done = 0
-    snaps = [json.loads(v) for (v,) in q("SELECT value FROM main.cx WHERE kind = 'formula' AND name = ? AND n > 0 ORDER BY n", name)]
+    snaps = [json.loads(v) for (v,) in cxq("SELECT value FROM record WHERE kind = 'formula' AND name = ? AND n > 0 ORDER BY n", name)]
     for (n, run, at, ts, text) in cx_list("checkpoint", name):
         if cx_get("states", name, n): continue
         hist, prev = [], None
@@ -1512,62 +1834,38 @@ VOICE = ["hand"]   # who is speaking into the cortex: the hand (a builder's or t
 GUESS = re.compile(r"\b(i am guessing|i guess|my guess|a guess|guessing here|i think|maybe|perhaps|probably|not sure|likely|for example|an example|example|e\.g\.|hypothesis|hypothetically|should be able to)\b")
 GUESS_PARA = set()   # C33: the sentences of a paragraph that says it is guessing or gives an example; filled by v_ingest per text, read per sentence
 def v_ingest(name, text, quiet=False, repeat_to_kernel=True):
-    ensure_cx(); out = []; t0 = time.time()
+    # every sentence of the text under the project's ingest key, through the encoder (the door plan, D7): a new sentence is one memory; a repeat
+    # makes no memory, the neuron appends one more key and time (the owner, 11-10: a repeat is a cell changed); noise and restatements are dropped before anything is typed
+    out = []; t0 = time.time()
     GUESS_PARA.clear()
     for para in re.split(r"\n\s*\n|\n", text):
         if GUESS.search(para.lower()):
             for s0 in sentences(para): GUESS_PARA.add(text_key(s0))
     fates, counts = filter_lines(name, sentences(text))
-    brain_dupe = "dupe" in retired_functions()   # teach C5: on the owner word the front door reads the brain answer alone: the kernel same_as decides a repeat
     for s, fate, why in fates:
         k = text_key(s)
-        if brain_dupe and fate in ("keep", "dupe", "restated"):
-            kr0 = typed("cortex ingest : %s" % s); sa = (run_row(kr0["run"]) or [0, 0])[1] or 0
-            if sa:
-                had = cx_get("ingest", name, text_key(s))
-                if had: d1 = json.loads(had[3]) if had[3] and had[3].startswith("{") else {}; d1["times"] = ingest_text(had[3])[1] + 1; d1["last"] = kr0["run"]; cx_put("ingest", name, k, had[0], had[1], json.dumps(d1))
-                out.append({"run": (had[0] if had else sa), "clock": clock(), "born": 0, "seconds": 0.0, "same_as": sa, "again": 2, "text": s})
-                if not quiet: print("ingest run %d a repeat by the kernel same_as %d (dupe is held by the neuron): %s" % (had[0] if had else sa, sa, s[:100]))
-                continue
-            if fate == "dupe": fate = "keep"   # the brain says new; the index row is laid below
         if fate == "noise":
             if not quiet: print("dropped (%s): %s" % (why, s[:80]))
             continue
-        if fate == "dupe":
-            had = cx_get("ingest", name, k)
-            if not had:
-                if not quiet: print("dropped (repeated in this batch): %s" % s[:80])
-                continue
-            times = ingest_text(had[3])[1] + 1
-            kr = typed("cortex ingest : %s" % s) if repeat_to_kernel else None   # the kernel ticks its own counter: same_as the first run, no second memory row (the owner, 11-03)
-            try: d1 = json.loads(had[3]) if had[3] and had[3].startswith("{") else {}
-            except ValueError: d1 = {}
-            d1["times"] = times
-            if kr: d1["last"] = kr["run"]; d1["last_ts"] = int(time.time())   # C33d: the newest tick is when the claim was made again
-            cx_put("ingest", name, k, had[0], had[1], json.dumps(d1))   # the tick keeps the row's voice, guess and attachment
-            out.append({"run": had[0], "clock": had[1], "born": 0, "seconds": 0.0, "same_as": had[0], "again": times, "text": s})
-            if not quiet: print("ingest run %d again %d (a repeat%s): %s" % (had[0], times, (", kernel run %d same_as %s" % (kr["run"], (run_row(kr["run"]) or [0, 0])[1])) if kr else "; nothing typed", s[:100]))
-            continue
         if fate == "restated":
-            had = cx_get("restate", name, wordset_key(s))
-            if had:
-                first = cx_get("ingest", name, int(had[3]))
-                if first:
-                    cx_put("ingest", name, int(had[3]), first[0], first[1], json.dumps({"times": ingest_text(first[3])[1] + 1}))
-            if not quiet: print("dropped (restated%s): %s" % ((" run %d" % had[0]) if had else " in this batch", s[:80]))
+            if not quiet: print("dropped (restated): %s" % s[:80])
             continue
-        held = cx_get("line", "*", k)   # C30: the sentence may already be a run, typed once by another project
-        if held:
-            run, at = held[0], clock(); d0 = json.loads(held[3]); d0["projects"] = sorted(set(d0.get("projects", []) + [name])); cx_put("line", "*", k, run, held[1], json.dumps(d0))
-            cx_put("ingest", name, k, run, at, json.dumps({"times": 1, "voice": VOICE[0], "guess": bool(GUESS.search(s)) or (k in GUESS_PARA), "attached_from": d0.get("first")})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
-            out.append({"run": run, "clock": at, "born": 0, "seconds": 0.0, "same_as": 0, "again": 1, "text": s})
-            if not quiet: print("ingest run %d attached to %s (typed once under %s; now %s): %s" % (run, name, d0.get("first"), ",".join(d0["projects"]), s[:100]))
+        if fate == "dupe" and why == "batch":
+            had = cx_get("ingest", name, k)
+            if had: out.append({"run": had[0], "clock": had[1], "born": 0, "seconds": 0.0, "same_as": had[0], "again": ingest_text(had[3])[1], "text": s})
+            if not quiet: print("dropped (repeated in this batch): %s" % s[:80])
             continue
-        line = "cortex ingest : %s" % s; r = typed(line); run = r["run"]; at = clock()   # C30: one run, no project in the prefix; the projects live in the index
-        cx_put("line", "*", k, run, at, json.dumps({"first": name, "projects": [name]}))
-        cx_put("ingest", name, k, run, at, json.dumps({"times": 1, "voice": VOICE[0], "guess": bool(GUESS.search(s)) or (k in GUESS_PARA)})); cx_put("restate", name, wordset_key(s), run, at, str(k)); key_gates(name, run); key_pairs(name, run)
-        out.append({"run": run, "clock": at, "born": r["born"], "seconds": r["seconds"], "same_as": 0, "again": 1, "text": s})
-        if not quiet: print("ingest run %d clock %d born %d %.3fs: %s" % (run, at, r["born"], r["seconds"], s[:100]))
+        now_ts = int(time.time())
+        try:
+            run, at, r = record("ingest", name, None, s, ts=now_ts)
+            if VOICE[0] != "hand": file_line("voice", name, None, safe_line(s), now_ts, kl="voice %s %s" % (name, VOICE[0]))
+            if k in GUESS_PARA and not GUESS.search(s): file_line("guess", name, None, safe_line(s), now_ts, kl="guess %s" % name)
+        except RuntimeError as e:
+            if not quiet: print("refused: %s" % e)
+            continue
+        sa = r.get("same_as") or 0
+        out.append({"run": run, "clock": at, "born": 0, "seconds": r.get("seconds", 0.0), "same_as": sa, "again": ((r.get("again") or 0) + 1) if sa else 1, "text": s})
+        if not quiet: print("ingest run %d %s%.3fs: %s" % (run, ("a repeat (the memory %d gets one more key and time), " % sa) if sa else "new, ", r.get("seconds", 0.0), s[:100]))
     print("filter: %d sentences, kept %d, dupe %d, restated %d, noise %d, %.0f ms" % (len(fates), counts["keep"], counts["dupe"], counts["restated"], counts["noise"], (time.time() - t0) * 1000))
     return out
 # ---- part-wise state (handler C12): a checkpoint's accepted state is the set of sentences accepted into it over time ----
@@ -1583,14 +1881,14 @@ def add_part(name, n, run, text, p=None, by=None, ground=None):
     cx_put("part", name, k, run, clock(), json.dumps({"n": n, "run": run, "times": 1, "p": p, "by": by, "ground": ground, "ts": int(time.time())})); return "added"
 def retire_part(name, n, old_run, new_run, why):
     # a part leaves the accepted state: superseded_by a newer value, or rejected_by a re-judgment; the row stays as history
-    for (k, ts, v) in q("SELECT n, ts, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
+    for (k, ts, v) in cxq("SELECT n, ts, value FROM record WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
         d = json.loads(v)
         if d.get("run") == old_run and d.get("n") == n and (new_run == "owner" or not d.get(why)):
             d[why] = new_run; cx_put("part", name, k, d["run"], clock(), json.dumps(d)); return True
     return False
 def parts_of(name, n, limit=5, history=False):
     out = []
-    for (ts, v) in q("SELECT ts, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
+    for (ts, v) in cxq("SELECT ts, value FROM record WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
         d = json.loads(v)
         if d.get("n") != n: continue
         if not history and (d.get("superseded_by") or d.get("rejected_by")): continue
@@ -1606,7 +1904,7 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
              "expected_mark": "met" if re.search(r"expected: ?met", text) else ("not met" if re.search(r"expected: ?not met", text) else "none"),
              "noise": is_noise(text) or "", "geometry": geometry(pr[0], run)}
     hist = {}
-    for (v,) in q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 20", name):
+    for (v,) in cxq("SELECT value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 20", name):
         k = json.loads(v).get("kind"); hist[k] = hist.get(k, 0) + 1
     cells["history"] = hist
     had = cx_get("ingest", name, text_key(text)); cells["times"] = ingest_text(had[3])[1] if had else 1
@@ -1625,7 +1923,7 @@ def sheet_cells(name, n, run, text, pr, ck, ex):
     cells["pair_ground"] = pair_ground(name, run)
     cells["owner_conflict"] = owner_conflict(run)
     cells["sources"] = source_check(run)
-    iv = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
+    iv = cxq("SELECT value FROM record WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
     try: ivd = json.loads(iv[0][0]) if iv and iv[0][0].startswith("{") else {}
     except (ValueError, TypeError): ivd = {}
     cells["voice"] = ivd.get("voice", "hand"); cells["designer"] = own_design(name) and cells["voice"] == "owner"   # C37
@@ -1663,17 +1961,7 @@ def outcome_of(kind, by, guess):
 def tally_voice(voice, kind, by, guess, name=None, run=None):
     # C25 (the owner, 11-03 17:0x): inputs are measured; a fact proven false lowers that voice's trust, a labeled guess does not.
     # C31 (the owner, 11-03 21:3x): the topic is the project first, then the words the claim touches; the checkpoint is not a topic. One keyed row per voice, one per (voice, gate).
-    had = cx_get("voice", voice, 0); d = json.loads(had[3]) if had else {"claims": 0, "confirmed": 0, "false": 0, "guesses": 0, "first_ts": int(time.time())}
-    oc = outcome_of(kind, by, guess); d["claims"] += 1
-    if oc: d[oc] += 1
-    if name:
-        bp = d.setdefault("by_project", {}).setdefault(name, {"claims": 0, "confirmed": 0, "false": 0, "guesses": 0}); bp["claims"] += 1
-        if oc: bp[oc] += 1
-    d["last_ts"] = int(time.time()); cx_put("voice", voice, 0, 0, clock(), json.dumps(d))
-    if run and oc in ("confirmed", "false"):
-        for g in set(x for x in content_gates(run) if not is_value(x)):
-            hg = cx_get("vgate", voice, g); e = json.loads(hg[3]) if hg else {"confirmed": 0, "false": 0}
-            e[oc] += 1; cx_put("vgate", voice, g, run, clock(), json.dumps(e))
+    _VOICES.clear()   # the voice table is read from the verdict lines of the tree (voice_table); a new verdict changes it
 BANDS_DEFAULT = {"llm": [0.2, 0.8], "owner": [0.5, 0.8], "reference_alone": 0.6, "reference_agree": 1.0, "owner_and_source": 0.85, "llm_and_two_sources": 0.95, "llm_and_owner": 0.5,
                  "note": "the owner, 2026-11-03 21:5x: llm ceiling 80 floor 20, turn dependent; owner ceiling .80 floor 50, informed guesses; reference 1.00 when true between sources, 60 alone; owner and source agree strong, llm and two sources very strong, llm and human without a source 50/50; the machine print is the ground"}
 def bands():
@@ -1718,9 +2006,8 @@ def project_trust(voice, name):
     return {"claims": bp["claims"], "confirmed": bp["confirmed"], "false": bp["false"], "trust": round(bp["confirmed"] / t, 2) if t else None}
 def voices():
     out = []
-    for (vn,) in q("SELECT name FROM main.cx WHERE kind = 'voice' AND name >= '' AND n = 0"):
-        d = json.loads(cx_get("voice", vn, 0)[3]); tot = d["confirmed"] + d["false"]
-        out.append((vn, d, (d["confirmed"] / tot) if tot else None))
+    for vn, d in sorted(voice_table()[0].items()):
+        tot = d["confirmed"] + d["false"]; out.append((vn, d, (d["confirmed"] / tot) if tot else None))
     return out
 NO_PARTS = set()   # (name, n) pairs judged for the record only: no part added, no state moved (the capture against a done project's newest checkpoint)
 def parts_cover(name, n):
@@ -1751,11 +2038,10 @@ def close_by_parts(name, n):
         return " | C%d done by its parts together: %d of %d expected gates covered by %d parts (C39); next C%s" % (n, k, m, used, n2)
     return " | parts together cover %.2f of the expected (%d of %d gates, %d parts)" % (cov, k, m, used)
 def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
-    ensure_cx()
     pr = cx_get("project", name, 0); ck = cx_get("checkpoint", name, n); ex = cx_get("expected", name, n)
     if not pr or not ck: raise SystemExit("no such project/checkpoint: %s %s" % (name, n))
     if text is None:
-        rows = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
+        rows = cxq("SELECT value FROM record WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
         if not rows: raise SystemExit("ingest run %s is not in the index" % run)
         text = line_text(run)
     t0 = time.time(); cells = sheet_cells(name, n, run, text, pr, ck, ex)
@@ -1783,7 +2069,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
     accepting = kind in ("completes", "progresses", "supersedes") and (name, n) not in NO_PARTS   # holds adds no part: true, not progress (C33)
     gr = dict(cells.get("ground") or {}); pg0 = cells.get("pair_ground") or {}
     if pg0.get("pairs"): gr["agree"] = len(pg0.get("agree", [])); gr["of"] = pg0.get("sources", 0)
-    bl0, br0 = belief_of(iv0.get("voice", "hand") if (iv0 := (lambda rr: (json.loads(rr[0][0]) if rr and rr[0][0].startswith("{") else {}))(q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run))) else "hand", name, kind, by, cells.get("sources") or {}); gr["belief"] = bl0
+    bl0, br0 = belief_of(iv0.get("voice", "hand") if (iv0 := (lambda rr: (json.loads(rr[0][0]) if rr and rr[0][0].startswith("{") else {}))(cxq("SELECT value FROM record WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run))) else "hand", name, kind, by, cells.get("sources") or {}); gr["belief"] = bl0
     part = add_part(name, n, run, text, p, judge, gr) if accepting else ("rejected" if retire_part(name, n, run, vrun, "rejected_by") else "")
     if kind == "supersedes" and cells.get("supersedes_run") and not part.startswith("refused") and retire_part(name, n, cells["supersedes_run"], run, "superseded_by"): part += " | retired the part of run %d" % cells["supersedes_run"]
     moved = ""
@@ -1798,7 +2084,7 @@ def v_judge(name, n, run, text=None, answers_given=None, judge_name=None):
                 if not s2 or s2[3] != "working": v_state(name, n2, "working")
             moved = " | C%d done by this verdict; next C%s" % (n, n2)
     if not moved and accepting and part and not part.startswith("refused"): moved = close_by_parts(name, n)   # C39
-    irow = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run); iv = {}
+    irow = cxq("SELECT value FROM record WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run); iv = {}
     try: iv = json.loads(irow[0][0]) if irow else {}
     except (ValueError, TypeError): iv = {}
     cx_put("verdict", name, run, vrun, at, json.dumps({"n": n, "run": run, "kind": kind, "p": p, "judge": judge, "answers": answers, "sheet": cells, "part": part, "voice": iv.get("voice", "hand"), "guess": bool(iv.get("guess"))}))
@@ -1917,7 +2203,7 @@ def hydration_text(name, pr, nxt):
         if left: lines.append("REMAINDER of C%d (parts left not satisfied): " % nxt + "; ".join("%d %s" % (r["k"], line_text(r["run"])[:100]) for r in left[:6]))
         # C41b: why the last turn did not close this checkpoint: its refusals by receipt, with the cause; feedback, never state (the owner, C40)
         ref = []
-        for (rn, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 30", name):
+        for (rn, v) in cxq("SELECT n, value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 30", name):
             d = json.loads(v)
             if d.get("n") != nxt or d.get("kind") != "hallucination" or d.get("judge") != "receipt": continue
             sh = d.get("sheet") or {}; ref.append("run %d: %s -> the number%s %s %s in no print of this checkpoint (pipe that print first, or leave the number out)" % (rn, line_text(rn)[:70], "s" if len(sh.get("numbers_out") or []) > 1 else "", ", ".join(sh.get("numbers_out") or []), "are" if len(sh.get("numbers_out") or []) > 1 else "is"))
@@ -1939,7 +2225,7 @@ def hydration_text(name, pr, nxt):
     for (n, run, at, ts, text) in cx_list("checkpoint", name):
         st = cx_get("state", name, n); s = st[3] if st else "open"
         lines.append("  C%d [%s] %s" % (n, s, text[:70] if (s == "done" and n != nxt) else (text if n == nxt else text[:160])))
-    vs = [(n, jload(v)) for (n, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 40", name)]
+    vs = [(n, jload(v)) for (n, v) in cxq("SELECT n, value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 40", name)]
     moves = [(n, d) for (n, d) in vs if d.get("kind") in ("completes", "progresses", "supersedes", "holds") and d.get("part") and not str(d.get("part")).startswith("refused")][:3]
     if moves:
         lines.append("LAST MOVES (verdicts that added state; drift, hallucination and invention never hydrate, C40):")
@@ -1950,25 +2236,23 @@ def hydration(name, at=None):
     if not pr: raise SystemExit("no project " + name)
     return hydration_text(name, pr, at if at is not None else next_checkpoint(name))
 def v_hydrate(name, at=None):
-    ensure_cx(); h = hydration(name, at); sys.stdout.write(h); print("[%d bytes]" % len(h.encode()), file=sys.stderr)
+    h = hydration(name, at); sys.stdout.write(h); print("[%d bytes]" % len(h.encode()), file=sys.stderr)
 def v_accept(name, n, run=None):
     # the owner's word: with a run, that ingest's sentence becomes a part of C n's state; without, C n is done
-    ensure_cx()
     if run is None and RAIL: print(met_waits(name, n, "the accept").strip(" |") or "C%d is done already" % n); return
     if run is None: v_state(name, n, "done"); return
-    rows = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
+    rows = cxq("SELECT value FROM record WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", name, run)
     if not rows: raise SystemExit("ingest run %s is not in the index" % run)
     text = line_text(run); r = add_part(name, n, run, text, None, "owner"); answer_question(name, run, "accept"); print("part %s for %s C%d from run %d: %s" % (r, name, n, run, text[:90]))
     m2 = close_by_parts(name, n)
     if m2: print(m2.strip(" |"))
 def v_reject(name, n, run):
     # the owner's word, the counterpart of accept: that sentence is not a part of C n's state whatever the judge said; it stays as history and is never re-accepted
-    ensure_cx()
     answer_question(name, run, "reject")
     if retire_part(name, n, run, "owner", "rejected_by"): print("part of run %d rejected from %s C%d by the owner" % (run, name, n))
     else: raise SystemExit("no part of run %s in %s C%d" % (run, name, n))
     # a part this run had superseded comes back: the newer value was never true, so the older one stands again
-    for (k, v) in q("SELECT n, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
+    for (k, v) in cxq("SELECT n, value FROM record WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name):
         d = json.loads(v)
         if d.get("n") == n and d.get("superseded_by") == run:
             d.pop("superseded_by"); cx_put("part", name, k, d["run"], clock(), json.dumps(d)); print("part of run %d stands again in %s C%d (it was superseded by the rejected run)" % (d["run"], name, n))
@@ -1990,8 +2274,8 @@ def worker(engine, model, prompt, cwd, act):
 def judgment_step(name, n, ck):
     # the router: a judgment step is one jev question over the project's state; no model turn. The answer is ingested and judged like any output.
     pr = cx_get("project", name, 0); ex = cx_get("expected", name, n)
-    part_texts = [line_text(json.loads(v).get("run") or 0) for (v,) in q("SELECT value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name)]
-    state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "accepted_parts_of_the_project": part_texts[:20], "last_verdicts": [line_text(json.loads(v).get("run") or 0)[:200] for (_, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", name)]}
+    part_texts = [line_text(json.loads(v).get("run") or 0) for (v,) in cxq("SELECT value FROM record WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 200", name)]
+    state = {"project": name, "scope": pr[3], "checkpoint": ck[3], "expected": ex[3] if ex else "(none)", "accepted_state": accepted_state(name, n), "accepted_parts_of_the_project": part_texts[:20], "last_verdicts": [line_text(json.loads(v).get("run") or 0)[:200] for (_, v) in cxq("SELECT n, value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", name)]}
     allparts = set()
     for t in part_texts: allparts |= content_words(t)
     cov, by_rel = coverage(content_words(ck[3]), allparts)
@@ -2005,7 +2289,7 @@ def judgment_step(name, n, ck):
     else: raise SystemExit("judgment step: the graph covered %.2f and no judge is set" % cov)
     return "judgment by %s: the statement holds with probability %.2f. EXPECTED: %s" % (who, p, "met" if p >= THRESH else "not met"), p
 def v_turn(name, engine="claude", model=None, act=False, at=None, cwd=None):
-    ensure_cx(); nxt = at if at is not None else next_checkpoint(name)
+    nxt = at if at is not None else next_checkpoint(name)
     if nxt is None: print("nothing to do: every checkpoint of %s is done" % name); return None
     if not cx_get("checkpoint", name, nxt): raise SystemExit("no checkpoint %s %d" % (name, nxt))
     st = cx_get("state", name, nxt)
@@ -2078,7 +2362,7 @@ Rules: an expected output is an observable print, never a test name, a summary o
 """
 def v_plan(name, path, engine="claude", model=None, scope=None):
     # C43 (the owner, 11-04 05:0x: if i give you a repo and say ingest this into cortex, build the outlines checkpoints and expected outputs): the repo's words in, an outline out, read before any build
-    ensure_cx(); path = os.path.abspath(os.path.expanduser(path))
+    path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isdir(path): raise SystemExit("no such folder: " + path)
     words = repo_words(path)
     if not words: raise SystemExit("the repo has no readme, docs or markdown to plan from: " + path)
@@ -2113,7 +2397,7 @@ def handback(name, n, text, res):
     print("hand-back %d on %s C%d: %s | the build moves on; the owner decides with cortex decide %s %d accept|reject|checkpoint" % (k, name, n, text[:120], name, k))
 def v_build(name, engine="claude", model=None, box_min=30, max_turns=12, act=True):
     # C44 (the owner, 11-04 05:0x: tell cortex to build it; it prescribes the work to the headless workers, checks the outputs, prescribes the next steps; a flaw it cannot settle is handed back and the build moves on)
-    ensure_cx(); t0 = time.time(); turns, k, log = {}, 0, []
+    t0 = time.time(); turns, k, log = {}, 0, []
     try: sys.stdout.reconfigure(line_buffering=True)   # the schedule lines reach the log as they happen (python -I ignores PYTHONUNBUFFERED)
     except (AttributeError, ValueError): pass
     cwd = repo_of(name) or os.path.join(WORKDIR, name)
@@ -2153,13 +2437,13 @@ def v_build(name, engine="claude", model=None, box_min=30, max_turns=12, act=Tru
         elif not moved and turns[nxt] >= 2: handback(name, nxt, "no progress after %d turns" % turns[nxt], res)
     print("build %s: %d turns in %.0f s; %d hand-backs open; run cortex formula %s" % (name, k, time.time() - t0, len([1 for (hk, hr, ha, ht, hv) in cx_list("handback", name) if not json.loads(hv).get("decided")]), name))
 def v_handbacks(name):
-    ensure_cx(); rows = cx_list("handback", name)
+    rows = cx_list("handback", name)
     for (k, run, at, ts, v) in rows:
         d = json.loads(v); print("hand-back %d C%d [%s] %s: %s%s" % (k, d.get("n"), time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0))), d.get("worker") or "", d.get("text", "")[:200], (" | decided: " + d["decided"]) if d.get("decided") else " | open"))
     print("%d hand-backs of %s; decide one: cortex decide %s <k> accept|reject|checkpoint [: <new checkpoint text> || <expected>]" % (len(rows), name, name))
 def v_decide(name, k, how, text=None):
     # C45 (the owner: i give or you give a decision on it, cortex is updated and build moves on)
-    ensure_cx(); had = cx_get("handback", name, k)
+    had = cx_get("handback", name, k)
     if not had: raise SystemExit("no hand-back %d of %s" % (k, name))
     d = json.loads(had[3]); n = d["n"]
     if how not in ("accept", "reject", "checkpoint"): raise SystemExit("decide accept|reject|checkpoint")
@@ -2228,7 +2512,6 @@ def v_capture(cwd=None, name=None):
     if not texts_all: print("capture: no assistant text in the tail"); return
     name = name or project_for_cwd(cwd)
     if not name: print("capture: cwd %s belongs to no cortex project; nothing ingested" % cwd); return
-    ensure_cx()
     nxt0 = next_checkpoint(name)
     if nxt0 is None:
         cps0 = cx_list("checkpoint", name, desc=True, limit=1); nxt0 = cps0[0][0] if cps0 else None
@@ -2242,10 +2525,10 @@ def v_capture(cwd=None, name=None):
             for l in lines:
                 body = "%s => %s" % (cmdline, l)
                 if cx_get("receipt", name, text_key(body)): continue   # the same print already a receipt
-                try: r = typed("cortex receipt %s %d : %s" % (name, nxt0, body))
+                try: run0, at0, r = record("receipt", name, nxt0, body)
                 except RuntimeError: continue
-                run0 = r["run"]; cx_put("receipt", name, text_key(body), run0, clock(), json.dumps({"n": nxt0, "cmd": cmdline, "ts": int(time.time()), "session": (hook.get("session_id") or "")[:8]})); key_gates(name, run0); got.append({"run": run0})
-            if got: rc[cmdline] = {"ts": int(time.time()), "lines": got + (rc.get(cmdline, {}).get("lines") or [])[:60]}; cx_put("receipts", name, nxt0, got[-1]["run"], clock(), json.dumps(rc)); nrec += len(got)
+                got.append({"run": run0})
+            nrec += len(got)
         if nrec: print("receipts: %d lines typed from %d tool results for C%d" % (nrec, len(results[-40:]), nxt0))
     own = []
     if owner_texts:
@@ -2268,17 +2551,17 @@ def v_capture(cwd=None, name=None):
 #      = expected completed output contract: satisfied parts and the remainder not satisfied. A snapshot per report; the next report diffs it. ----
 def snapshot(name):
     vs = {}
-    for (v,) in q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n", name):
+    for (v,) in cxq("SELECT value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n", name):
         d = json.loads(v); vs.setdefault(d.get("n"), {}); vs[d.get("n")][d.get("kind")] = vs[d.get("n")].get(d.get("kind"), 0) + 1
     cps = {}
     for (n, run, at, ts, text) in cx_list("checkpoint", name):
         st = cx_get("state", name, n); ex = cx_get("expected", name, n)
         cps[str(n)] = {"state": st[3] if st else "open", "parts": len(parts_of(name, n, 1000)), "verdicts": vs.get(n, {})}
-    ing = q("SELECT count(*) FROM main.cx WHERE kind = 'ingest' AND name = ? AND n > 0", name)[0][0]
+    ing = cxq("SELECT count(*) FROM record WHERE kind = 'ingest' AND name = ? AND n > 0", name)[0][0]
     return {"clock": clock(), "ts": int(time.time()), "checkpoints": cps, "ingests": ing, "verdicts": sum(sum(x.values()) for x in vs.values())}
 def v_formula(name):
-    ensure_cx(); now = snapshot(name)
-    prev_rows = q("SELECT value FROM main.cx WHERE kind = 'formula' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 1", name)
+    now = snapshot(name)
+    prev_rows = cxq("SELECT value FROM record WHERE kind = 'formula' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 1", name)
     prev = json.loads(prev_rows[0][0]) if prev_rows else None
     cps = now["checkpoints"]; N = len(cps); done = [n for n, c in cps.items() if c["state"] == "done"]
     print("INPUT OUTPUT FORMULA %s: before/after + progression = diff output + before and after states + progression = expected completed output contract" % name)
@@ -2330,7 +2613,6 @@ def next_work(name):
     return None
 def v_remainder(name, n=None, text=None, k=None, note=None):
     # cortex remainder <name> <n> : <part left not satisfied>   |   cortex remainder <name> <n> <k> satisfied [: by what]   |   cortex remainder <name>
-    ensure_cx()
     if n is None:
         tot = open_ = 0
         for (cn, run, at, ts, ctext) in cx_list("checkpoint", name):
@@ -2347,7 +2629,7 @@ def v_remainder(name, n=None, text=None, k=None, note=None):
         if not hit: raise SystemExit("no remainder part %d on %s C%d" % (k, name, n))
         hit[0]["satisfied"] = note or "yes"; hit[0]["satisfied_ts"] = int(time.time())
         cx_put("remainder", name, n, hit[0]["run"], clock(), json.dumps(rs)); print("remainder %s C%d.%d satisfied: %s" % (name, n, k, note or "yes")); return
-    r = typed("cortex remainder %s %d : %s" % (name, n, text)); run = r["run"]; key_gates(name, run)
+    run = record("remainder", name, n, text)[0]
     rs.append({"k": len(rs) + 1, "run": run, "ts": int(time.time()), "satisfied": None})
     cx_put("remainder", name, n, run, clock(), json.dumps(rs)); print("remainder %s C%d.%d run %d: %s" % (name, n, len(rs), run, text[:120]))
 def v_need_clear(name, n):
@@ -2356,50 +2638,26 @@ def v_need_clear(name, n):
     print("needs of %s C%d cleared (answered by the liaison)" % (name, n))
 def v_need(name, n, text, who="hand"):
     # C41: what a worker said the hydration lacked; typed on the checkpoint, carried by its next hydration
-    ensure_cx()
     if not cx_get("checkpoint", name, n): raise SystemExit("no such checkpoint: %s %d" % (name, n))
-    try: r = typed("cortex need %s %d : %s" % (name, n, clean(text))); run = r["run"]
+    try: run = record("need", name, n, clean(text))[0]
     except RuntimeError as e: raise SystemExit("refused: %s" % e)
     had = cx_get("need", name, n); L = json.loads(had[3]) if had else []
     L.append({"text": clean(text)[:300], "run": run, "who": who, "ts": int(time.time())}); cx_put("need", name, n, run, clock(), json.dumps(L[-20:]))
     print("need %s C%d run %d (%s): %s" % (name, n, run, who, clean(text)[:120]))
 def v_mark(name, run, kind, why=""):
     # the labeled set: the owner's (or the known-truth) word on what a judged sentence was; cortex learn trains the weights on these
-    ensure_cx()
     if kind not in MARKS: raise SystemExit("a mark is one of: " + " ".join(sorted(MARKS)))
     v = cx_get("verdict", name, run)
     if not v: raise SystemExit("no verdict for run %s in %s; judge it first so the mark knows its checkpoint" % (run, name))
     n = json.loads(v[3]).get("n"); cx_put("mark", name, run, run, clock(), json.dumps({"kind": kind, "n": n, "why": why, "ts": int(time.time())})); answer_question(name, run, "mark:" + kind)
     print("mark %s run %d C%s: %s" % (name, run, n, kind))
 def key_project(nm):
-    # the (project, gate) key for every line of the project not keyed yet, in run order (build time, once per line)
-    had = cx_get("keyed", nm, 0); upto = int(json.loads(had[3]).get("upto", 0)) if had else 0
-    runs = set()
-    for kind in ("project", "checkpoint", "expected", "ingest"):
-        for (n, run, at, ts, value) in cx_list(kind, nm, limit=5000):
-            if run and run > upto: runs.add(run)
-    for run in sorted(runs): key_gates(nm, run)
-    if runs: cx_put("keyed", nm, 0, max(runs), clock(), json.dumps({"upto": max(runs), "runs": len(runs), "ts": int(time.time())}))
-    return len(runs)
+    return 0   # the neuron keys every line at arrival (D5)
 def key_pairs_all(limit_s=None):
-    # build time: the pair key for every source and project line not keyed yet (C23); prints progress; a time box in seconds
-    t0 = time.time(); n = 0
-    for nm in [nm for (nm, band) in sources()] + projects():
-        had = cx_get("paired", nm, 0); upto = int(json.loads(had[3]).get("upto", 0)) if had else 0; top = upto
-        kinds = ("source",) if nm in [x for (x, b) in sources()] else ("project", "checkpoint", "expected", "ingest", "receipt")
-        for kind in kinds:
-            for (k, run, at, ts, v) in cx_list(kind, nm, limit=100000):
-                if not run or run <= upto: continue
-                key_pairs(nm, run); n += 1; top = max(top, run)
-                if n % 2000 == 0: print("  %d lines paired, %.0f s" % (n, time.time() - t0), flush=True)
-                if limit_s and time.time() - t0 > limit_s: break
-            if limit_s and time.time() - t0 > limit_s: break
-        if top > upto: cx_put("paired", nm, 0, top, clock(), json.dumps({"upto": top, "ts": int(time.time())}))
-        if limit_s and time.time() - t0 > limit_s: print("time box reached in %s" % nm); break
-    print("pairs: %d lines keyed in %.0f s" % (n, time.time() - t0)); return n
+    print("pairs: the neuron keys every line at arrival (the door plan, D5); nothing to do"); return 0
 def v_learn(names=None, key_only=False):
-    ensure_cx(); t0 = time.time()
-    names = names or sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0")))
+    t0 = time.time()
+    names = names or sorted(set(r[0] for r in cxq("SELECT name FROM record WHERE kind = 'project' AND name >= '' AND n = 0")))
     for nm in names: print("key %s: %d lines keyed in %.1f s" % (nm, key_project(nm), time.time() - t0))
     if key_only: return
     rows = []
@@ -2407,7 +2665,7 @@ def v_learn(names=None, key_only=False):
         pr = cx_get("project", nm, 0)
         for (n, run, at, ts, value) in cx_list("mark", nm, limit=5000):
             d = json.loads(value); ck = cx_get("checkpoint", nm, d["n"]); ex = cx_get("expected", nm, d["n"])
-            ing = q("SELECT value FROM main.cx WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", nm, run)
+            ing = cxq("SELECT value FROM record WHERE kind = 'ingest' AND name = ? AND run = ? AND n > 0", nm, run)
             if not ing or not ck or not pr: continue
             rows.append((feats(sheet_cells(nm, d["n"], run, line_text(run), pr, ck, ex)), d["kind"], nm, run))
     if len(rows) < 6: print("learn: %d marks; at least 6 are needed" % len(rows)); return
@@ -2426,11 +2684,10 @@ def v_learn(names=None, key_only=False):
 def learned_answers_x(x, W): return {k: round(sigmoid(sum(a * b for a, b in zip(W["w"].get(k, []), x))), 3) for k in JUDGE_QUESTIONS}
 def v_verdicts(name, n=None, limit=40):
     # the owner reads the judge here: every judged line of a project (or of checkpoint n), newest first, with the run that mark and accept and reject take
-    ensure_cx()
     parts = {}
-    for (ts, v) in q("SELECT ts, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 500", name):
+    for (ts, v) in cxq("SELECT ts, value FROM record WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 500", name):
         d = json.loads(v); parts[d.get("run")] = d
-    rows = q("SELECT n, ts, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT ?", name, 2000 if n is not None else limit)
+    rows = cxq("SELECT n, ts, value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT ?", name, 2000 if n is not None else limit)
     shown = 0
     print("%-7s %-4s %-13s %-5s %-22s %-11s %-12s %-12s %-24s %s" % ("run", "C", "verdict", "p", "judge", "when", "part", "mark", "ground", "sentence"))
     for (run, ts, v) in rows:
@@ -2443,10 +2700,22 @@ def v_verdicts(name, n=None, limit=40):
         shown += 1
         if shown >= limit: break
     print("%d judged lines of %s%s. mark one: cortex mark %s <run> <kind> [: why]; the owner's word: cortex accept|reject %s <n> <run>" % (shown, name, (" at C%d" % n) if n is not None else "", name, name))
+def v_recall(name, t0=0, t1=None, kinds=None):
+    # cortex recall <project> [<kind> ...] [from <unix> to <unix>]: the project's records in time order from the tree (the owner, 11-03: a time state read ... recall print);
+    # the brain's own recall is `recall : <key words>` at its prompt (the find primitive writes the key memory into the line's key cell)
+    t1 = t1 or int(time.time()); keys, extra = keys_of(name); rows = []
+    for (kind, n), krun in keys.items():
+        if kinds and kind not in kinds: continue
+        for (m, text, times) in records_of(krun):
+            for t in times:
+                if t0 <= t <= t1: rows.append((t, kind, n, m, text))
+    rows.sort()
+    for (t, kind, n, m, text) in rows: print("%s %s%s run %d: %s" % (time.strftime("%m-%d %H:%M:%S", time.localtime(t)), kind, (" %d" % n) if n is not None else "", m, text[:140]))
+    print("%d records of %s between %s and %s" % (len(rows), name, time.strftime("%Y-%m-%d %H:%M", time.localtime(t0)) if t0 else "the first", time.strftime("%Y-%m-%d %H:%M", time.localtime(t1))))
 def v_status(name=None):
-    ensure_cx(); st = ask("stats")["main"]
+    st = ask("stats")["main"]
     r = judge_route()
-    print("brain: gates %d runs %d hops %d refused %d clock %d | judge: receipt, shape, learned v%s, then %s | index rows %d" % (st["gates"], st["runs"], st["hops"], st["refused"], clock(), (weights() or {}).get("v", 0), ("jev via " + jev_route()["via"]) if r == "jev" else ("claude:%s (subscription)" % JUDGE_MODEL if r == "claude" else "none"), q("SELECT count(*) FROM main.cx WHERE kind = 'checkpoint' AND name = ? AND n >= 0", name or "")[0][0] if name else -1))
+    print("brain: gates %d runs %d hops %d refused %d clock %d | judge: receipt, shape, learned v%s, then %s | tree: projects %d keys %d records %d" % ((st["gates"], st["runs"], st["hops"], st["refused"], clock(), (weights() or {}).get("v", 0), ("jev via " + jev_route()["via"]) if r == "jev" else ("claude:%s (subscription)" % JUDGE_MODEL if r == "claude" else "none")) + tree_count()))
     # C48 (the owner, 11-04: the neuron kernel is far more advanced now ... updating it into the system): which kernel answers this port,
     # told by the door verbs the cascade kernel added (moved, restep, relabel answer; the g35 kernel of 11-02 says unknown request)
     try:
@@ -2461,7 +2730,7 @@ def v_status(name=None):
         except OSError: now = "(file missing)"
         print("freeze: brain %s file %s %s" % (fr[3][:16], now[:16], "EQUAL" if now == fr[3] else "DIFFERENT"))
     caps = []
-    for (nm,) in q("SELECT name FROM main.cx WHERE kind = 'capture' AND name >= '' AND n = 0"):
+    for (nm,) in cxq("SELECT name FROM record WHERE kind = 'capture' AND name >= '' AND n = 0"):
         c = cx_get("capture", nm, 0)
         if c:
             d = json.loads(c[3]); caps.append("%s %s (%s, %d sentences, %d new%s%s)" % (nm, time.strftime("%m-%d %H:%M", time.localtime(d.get("ts", 0))), d.get("event", "stop"), d.get("sentences", 0), d.get("new", 0), (", %d judged, %d recorded only" % (d["judged"], d.get("recorded", 0))) if "judged" in d else "", ", final message in" if d.get("final") else ""))
@@ -2469,7 +2738,7 @@ def v_status(name=None):
     B = bands(); print("bands: llm %.2f to %.2f, owner %.2f to %.2f, a reference alone %.2f, two sources %.2f; owner and source %.2f, llm and two sources %.2f, llm and owner %.2f (the owner, 11-03 21:5x; cx bands/judge)" % (B["llm"][0], B["llm"][1], B["owner"][0], B["owner"][1], B["reference_alone"], B["reference_agree"], B["owner_and_source"], B["llm_and_two_sources"], B["llm_and_owner"]))
     vs = voices()
     if vs: print("voices: " + "; ".join("%s claims %d, confirmed %d, false %d, guesses %d, trust %s%s" % (vn, d["claims"], d["confirmed"], d["false"], d["guesses"], ("%.2f" % t) if t is not None else "none yet", (" [" + " ".join("%s %s" % (pj, ("%.2f" % (b["confirmed"] / (b["confirmed"] + b["false"]))) if (b["confirmed"] + b["false"]) else "-") for pj, b in sorted(d.get("by_project", {}).items())) + "]") if d.get("by_project") else "") for (vn, d, t) in vs) + " | proven by receipt, shape or sources only; a labeled guess is not counted; per project in brackets, per word on the verdict line (C25, C31)")
-    names = [name] if name else sorted(set(r[0] for r in q("SELECT name FROM main.cx WHERE kind = 'project' AND name >= '' AND n = 0")))
+    names = [name] if name else sorted(set(r[0] for r in cxq("SELECT name FROM record WHERE kind = 'project' AND name >= '' AND n = 0")))
     for nm in names:
         pr = cx_get("project", nm, 0)
         if not pr: print("no project", nm); continue
@@ -2480,11 +2749,11 @@ def v_status(name=None):
             if name:   # jev C3: the status of one project lists each checkpoint with its expected output
                 ex = cx_get("expected", nm, n)
                 if ex: print("      expected: %s" % ex[3][:240])
-        for (n, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", nm):
+        for (n, v) in cxq("SELECT n, value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 3", nm):
             d = jload(v)
             if d: print("  verdict run %d C%s %s %.2f (%s): %s" % (n, d.get("n"), d.get("kind"), d.get("p", 0), d.get("judge"), line_text(n)[:70]))
 def v_freeze(path):
-    ensure_cx(); sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
     run, at, _ = record("freeze", "handler", 0, sha); os.chmod(path, 0o444)
     print("frozen %s sha256 %s run %d clock %d (file now read-only)" % (path, sha, run, at))
 
@@ -2515,7 +2784,7 @@ def source_type_paths(name, root, files, limit_per_file=400):
                 if is_noise(sent): noise += 1; continue
                 k = text_key(sent)
                 if cx_get("source", name, k): dupes += 1; continue
-                try: r = typed("cortex source %s : %s" % (name, sent))
+                try: r = record("source", name, None, sent)[2]
                 except RuntimeError: refused += 1; continue
                 head = sent.lower()[:25]; off = next((i for i, x in enumerate(plines) if head in x), 0)   # the sentence's own line inside the paragraph (a code file has few blank lines)
                 run = r["run"]; cx_put("source", name, k, run, clock(), json.dumps({"path": rel, "line": ln + off})); key_gates(name, run); key_pairs(name, run); n_typed += 1; k_file += 1
@@ -2537,7 +2806,7 @@ def code_files(root, globs=None, limit=300):
     return out
 def v_source_path(name, band, root, text, domain=None, globs=None):
     # cortex source <name> reference --path <folder> [--glob a,b] : <what it is>: the folder's docs and code typed with paths (C50)
-    ensure_cx(); root = os.path.abspath(os.path.expanduser(root))
+    root = os.path.abspath(os.path.expanduser(root))
     if not os.path.isdir(root): raise SystemExit("no such folder: " + root)
     if not cx_get("source", name, 0): v_source(name, band or "reference", text or ("the docs and code of %s, read %s" % (root, time.strftime("%Y-%m-%d"))), domain or ["software", "coding"])
     had = cx_get("source", name, 0); d = json.loads(had[3]); d["path"] = root; cx_put("source", name, 0, had[0], had[1], json.dumps(d)); _SRCD.pop(name, None)
@@ -2548,7 +2817,7 @@ def v_source_path(name, band, root, text, domain=None, globs=None):
     return n
 def source_line_of(nm, run):
     # C50: the path and line a source's run came from, when that source was typed with paths
-    row = q("SELECT value FROM main.cx WHERE kind = 'source' AND name = ? AND run = ? AND n > 0", nm, run)
+    row = cxq("SELECT value FROM record WHERE kind = 'source' AND name = ? AND run = ? AND n > 0", nm, run)
     try: d = json.loads(row[0][0]) if row else {}
     except (ValueError, TypeError): d = {}
     return (d.get("path"), d.get("line")) if d.get("path") else (None, None)
@@ -2578,7 +2847,7 @@ def gate_of_word(w):
 def v_questions_ask(name):
     # C51 (the owner, 11-04: a source is not just memorized by the brain but used to populate what it feels it needs to know): every open question's words looked up in the
     # registered sources (pairs and gates); a word a source holds is answered naming the source (and the file and line when the source has paths); a question with no word left closes
-    ensure_cx(); qs = open_questions(name, None, 60); srcs = [nm for (nm, b) in sources()]; closed = 0
+    qs = open_questions(name, None, 60); srcs = [nm for (nm, b) in sources()]; closed = 0
     print("questions of %s asked of the sources: %d open" % (name, len(qs)))
     for d in qs:
         words = d.get("words") or []; found, found_shown, left, ptrs = [], [], [], []
@@ -2611,7 +2880,7 @@ def v_questions_ask(name):
                             if is_noise(sent): continue
                             k = text_key(sent)
                             if cx_get("source", src, k): continue
-                            try: r = typed("cortex source %s : %s" % (src, sent))
+                            try: r = record("source", src, None, sent)[2]
                             except RuntimeError: continue
                             cx_put("source", src, k, r["run"], clock(), json.dumps({"from": frm, "word": toks[0]})); key_gates(src, r["run"]); key_pairs(src, r["run"]); typed_k += 1
                     found.append("%s defined by %s (%d lines from %s)" % (w, src, typed_k, ",".join(sorted(set(f for f, t in defs))))); found_shown.append(found[-1]); ptrs.append({"w": w, "src": src, "word": toks[0]})
@@ -2627,7 +2896,7 @@ def v_questions_ask(name):
 def answered_questions(name, limit=60):
     # C51.1: the questions of a project the sources answered (closed by cortex questions --ask), newest first
     out = []
-    for (run, v) in q("SELECT n, value FROM main.cx WHERE kind = 'question' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name):
+    for (run, v) in cxq("SELECT n, value FROM record WHERE kind = 'question' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name):
         d = json.loads(v)
         if not str(d.get("answered") or "").startswith("sources"): continue
         d["run"] = run; out.append(d)
@@ -2652,7 +2921,7 @@ def question_lines(d):
         elif p.get("run"):
             pa, l = source_line_of(p["src"], p["run"]); lines.append((p["w"], p["src"], ("%s:%s" % (pa, l)) if pa else "run %d" % p["run"], line_text(p["run"])))
         elif p.get("word"):
-            for (run, v) in q("SELECT run, value FROM main.cx WHERE kind = 'source' AND name = ? AND n > 0", p["src"]):
+            for (run, v) in cxq("SELECT run, value FROM record WHERE kind = 'source' AND name = ? AND n > 0", p["src"]):
                 try: dv = json.loads(v)
                 except (ValueError, TypeError): continue
                 if dv.get("word") == p["word"]: lines.append((p["w"], p["src"], "run %d from %s" % (run, dv.get("from")), line_text(run)))
@@ -2663,7 +2932,7 @@ def question_lines(d):
         seen.add(k); out.append(L)
     return out
 def v_questions_answered(name):
-    ensure_cx(); qs = answered_questions(name)
+    qs = answered_questions(name)
     print("questions of %s answered by the sources: %d" % (name, len(qs)))
     for d in qs:
         print("C%s run %d (%s): %s | answered %s%s" % (d.get("n"), d["run"], time.strftime("%m-%d %H:%M", time.localtime(d["ts"])), ", ".join(d.get("words") or []), time.strftime("%m-%d %H:%M", time.localtime(d.get("answered_ts") or d["ts"])), "" if d.get("found") else " (closed before the pointers were kept; looked up again by its words)"))
@@ -2701,13 +2970,13 @@ def v_why(name, plan=False, quiet=False):
     # C49 (the owner, 11-04 15:3x: the sixth should see the trust drop the incorrect judgement and ask why did this happen, how did it happen, can it be fixed, do we have a plan,
     # then the cortex can register its own plan, ask the headless to build it): the verdicts of this project the record itself proves wrong, each with the cells that decided it
     # and the rule; --plan registers the cortex's own plan on the project cortex-self (a clone of the front door, built by the headless against the test brain on port 7010)
-    ensure_cx(); faults = []
-    vs = [(run, jload(v), ts) for (run, v, ts) in q("SELECT n, value, ts FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 400", name)]
+    faults = []
+    vs = [(run, jload(v), ts) for (run, v, ts) in cxq("SELECT n, value, ts FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 400", name)]
     parts = {}
-    for (k, v) in q("SELECT n, value FROM main.cx WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 400", name):
+    for (k, v) in cxq("SELECT n, value FROM record WHERE kind = 'part' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 400", name):
         d = jload(v); parts.setdefault(d.get("run"), []).append(d)
     marks = {}
-    for (k, v) in q("SELECT n, value FROM main.cx WHERE kind = 'mark' AND name = ? AND n > 0 LIMIT 400", name): marks[k] = jload(v)
+    for (k, v) in cxq("SELECT n, value FROM record WHERE kind = 'mark' AND name = ? AND n > 0 LIMIT 400", name): marks[k] = jload(v)
     checks = {}
     for (n0, r0, a0, t0, v0) in cx_list("checklast", name): checks[n0] = jload(v0)
     for (run, d, vts) in vs:
@@ -2825,7 +3094,7 @@ def v_lesson(name, track, ladder=None, picks=None):
     # C52 (the owner, 11-04 15:3x: find docs that are teaching docs for the codebases, and see if it can learn from a lesson that we did not write; a beginner to senior style lesson
     # progression, with checkpoints, tests, answer key held by the judge): a public teaching track (exercism) becomes an outline: one checkpoint per exercise in difficulty order, the
     # lesson's own instructions as the text, the tests passing as the expected, and the cortex check holding the answer key (the tests' shas and the exemplar, outside the repo)
-    ensure_cx(); track = os.path.abspath(os.path.expanduser(track))
+    track = os.path.abspath(os.path.expanduser(track))
     cfg = json.load(open(os.path.join(track, "config.json"))); lang = (cfg.get("language") or os.path.basename(track)).lower()
     if lang not in ("python", "go"): raise SystemExit("the lesson runner knows python and go tracks today; this track says " + lang)
     practice = [e for e in cfg["exercises"]["practice"] if e.get("status", "active") != "deprecated"]
@@ -2920,15 +3189,23 @@ def source_gate(name):
         except RuntimeError: pass
         rows = q("SELECT gate FROM main.label WHERE symbol = ?", sym)
     if not rows: print("the source symbol %s has no gate; the source answers with gate 0 until it has one" % sym); return 0
-    g = rows[0][0]; q("INSERT OR REPLACE INTO cx.me (source, gate) VALUES (?, ?)", name, g); return g
+    g = rows[0][0]; c = cx_db(); c.execute("INSERT OR REPLACE INTO me (source, gate) VALUES (?, ?)", (name, g)); c.commit(); c.close(); return g   # the source db's own row (its shape), written in the db
 def source_is_db(nm):
     try: return bool(source_info(nm).get("db"))
     except Exception: return False
 def source_holds_gate(nm, g):
     # the owner, 11-04 18:4x: all may stay until the replacement is built correct: a source grounds by its typed keys or by its db keys, both
-    return cx_get("gate", nm, g) or (source_is_db(nm) and cx_get("sword", nm, text_key(sym_of(g)))) or None
+    if cx_get("gate", nm, g): return True
+    if source_is_db(nm):
+        try: return bool(q("SELECT 1 FROM cx.words WHERE word = ? AND source = ? LIMIT 1", sym_of(g).lower(), nm))
+        except RuntimeError: return False
+    return None
 def source_holds_pair(nm, a, b):
-    return cx_get("pair", nm, pair_key(a, b)) or (source_is_db(nm) and cx_get("spair", nm, text_key("%s %s" % (sym_of(a), sym_of(b))))) or None
+    if cx_get("pair", nm, pair_key(a, b)): return True
+    if source_is_db(nm):
+        try: return bool(q("SELECT 1 FROM cx.words x JOIN cx.words y ON y.id = x.id WHERE x.word = ? AND y.word = ? AND x.source = ? LIMIT 1", sym_of(a).lower(), sym_of(b).lower(), nm))
+        except RuntimeError: return False
+    return None
 def cx_db_k(c):
     cols = [r[1] for r in c.execute("PRAGMA table_info(corpus)")]
     if "k" not in cols: c.execute("ALTER TABLE corpus ADD COLUMN k INTEGER"); c.execute("CREATE INDEX IF NOT EXISTS corpus_k ON corpus (k)"); c.commit()
@@ -2963,14 +3240,13 @@ def source_db_type(name, items, quiet=False, replace=False):
     if not quiet: print("source %s into cx.db: %d sentences, %d words keyed, %d pairs keyed, %d repeats, %d noise, gate %d, %.1f s; the brain run count did not grow" % (name, n_typed, len(words_seen), len(pairs_seen), dupes, noise, g, time.time() - t0))
     return n_typed
 def v_source_db(name, band, text, domain, path=None, globs=None, from_brain=False, raw=None):
-    ensure_cx()
     if not cx_get("source", name, 0):
         if not text: raise SystemExit("register the source first: cortex source %s owner|reference --db : <what it is>" % name)
         v_source(name, band or "reference", text, domain or ["software"])
     items = []
     if from_brain:
         # the migration: a source typed as lines into the brain replayed from its runs into cx.db; the typed runs stay as history
-        rows = q("SELECT n, run, value FROM main.cx WHERE kind = 'source' AND name = ? AND n > 0 AND run > 0 LIMIT 400000", name)
+        rows = cxq("SELECT n, run, value FROM record WHERE kind = 'source' AND name = ? AND n > 0 AND run > 0 LIMIT 400000", name)
         for (n, run, v) in rows:
             try: d = json.loads(v) if v and v.startswith("{") else {}
             except ValueError: d = {}
@@ -2997,11 +3273,12 @@ def db_rows_of(name, sids):
     c.close(); return out
 def v_ask_source(name, word, run=None):
     # cortex ask-source <name|all> <word or 'a b'> [--run R]: the request written into cx.inbox under run R; the returns read back as the return runs under R, each with its src row
-    ensure_cx(); c = cx_db(); c.close()
+    c = cx_db(); c.close()
     if run is None:
-        r = typed("cortex ask %s : %s" % (name, word)); run = r["run"]
+        run = record("ask", name, None, word)[0]
     gates = {row[1]: row[0] for row in q("SELECT source, gate FROM cx.me")}
     before = set(t["id"] for t in (ask("run main %d" % run).get("tree") or []) if t.get("kind") == 3)
+    run = NK_MEM(run)
     q("INSERT INTO cx.inbox (run, cell, about, word, source) VALUES (?, 24, 0, ?, %s)" % ("NULL" if name == "all" else "?"), *( [run, word] if name == "all" else [run, word, name]))
     time.sleep(0.3)
     kids = [t for t in (ask("run main %d" % run).get("tree") or []) if t.get("kind") == 3 and t["id"] not in before]   # the return runs: arrival = the source's gate, about = the src row (the cortex contract; the kernel's define puts the asked gate there)
@@ -3054,7 +3331,7 @@ def nearest_shape(name, n, run):
         if shared > best[0]: best = (shared, label, r0)
     return best
 def v_second(name, run, reason=None):
-    ensure_cx(); row = q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n = ?", name, run)
+    row = cxq("SELECT value FROM record WHERE kind = 'verdict' AND name = ? AND n = ?", name, run)
     if not row: raise SystemExit("run %d has no verdict on %s" % (run, name))
     d = jload(row[0][0]); n = d.get("n"); kind, by, sh = d.get("kind"), d.get("judge"), d.get("sheet") or {}; text = line_text(run)
     print("second opinion on %s run %d (%s %.2f by %s): %s" % (name, run, kind, d.get("p") or 0, by, text[:120]))
@@ -3102,7 +3379,7 @@ def v_second(name, run, reason=None):
     print("  the ruling typed on the sixth as run %d" % srun)
     return ruling, shape
 def v_dispute(name, run, reason):
-    ensure_cx(); record("dispute", name, run, clean(reason)[:400]); return v_second(name, run, reason)
+    record("dispute", name, run, clean(reason)[:400]); return v_second(name, run, reason)
 # ---- C55 (the owner, 11-04 16:4x: why did, why does, how did, how does, when did, when is, when does, what should be done next): the question word routes to the record ----
 def state_hist(name, n):
     # the state history of a checkpoint as a list (the row holds a list, or a dict with the list under hist or history); the state row itself when the history is empty
@@ -3114,11 +3391,11 @@ def state_hist(name, n):
         if s0: hist = [{"state": s0[3], "run": s0[0], "at": s0[1], "ts": s0[2]}]
     return hist
 def v_askq(name, qtext):
-    ensure_cx(); t = qtext.lower().strip().rstrip("?"); reads = []
+    t = qtext.lower().strip().rstrip("?"); reads = []
     m_run = re.search(r"\brun\s+(\d+)", t); m_c = re.search(r"\bc\s?(\d+)\b", t)
     if t.startswith("why"):
         if m_run:
-            run = int(m_run.group(1)); row = q("SELECT value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n = ?", name, run)
+            run = int(m_run.group(1)); row = cxq("SELECT value FROM record WHERE kind = 'verdict' AND name = ? AND n = ?", name, run)
             if not row: print("run %d has no verdict on %s" % (run, name)); return
             d = jload(row[0][0]); sh = d.get("sheet") or {}
             print("why run %d got %s by %s (C%s): numbers out %s | words out %s | no ground for %s | measure missing %s | shape of the expected %.2f | sources confirm %d disagree %d" % (run, d.get("kind"), d.get("judge"), d.get("n"), ",".join(sh.get("numbers_out") or []) or "-", ",".join((sh.get("words_out") or [])[:8]) or "-", ",".join((sh.get("ground") or {}).get("none") or []) or "-", ",".join(sh.get("measure_missing") or []) or "-", sh.get("shape_expected") or 0, len((sh.get("sources") or {}).get("confirm") or []), len((sh.get("sources") or {}).get("disagree") or [])))
@@ -3128,7 +3405,7 @@ def v_askq(name, qtext):
             if sec: print("  the sixth ruled: %s" % jload(sec[3]).get("ruling", "")[:200])
             reads = ["the verdict row", "cortex why", "the sixth's record"]
         elif m_c:
-            n = int(m_c.group(1)); vs = [(r, jload(v)) for (r, v) in q("SELECT n, value FROM main.cx WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name)]
+            n = int(m_c.group(1)); vs = [(r, jload(v)) for (r, v) in cxq("SELECT n, value FROM record WHERE kind = 'verdict' AND name = ? AND n > 0 ORDER BY n DESC LIMIT 300", name)]
             mine = [(r, d) for (r, d) in vs if d.get("n") == n][:8]
             print("why C%d stands as it does: %d verdicts; the newest: %s" % (n, len(mine), " | ".join("run %d %s by %s" % (r, d.get("kind"), d.get("judge")) for (r, d) in mine[:5])))
             for f in v_why(name, quiet=True):
@@ -3176,7 +3453,7 @@ def v_askq(name, qtext):
 #      its runs, the front door's answer taken on the same inputs, the two printed side by side; retired only on the owner's word (cortex retire) ----
 def teach_inputs(name, k, kind="ingest"):
     import random
-    rows = q("SELECT n, run, value FROM main.cx WHERE kind = ? AND name = ? AND n > 0 AND run > 0 LIMIT 400", kind, name)
+    rows = cxq("SELECT n, run, value FROM record WHERE kind = ? AND name = ? AND n > 0 AND run > 0 LIMIT 400", kind, name)
     random.shuffle(rows); out = []
     for (n, run, v) in rows:
         t = line_text(run)
@@ -3194,17 +3471,17 @@ def brain_pairs_held(name, run):
     dbs = [nm for (nm, band) in sources() if source_is_db(nm)]
     for (a, b) in set(pairs_of(run)):
         w = "%s %s" % (sym_of(a), sym_of(b))
-        for nm in dbs: q("INSERT INTO cx.inbox (run, cell, about, word, source) VALUES (?, 24, 0, ?, ?)", run, w, nm)   # one ask per source: the trigger answers at most 24 rows per ask, so a common pair is not starved by the first sources
+        for nm in dbs: q("INSERT INTO cx.inbox (run, cell, about, word, source) VALUES (?, 24, 0, ?, ?)", NK_MEM(run), w, nm)   # one ask per source: the trigger answers at most 24 rows per ask, so a common pair is not starved by the first sources
         time.sleep(0.05)
         kids = [t for t in (ask("run main %d" % run).get("tree") or []) if t.get("kind") == 3 and t["id"] not in before]
         for t in kids: before.add(t["id"])
         for nm in set(gates.get(t.get("arrival")) for t in kids if gates.get(t.get("arrival"))): held[nm] = held.get(nm, 0) + 1
     return held
 def v_teach(function, k=5, name="cortex"):
-    ensure_cx(); rows = []; equal = 0; total = 0
+    rows = []; equal = 0; total = 0
     if function == "dupe":
         import random
-        lines = q("SELECT n, run, value FROM main.cx WHERE kind = 'line' AND name = '*' AND n > 0 AND run > 0 LIMIT 600"); random.shuffle(lines); picked = []
+        lines = cxq("SELECT n, run, value FROM record WHERE kind = 'line' AND name = '*' AND n > 0 AND run > 0 LIMIT 600"); random.shuffle(lines); picked = []
         for (n0, run0, v0) in lines:
             t0_ = line_text(run0)
             if t0_ and len(t0_) > 20: picked.append((run0, t0_))
@@ -3259,7 +3536,7 @@ def v_teach(function, k=5, name="cortex"):
     return equal, total
 def v_retire(function, words):
     # the owner's word only: the front door reads the brain's answer alone for this function from now on
-    ensure_cx(); cx_put("retired", "teach", text_key(function), 0, clock(), json.dumps({"function": function, "owner": words[:300], "ts": int(time.time())}))
+    cx_put("retired", "teach", text_key(function), 0, clock(), json.dumps({"function": function, "owner": words[:300], "ts": int(time.time())}))
     try: record("retire", "teach", None, clean("%s : %s" % (function, words)))
     except RuntimeError: pass
     print("retired from the front door on the owner word: %s; the brain answers it alone now" % function)
@@ -3326,7 +3603,7 @@ def lesson_words(k=None, fresh=False):
     key = wn_key(); words = random.sample(sorted(key), k or 8)
     cx_put("lessonwords", "lesson-senses", 0, 0, clock(), json.dumps(words)); return words
 def v_senses(cmd, k=6):
-    ensure_cx(); name = "lesson-senses"
+    name = "lesson-senses"
     if cmd == "plan":
         key = wn_key(); docs = lecture_text()
         print("lesson plan, word senses: the lecture from %s (%d sentences); the key held by the judge: %d words with two or more senses carrying examples, %d example sentences; the learner on port %d" % (", ".join(t for t, x in docs), sum(len(sentences(x)) for t, x in docs), len(key), sum(len(e) for v in key.values() for s, e, i in v), LEARNER))
@@ -3459,7 +3736,7 @@ def hydration_ask(name, question, cap=12000, ask_cap=8, other_cap=2):
     pwset = set(cw) | set(sw)
     if aw:
         def keep(t, w): return len((set(ask_words(t)) & pwset) - {w}) >= 2   # a record line holds an ask word and two of the project's words
-        for (rn,) in q("SELECT run FROM main.cx WHERE kind = 'ingest' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 120", name):
+        for (rn,) in cxq("SELECT run FROM record WHERE kind = 'ingest' AND name = ? AND n > 0 ORDER BY ts DESC LIMIT 120", name):
             t = line_text(rn)
             if t and set(ask_words(t)) & set(aw): rec.append("run %d (ingest): %s" % (rn, t[:240]))
         for kind in ("need", "handback"):
@@ -3505,7 +3782,7 @@ def hydration_ask(name, question, cap=12000, ask_cap=8, other_cap=2):
     return body + "\n".join(out_rows) + "\n" + ("\n".join(out_rec) + "\n" if len(out_rec) > 1 else "") + tail + "\n"
 def v_route(name=None, doms=None):
     # a project routes to the domains its claims are about (C36); the liaison sets it for a new project
-    ensure_cx(); R = routes()
+    R = routes()
     if name and doms is not None:
         R[name] = doms; cx_put("routes", "judge", 0, 0, clock(), json.dumps(R)); print("route %s -> %s" % (name, ",".join(doms)))
         n = len([1 for (nm, b) in routed_sources(name) if b == "reference" and set(source_info(nm).get("domain") or []) & set(doms)])
@@ -3521,7 +3798,7 @@ checkpoint <n> : <what is built, one sentence, ending with the source rows it re
 Rules: every source row you name is one printed above, as source path:line exactly; an expected output is a print a machine check can run on random inputs, never a test name, a summary or an intent; the first checkpoint is the smallest piece that prints; every later one uses what the earlier ones built; build on what the state says exists and do not repeat a checkpoint that is there; stay inside the scope; no other text, no headings, no code.
 """
 def v_plan_ask(name, question, engine="claude", model=None, lo=4, hi=9):
-    ensure_cx(); pr = cx_get("project", name, 0)
+    pr = cx_get("project", name, 0)
     if not pr: raise SystemExit("no project " + name)
     hyd = hydration_ask(name, question)
     cps = cx_list("checkpoint", name); n0 = (max(n for (n, run, at, ts, text) in cps) + 1) if cps else 1
@@ -3581,6 +3858,7 @@ USAGE = """cortex <verb> ...
   build <name> [--box min] [--turns k] [--engine e] [--model m] [--no-act]   C44: hydrate, one headless turn on the hydration alone, ingest, judge, move, again; NEEDED grows the hydration; FLAW parks and hands back
   handbacks <name>                         C45: the parked flaws with the worker's text
   decide <name> <k> accept|reject|checkpoint [: <text> || <expected>]   C45: the owner's or the liaison's decision; the checkpoint unparks; build continues
+  recall <project> [<kind> ...] [from <unix> to <unix>]   the project's records in time order, read from the tree by key (the owner, 11-03: a time state read ... recall print)
   status [<name>]
   verdicts <name> [n] [--limit k]          every judged line of the project (or of checkpoint n), newest first: run, verdict, p, judge, when, part, mark, ground, sentence
   receipt <name> <n> <command ...>         the machine's own print on stdin (df -h / | cortex receipt audit 1 df -h /): the checkpoint's ground for values
@@ -3642,7 +3920,7 @@ def main(argv):
     elif v == "judge": v_judge(a[0], int(a[1]), int(a[2]))
     elif v == "hydrate":
         if "--ask" in a:
-            ensure_cx(); h = hydration_ask(a[0], " ".join(a[a.index("--ask") + 1:])); sys.stdout.write(h); print("[%d bytes]" % len(h.encode()), file=sys.stderr)
+            h = hydration_ask(a[0], " ".join(a[a.index("--ask") + 1:])); sys.stdout.write(h); print("[%d bytes]" % len(h.encode()), file=sys.stderr)
         else: v_hydrate(a[0], int(a[a.index("--at") + 1]) if "--at" in a else None)
     elif v == "route": v_route(a[0] if a else None, [x for x in a[1].split(",") if x] if len(a) > 1 else None)
     elif v == "turn":
@@ -3775,6 +4053,7 @@ def main(argv):
         if " : " in s5: s5, t5 = s5.split(" : ", 1)
         k5 = s5.split(); v_decide(k5[0], int(k5[1]), k5[2], t5)
     elif v == "status": v_status(a[0] if a else None)
+    elif v == "recall": v_recall(a[0], int(a[a.index("from") + 1]) if "from" in a else 0, int(a[a.index("to") + 1]) if "to" in a else None, [x for x in a[1:] if x not in ("from", "to") and not x.isdigit()])
     elif v == "formula": v_formula(a[0])
     elif v == "q": print(json.dumps(ask("q " + " ".join(a)))[:4000])   # a keyed read for the builder; the kernel refuses a scan
     elif v == "freeze": v_freeze(a[0] if a else HANDLER)
