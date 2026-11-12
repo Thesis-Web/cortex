@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+# ci/nostar (2026-11-11, the auditor, on the owner's order: "make ci/cd in the git such these stars cannot ever be done again ...
+# if the builder won't listen and build it correctly, make it impossible to build it wrong").
+# usage: ci/nostar <old tree> <new tree>      exit 1 = the change is refused
+# The owner: "you never write py, or sql or sh code.... if it has to be written then neuron has to write it" (380);
+# "the kernel is only used for physics and only when it's impossible for neuron itself"; 11-11: "You writing the c , is a cheat ...
+# do not hide it in the door ... You cheated this way 6 times".
+# The rule, per file, with no totals to trade against: outside ci/ and .github/
+#   1. no code file may be added (a rename is an add);
+#   2. no code file may grow by a line;
+#   3. kernel C (nk/*.c, nk/*.h) may grow only up to the owner's ruled size (NOSTAR_C_PERMIT, the total lines he allowed).
+# Deleting dead code pays for nothing: every file stands alone. Code only shrinks; what the brain needs next, the brain is taught.
+import os, sys
+CODE_EXT = (".py", ".sh", ".sql", ".c", ".h", ".cc", ".cpp", ".js", ".ts", ".mjs", ".pl", ".rb", ".go", ".rs", ".lua", ".php", ".java", ".awk", ".html", ".htm", ".bash", ".zsh", ".fish", ".ps1", ".r", ".jl", ".swift", ".kt", ".cs", ".scala", ".tcl", ".mk", ".cmake", ".patch", ".diff", ".ipynb", ".wasm", ".so", ".o", ".a", ".pyc", ".jar", ".exe")
+FREE = ("ci/", ".github/")            # the tests and gates themselves: they measure, they do not think for the brain (their growth is printed)
+SKIP = ("sqlite3.h", "sqlite3ext.h")  # the vendored sqlite headers
+def is_code(path, full):
+    b = os.path.basename(path)
+    if b in SKIP: return False
+    if b.lower().endswith(CODE_EXT) or b in ("Makefile", "makefile", "GNUmakefile", "Dockerfile"): return True
+    try:
+        with open(full, "rb") as f: head = f.read(2)
+    except OSError: return False
+    return head == b"#!" or os.access(full, os.X_OK)
+def lines(full):
+    try:
+        with open(full, "rb") as f: return sum(1 for _ in f)
+    except OSError: return 0
+def scan(tree):
+    out = {}
+    for d, ds, fs in os.walk(tree):
+        ds[:] = [x for x in ds if x != ".git"]
+        for f in fs:
+            full = os.path.join(d, f); rel = os.path.relpath(full, tree)
+            if os.path.islink(full) or not os.path.isfile(full): continue
+            if is_code(rel, full): out[rel] = lines(full)
+    return out
+def kernel_c(rel): return rel.startswith("nk/") and rel.count("/") == 1 and rel.endswith((".c", ".h"))
+def main():
+    old, new = scan(sys.argv[1]), scan(sys.argv[2]); bad = []; permit = int(os.environ.get("NOSTAR_C_PERMIT", "0") or 0)
+    c_old = sum(n for f, n in old.items() if kernel_c(f)); c_new = sum(n for f, n in new.items() if kernel_c(f)); c_ok = c_new <= max(c_old, permit)
+    free_old = sum(n for f, n in old.items() if f.startswith(FREE)); free_new = sum(n for f, n in new.items() if f.startswith(FREE))
+    for f, n in sorted(new.items()):
+        if f.startswith(FREE): continue
+        if kernel_c(f) and permit and c_ok: continue
+        if f not in old: bad.append("added: %s (%d lines)" % (f, n))
+        elif n > old[f]: bad.append("grew:  %s (%d -> %d)" % (f, old[f], n))
+    tot_old = sum(n for f, n in old.items() if not f.startswith(FREE)); tot_new = sum(n for f, n in new.items() if not f.startswith(FREE))
+    print("---- no-star gate ---- code outside the brain: %d -> %d lines in %d -> %d files; kernel C %d -> %d (the owner's ruled size %s); ci %d -> %d" % (tot_old, tot_new, sum(1 for f in old if not f.startswith(FREE)), sum(1 for f in new if not f.startswith(FREE)), c_old, c_new, permit or "none", free_old, free_new))
+    if bad:
+        print("NO-STAR GATE: FAIL - code written for the brain outside the brain:")
+        for b in bad: print("   " + b)
+        print("   The owner: 'you never write py, or sql or sh code.... if it has to be written then neuron has to write it'.")
+        print("   A file of code may only shrink or go. Deleting other code does not pay for this. Teach the brain the function (cortex teach), then retire the code.")
+        print("   Kernel C that is a must (impossible for the neuron) gets in only at a size the owner ruled on; ask him, in his words, through the liaison.")
+        return 1
+    print("NO-STAR GATE: PASS (no code file added, none grew)")
+    return 0
+if __name__ == "__main__": sys.exit(main())
