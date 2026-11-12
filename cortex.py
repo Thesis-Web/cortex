@@ -2515,15 +2515,13 @@ def v_capture(cwd=None, name=None):
         cps0 = cx_list("checkpoint", name, desc=True, limit=1); nxt0 = cps0[0][0] if cps0 else None
     nrec = 0
     if nxt0 is not None and results:
-        had = set(r[0] for r in cx_rows("receipt", name))   # the receipts of the project read once, before the first line is typed (11-11: a read after every typed line ran a capture for hours)
         for (cmd, txt) in results[-40:]:   # the prints of the session, forty at most (C35: twelve cut the print a later sentence cited), before its sentences
             cmdline = clean(cmd.strip().splitlines()[0] if cmd.strip() else "command")[:70]
             lines = [clean(l) for l in txt.splitlines() if clean(l)][:20]
             if not lines: continue
             for l in lines:
                 body = "%s => %s" % (cmdline, l)
-                if text_key(body) in had: continue   # the same print already a receipt
-                try: had.add(text_key(body_of("receipt", name, decode(record("receipt", name, nxt0, body)[0])))); nrec += 1   # the typed line as it reads back
+                try: nrec += not record("receipt", name, nxt0, body)[2].get("tick")   # the brain answers the typed line: a tick is a line it holds
                 except RuntimeError: continue
         if nrec: print("receipts: %d lines typed from %d tool results for C%d" % (nrec, len(results[-40:]), nxt0))
     own = []
