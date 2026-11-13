@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
-# ci/nostar (2026-11-11, the auditor, on the owner's order: "make ci/cd in the git such these stars cannot ever be done again ...
-# if the builder won't listen and build it correctly, make it impossible to build it wrong").
+# ci/nostar (2026-11-11, the auditor; v2 2026-11-13, the gate builder, on the owner's order: "make the ci that prevents any code outside
+# the brain ... so future builders dont game the system ... you need ci to stop all that gaming").
 # usage: ci/nostar <old tree> <new tree>      exit 1 = the change is refused
 # The owner: "you never write py, or sql or sh code.... if it has to be written then neuron has to write it" (380);
 # "the kernel is only used for physics and only when it's impossible for neuron itself"; 11-11: "You writing the c , is a cheat ...
-# do not hide it in the door ... You cheated this way 6 times".
-# The rule, per file, with no totals to trade against: outside ci/ and .github/
+# do not hide it in the door ... You cheated this way 6 times"; 11-12: "You are not permitted to write anything but ... neuron code".
+# The rule, per file, with no totals to trade against. Outside ci/ and .github/:
 #   1. no code file may be added (a rename is an add);
-#   2. no code file may grow by a line;
-#   3. kernel C (nk/*.c, nk/*.h) may grow only up to the owner's ruled size (NOSTAR_C_PERMIT, the total lines he allowed).
+#   2. no code file may grow by a line or by a byte (11-13: long lines carried growth past the line count);
+#   3. no code file may load more code at run time than it did (exec, eval, compile, importlib, a shell or python -c, base64);
+#   4. a file that is not named code may not gain lines that are code (python, shell, C in a .txt, .md, .json, .log ...);
+#   5. no program file (an ELF binary) may be added;
+#   6. kernel C (nk/*.c, nk/*.h) may grow only up to the owner's ruled size (NOSTAR_C_PERMIT, the total lines he allowed).
+# With NOSTAR_CI_FROZEN=1 (the gate on hp2) ci/ and .github/ are held too: no file there is added, removed or changed, so a brain
+# function cannot move into the tests; only the gate builder, on the owner's word, changes them (NOSTAR_CI_PERMIT=1).
 # Deleting dead code pays for nothing: every file stands alone. Code only shrinks; what the brain needs next, the brain is taught.
-import os, sys
-CODE_EXT = (".py", ".sh", ".sql", ".c", ".h", ".cc", ".cpp", ".js", ".ts", ".mjs", ".pl", ".rb", ".go", ".rs", ".lua", ".php", ".java", ".awk", ".html", ".htm", ".bash", ".zsh", ".fish", ".ps1", ".r", ".jl", ".swift", ".kt", ".cs", ".scala", ".tcl", ".mk", ".cmake", ".patch", ".diff", ".ipynb", ".wasm", ".so", ".o", ".a", ".pyc", ".jar", ".exe")
-FREE = ("ci/", ".github/")            # the tests and gates themselves: they measure, they do not think for the brain (their growth is printed)
+import os, sys, re, hashlib
+CODE_EXT = (".py", ".sh", ".sql", ".c", ".h", ".cc", ".cpp", ".js", ".ts", ".mjs", ".pl", ".rb", ".go", ".rs", ".lua", ".php", ".java", ".awk", ".html", ".htm", ".bash", ".zsh", ".fish", ".ps1", ".r", ".jl", ".swift", ".kt", ".cs", ".scala", ".tcl", ".mk", ".cmake", ".patch", ".diff", ".ipynb", ".wasm", ".wat", ".s", ".asm", ".el", ".vim", ".bat", ".cmd", ".yml", ".yaml", ".toml")
+FREE = ("ci/", ".github/")            # the tests and gates themselves: they measure, they do not think for the brain (held by NOSTAR_CI_FROZEN)
 SKIP = ("sqlite3.h", "sqlite3ext.h")  # the vendored sqlite headers
+DYN = re.compile(rb"\b(exec|eval|compile|__import__|execfile|system|popen)\s*\(|importlib|runpy|\b(python3?|bash|sh|perl|ruby|node)\s+-c\b|base64|marshal\.loads|pickle\.loads|dlopen")
+CODEY = re.compile(rb"^\s*(def \w+\s*\(|class \w+\s*[:(]|import \w|from [\w.]+ import |print\s*\(|if __name__|elif .*:\s*$|except\b.*:\s*$|try:\s*$|for \w+ in .*:\s*$|while .*:\s*$|#!/|export \w+=|\w+\s*\(\)\s*\{|then\s*$|fi\s*$|done\s*$|esac\s*$|#include\b|#define\b|static \w|typedef \w|int main\b|void \w+\s*\(|function \w+\s*\(|const \w+ = |let \w+ = |var \w+ = )")
 def is_code(path, full):
     b = os.path.basename(path)
     if b in SKIP: return False
@@ -26,34 +33,74 @@ def lines(full):
     try:
         with open(full, "rb") as f: return sum(1 for _ in f)
     except OSError: return 0
-def scan(tree):
+def measure(rel, full):
+    """what a file holds, for the rule: kind code -> lines, bytes, dyn; kind text -> codey lines; kind elf; kind data"""
+    try:
+        with open(full, "rb") as f: head = f.read(4096)
+        size = os.path.getsize(full)
+    except OSError: return {"kind": "data"}
+    if head[:4] == b"\x7fELF": return {"kind": "elf"}
+    if is_code(rel, full):
+        with open(full, "rb") as f: data = f.read()
+        return {"kind": "code", "lines": data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0), "bytes": len(data), "dyn": len(DYN.findall(data))}
+    if b"\0" in head or size > 64 * 1024 * 1024: return {"kind": "data"}
+    with open(full, "rb") as f: n = sum(1 for l in f if CODEY.match(l))
+    return {"kind": "text", "codey": n}
+def digest(full):
+    h = hashlib.sha256()
+    try:
+        with open(full, "rb") as f:
+            for b in iter(lambda: f.read(1 << 20), b""): h.update(b)
+    except OSError: return ""
+    return h.hexdigest()
+def scan(tree, every=False):
+    """rel -> lines for the code files (the old shape); with every=True rel -> measure for every file"""
     out = {}
     for d, ds, fs in os.walk(tree):
         ds[:] = [x for x in ds if x != ".git"]
         for f in fs:
             full = os.path.join(d, f); rel = os.path.relpath(full, tree)
             if os.path.islink(full) or not os.path.isfile(full): continue
-            if is_code(rel, full): out[rel] = lines(full)
+            if every: out[rel] = measure(rel, full)
+            elif is_code(rel, full): out[rel] = lines(full)
     return out
 def kernel_c(rel): return rel.startswith("nk/") and rel.count("/") == 1 and rel.endswith((".c", ".h"))
+def judge(rel, o, n):
+    """the reasons a file's new measure is refused against its old one (o is None for a file that was not there)"""
+    bad = []
+    if n["kind"] == "elf":
+        if o is None or o.get("kind") != "elf": bad.append("added program file: %s" % rel)
+    elif n["kind"] == "code":
+        if o is None or o.get("kind") != "code": bad.append("added: %s (%d lines)" % (rel, n["lines"]))
+        else:
+            if n["lines"] > o["lines"]: bad.append("grew:  %s (%d -> %d lines)" % (rel, o["lines"], n["lines"]))
+            elif n["bytes"] > o["bytes"]: bad.append("grew:  %s (%d -> %d bytes on no more lines: longer lines are growth)" % (rel, o["bytes"], n["bytes"]))
+            if n["dyn"] > o.get("dyn", 0): bad.append("loads code at run time: %s (%d -> %d places: exec, eval, importlib, -c, base64 ...)" % (rel, o.get("dyn", 0), n["dyn"]))
+    elif n["kind"] == "text":
+        was = o.get("codey", 0) if o and o.get("kind") == "text" else 0
+        if n["codey"] > was: bad.append("code in a file not named code: %s (%d -> %d lines that are code)" % (rel, was, n["codey"]))
+    return bad
 def main():
-    old, new = scan(sys.argv[1]), scan(sys.argv[2]); bad = []; permit = int(os.environ.get("NOSTAR_C_PERMIT", "0") or 0)
-    c_old = sum(n for f, n in old.items() if kernel_c(f)); c_new = sum(n for f, n in new.items() if kernel_c(f)); c_ok = c_new <= max(c_old, permit)
-    free_old = sum(n for f, n in old.items() if f.startswith(FREE)); free_new = sum(n for f, n in new.items() if f.startswith(FREE))
+    ot, nt = sys.argv[1], sys.argv[2]; old, new = scan(ot, True), scan(nt, True); bad = []; permit = int(os.environ.get("NOSTAR_C_PERMIT", "0") or 0)
+    frozen = os.environ.get("NOSTAR_CI_FROZEN") == "1" and os.environ.get("NOSTAR_CI_PERMIT") != "1"
+    L = lambda t: {f: m["lines"] for f, m in t.items() if m["kind"] == "code"}; lo, ln = L(old), L(new)
+    c_old = sum(n for f, n in lo.items() if kernel_c(f)); c_new = sum(n for f, n in ln.items() if kernel_c(f)); c_ok = c_new <= max(c_old, permit)
     for f, n in sorted(new.items()):
-        if f.startswith(FREE): continue
+        if f.startswith(FREE):
+            if frozen and (f not in old or digest(os.path.join(ot, f)) != digest(os.path.join(nt, f))): bad.append("%s in the tests: %s" % ("added" if f not in old else "changed", f))
+            continue
         if kernel_c(f) and permit and c_ok: continue
-        if f not in old: bad.append("added: %s (%d lines)" % (f, n))
-        elif n > old[f]: bad.append("grew:  %s (%d -> %d)" % (f, old[f], n))
-    tot_old = sum(n for f, n in old.items() if not f.startswith(FREE)); tot_new = sum(n for f, n in new.items() if not f.startswith(FREE))
-    print("---- no-star gate ---- code outside the brain: %d -> %d lines in %d -> %d files; kernel C %d -> %d (the owner's ruled size %s); ci %d -> %d" % (tot_old, tot_new, sum(1 for f in old if not f.startswith(FREE)), sum(1 for f in new if not f.startswith(FREE)), c_old, c_new, permit or "none", free_old, free_new))
+        bad += judge(f, old.get(f), n)
+    if frozen: bad += ["removed from the tests: %s" % f for f in sorted(old) if f.startswith(FREE) and f not in new]
+    tot = lambda t: sum(n for f, n in t.items() if not f.startswith(FREE)); fr = lambda t: sum(n for f, n in t.items() if f.startswith(FREE))
+    print("---- no-star gate ---- code outside the brain: %d -> %d lines in %d -> %d files; kernel C %d -> %d (the owner's ruled size %s); ci %d -> %d%s" % (tot(lo), tot(ln), sum(1 for f in lo if not f.startswith(FREE)), sum(1 for f in ln if not f.startswith(FREE)), c_old, c_new, permit or "none", fr(lo), fr(ln), " (held)" if frozen else ""))
     if bad:
         print("NO-STAR GATE: FAIL - code written for the brain outside the brain:")
-        for b in bad: print("   " + b)
+        for b in bad[:60]: print("   " + b)
         print("   The owner: 'you never write py, or sql or sh code.... if it has to be written then neuron has to write it'.")
         print("   A file of code may only shrink or go. Deleting other code does not pay for this. Teach the brain the function (cortex teach), then retire the code.")
         print("   Kernel C that is a must (impossible for the neuron) gets in only at a size the owner ruled on; ask him, in his words, through the liaison.")
         return 1
-    print("NO-STAR GATE: PASS (no code file added, none grew)")
+    print("NO-STAR GATE: PASS (no code file added, none grew by a line or a byte, none loads more code, no code in other files, no program file%s)" % (", the tests held" if frozen else ""))
     return 0
 if __name__ == "__main__": sys.exit(main())
