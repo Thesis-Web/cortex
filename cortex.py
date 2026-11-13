@@ -2195,7 +2195,7 @@ def hydration_text(name, pr, nxt):
             lines.append("THE CORTEX'S OWN CHECK on C%d (the cortex runs it in the repo after your turn; it decides, your sentences do not; it uses numbers of its own, so special cases and edited tests fail it): %s | last print: %s" % (nxt, json.loads(ck0[3]).get("cmd"), (cld["last"][:300] if cld else "not run yet")))
         nd = cx_get("need", name, nxt)
         if nd:
-            try: lines.append("WHAT THE LAST WORKERS SAID THIS HYDRATION LACKED (C41; the liaison or the owner adds it, a worker does not invent it): " + " | ".join(x.get("text", "")[:160] for x in json.loads(nd[3])[-4:]))
+            try: lines.append("WHAT THE LAST WORKERS SAID THIS HYDRATION LACKED (C41; the liaison or the owner adds it, a worker does not invent it): " + " | ".join(x.get("text", "") for x in json.loads(nd[3])))
             except ValueError: pass
         left = [r for r in remainders_of(name, nxt) if not r.get("satisfied")]
         if left: lines.append("REMAINDER of C%d (parts left not satisfied): " % nxt + "; ".join("%d %s" % (r["k"], line_text(r["run"])[:100]) for r in left[:6]))
@@ -2636,7 +2636,7 @@ def v_need(name, n, text, who="hand"):
     try: run = record("need", name, n, clean(text))[0]
     except RuntimeError as e: raise SystemExit("refused: %s" % e)
     had = cx_get("need", name, n); L = json.loads(had[3]) if had else []
-    L.append({"text": clean(text)[:300], "run": run, "who": who, "ts": int(time.time())}); cx_put("need", name, n, run, clock(), json.dumps(L[-20:]))
+    L.append({"text": clean(text), "run": run, "who": who, "ts": int(time.time())}); cx_put("need", name, n, run, clock(), json.dumps(L))
     print("need %s C%d run %d (%s): %s" % (name, n, run, who, clean(text)[:120]))
 def v_mark(name, run, kind, why=""):
     # the labeled set: the owner's (or the known-truth) word on what a judged sentence was; cortex learn trains the weights on these
